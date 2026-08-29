@@ -69,3 +69,42 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: target/${{ matrix.target }}/release/${{ matrix.asset }}
+
+      - name: Upload artifact for site sync
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: target/${{ matrix.target }}/release/${{ matrix.asset }}
+
+  sync-downloads:
+    name: Sync site downloads
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: .artifacts
+          merge-multiple: true
+
+      - name: Update site downloads
+        run: |
+          mkdir -p web/docs/public/downloads
+          cp .artifacts/* web/docs/public/downloads/
+          ls -la web/docs/public/downloads/
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/docs/public/downloads/
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "chore: sync release binaries to site downloads"
+            git push
+          fi

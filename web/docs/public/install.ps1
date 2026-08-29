@@ -4,29 +4,42 @@
 #   irm https://frp.sh/install.ps1 | iex
 #
 # 说明:
-#   - 自动下载 GitHub Releases 最新版 Windows 二进制
+#   - 自动下载最新版 Windows 二进制（frp.sh 官方源优先，GitHub Releases 兜底）
 #   - 安装到 %LOCALAPPDATA%\frp-sh 并加入用户 PATH
 #   - 重复执行即为更新（覆盖安装）
 #
 # 可选环境变量:
-#   $env:FRPSH_REPO       覆盖下载仓库（默认 frp-sh/frp-sh）
+#   $env:FRPSH_REPO       覆盖 GitHub 兜底仓库（默认 myki-jim/frp-sh）
 #   $env:FRPSH_INSTALL_DIR 覆盖安装目录
 $ErrorActionPreference = 'Stop'
 
 $repo = if ($env:FRPSH_REPO) { $env:FRPSH_REPO } else { 'myki-jim/frp-sh' }
-$base = "https://github.com/$repo/releases/latest/download"
 $destDir = if ($env:FRPSH_INSTALL_DIR) { $env:FRPSH_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'frp-sh' }
 $exe = Join-Path $destDir 'frp-sh.exe'
 $asset = 'frp-sh-windows-x86_64.exe'
-$url = "$base/$asset"
+
+# 下载源：Cloudflare 官方源优先（国内可达），GitHub Releases 兜底
+$bases = @("https://frp.sh/downloads", "https://github.com/$repo/releases/latest/download")
 
 Write-Host "==> frp-sh 安装器 (windows/x86_64)"
-Write-Host "    下载: $url"
 Write-Host "    安装到: $exe"
 
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 $tmp = Join-Path $destDir 'frp-sh.exe.tmp'
-Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+$downloaded = $false
+foreach ($b in $bases) {
+  try {
+    Write-Host "    尝试: $b/$asset"
+    Invoke-WebRequest -Uri "$b/$asset" -OutFile $tmp -UseBasicParsing -ErrorAction Stop
+    $downloaded = $true
+    break
+  } catch {
+    # 继续尝试下一个源
+  }
+}
+if (-not $downloaded) {
+  throw "下载失败 $asset（已尝试 frp.sh 与 GitHub Releases，请检查网络）"
+}
 Move-Item -Force $tmp $exe
 
 # 加入用户 PATH（若尚未包含）
