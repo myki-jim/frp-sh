@@ -142,6 +142,10 @@ pub struct LanCreateArgs {
     /// 虚拟网卡 MTU
     #[arg(long, default_value_t = 1400)]
     pub mtu: u16,
+    /// 预留的访客虚拟 IP 池（逗号分隔，如 10.66.0.2,10.66.0.3）；
+    /// 访客未指定 --ip 时按加入顺序分配，同一设备重连复用同一 IP
+    #[arg(long, value_delimiter = ',')]
+    pub guest_ips: Vec<String>,
 }
 
 #[derive(clap::Args, Debug)]

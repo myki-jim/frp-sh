@@ -59,7 +59,7 @@ async fn create_room(cfg: &Config) -> String {
         .unwrap();
     let lan = utils::lan_socket_addrs(engine.local_addr().unwrap().port());
     let resp = client
-        .create_room("test", 120, my_ext, None, lan, Vec::new())
+        .create_room("test", 120, my_ext, None, lan, Vec::new(), Vec::new())
         .await
         .unwrap();
     resp.room_id
@@ -131,6 +131,7 @@ async fn run_session(
             2,
             None,
             Some(1), // 测试：单轮即返回
+            None,    // requested_ip
         )
         .await
     });
@@ -217,7 +218,7 @@ async fn room_lifecycle_api() {
         .unwrap();
 
     let created = client
-        .create_room("api", 60, my_ext, None, Vec::new(), Vec::new())
+        .create_room("api", 60, my_ext, None, Vec::new(), Vec::new(), Vec::new())
         .await
         .unwrap();
     let info = client.get_room(&created.room_id).await.unwrap();
@@ -225,7 +226,7 @@ async fn room_lifecycle_api() {
     assert!(info.guest_addr.is_none());
 
     let joined = client
-        .join_room(&created.room_id, my_ext, Vec::new())
+        .join_room(&created.room_id, my_ext, Vec::new(), None, None)
         .await
         .unwrap();
     assert_eq!(joined.host_addr, my_ext);
@@ -235,4 +236,76 @@ async fn room_lifecycle_api() {
     client.delete_room(&created.room_id).await.unwrap();
     let err = client.get_room(&created.room_id).await.unwrap_err();
     assert!(matches!(err, frp_sh::error::FrpError::RoomNotFound(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn guest_ip_pool_assigns_stable_ips() {
+    let srv = start_server().await;
+    let client = SignalingClient::new(&srv.cfg.signaling_addr);
+    let engine = PunchEngine::bind().await.unwrap();
+    let token = utils::rand_token();
+    let my_ext = client
+        .learn_public_addr(
+            engine.socket(),
+            srv.cfg.signaling_udp_addr().unwrap(),
+            &token,
+        )
+        .await
+        .unwrap();
+
+    let created = client
+        .create_room(
+            "ip",
+            60,
+            my_ext,
+            Some("10.66.0.1".into()),
+            Vec::new(),
+            Vec::new(),
+            vec!["10.66.0.2".into(), "10.66.0.3".into(), "10.66.0.4".into()],
+        )
+        .await
+        .unwrap();
+
+    // 同一访客（同 UUID）两次加入 → 复用同一 IP
+    let uid = "123e4567-e89b-12d3-a456-426614174000";
+    let j1 = client
+        .join_room(&created.room_id, my_ext, Vec::new(), Some(uid.into()), None)
+        .await
+        .unwrap();
+    let j2 = client
+        .join_room(&created.room_id, my_ext, Vec::new(), Some(uid.into()), None)
+        .await
+        .unwrap();
+    assert_eq!(j1.assigned_ip.as_deref(), Some("10.66.0.2"));
+    assert_eq!(j1.assigned_ip, j2.assigned_ip, "同设备应复用同一 IP");
+
+    // 第二个访客 → 下一个 IP
+    let j3 = client
+        .join_room(
+            &created.room_id,
+            my_ext,
+            Vec::new(),
+            Some("223e4567-e89b-12d3-a456-426614174000".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(j3.assigned_ip.as_deref(), Some("10.66.0.3"));
+
+    // 未启用 IP 池时 assigned_ip 为 None
+    let created2 = client
+        .create_room("ip2", 60, my_ext, None, Vec::new(), Vec::new(), Vec::new())
+        .await
+        .unwrap();
+    let j4 = client
+        .join_room(
+            &created2.room_id,
+            my_ext,
+            Vec::new(),
+            Some(uid.into()),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(j4.assigned_ip.is_none());
 }

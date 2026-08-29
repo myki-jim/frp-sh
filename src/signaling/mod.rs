@@ -24,6 +24,10 @@ pub struct CreateRoomRequest {
     /// 房主局域网子网 CIDR（--tun 时通告，访客据此加路由访问房主整个局域网）
     #[serde(default)]
     pub host_subnets: Vec<String>,
+    /// 房主预留的访客虚拟 IP 池（`--guest-ips`）；访客未显式指定 IP 时按加入顺序分配，
+    /// 同一设备（UUID）重连复用同一 IP
+    #[serde(default)]
+    pub guest_ips: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,12 +42,21 @@ pub struct JoinRoomRequest {
     /// 访客局域网打洞地址列表（房主反向打洞用）
     #[serde(default)]
     pub addr_lan: Vec<SocketAddr>,
+    /// 访客设备 UUID（IP 池分配时用于稳定复用同一 IP）
+    #[serde(default)]
+    pub visitor_id: Option<String>,
+    /// 访客显式指定的虚拟 IP（--ip）
+    #[serde(default)]
+    pub requested_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinRoomResponse {
     pub room_id: String,
     pub host_addr: SocketAddr,
+    /// 服务器从房主预留 IP 池中分配给该访客的虚拟 IP（未启用 IP 池时为 None）
+    #[serde(default)]
+    pub assigned_ip: Option<String>,
 }
 
 /// 房主刷新自己的公网地址（重连时 NAT 映射可能已过期）。

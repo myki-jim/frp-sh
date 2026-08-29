@@ -63,6 +63,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.max_conns,
                         args.spread,
                         None,
+                        Vec::new(),
                     )
                     .await?;
                 }
@@ -76,6 +77,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.key,
                         args.max_conns,
                         args.spread,
+                        None,
                         None,
                     )
                     .await?;
@@ -99,6 +101,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.max_conns,
                         args.spread,
                         None,
+                        Vec::new(),
                     )
                     .await?;
                 }
@@ -112,6 +115,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.key,
                         args.max_conns,
                         args.spread,
+                        None,
                         None,
                     )
                     .await?;
@@ -142,13 +146,15 @@ async fn real_main() -> anyhow::Result<()> {
                         0,
                         args.spread,
                         tun_opts,
+                        args.guest_ips,
                     )
                     .await?;
                 }
                 LanCmd::Join(args) => {
                     let cfg = Config::load_auto(config.as_deref())?;
-                    // 默认虚拟 IP 由设备 UUID 确定性派生 → 每次连接地址稳定
-                    let ip = args.ip.unwrap_or_else(|| {
+                    // 显式 --ip 优先；否则由 UUID 派生（稳定）；房主启用 IP 池时由服务器分配
+                    let requested_ip = args.ip.clone();
+                    let ip = requested_ip.clone().unwrap_or_else(|| {
                         cfg.uuid
                             .as_deref()
                             .map(frp_sh::utils::derive_vnet_ip)
@@ -170,6 +176,7 @@ async fn real_main() -> anyhow::Result<()> {
                         0,
                         args.spread,
                         tun_opts,
+                        requested_ip,
                     )
                     .await?;
                 }

@@ -120,6 +120,21 @@ operations. To avoid manually right-clicking "Run as administrator":
 
 `game` / `dev` are pure port forwarding and need **no** admin rights.
 
+### Is each device's virtual IP fixed? How do I manage them (VLAN-like)?
+
+Yes — **every device gets a fixed virtual IP**, one of three ways (priority order):
+
+1. **Explicit**: `frp-sh lan join lan-xxx --ip 10.66.0.5`
+2. **Host-assigned**: the host reserves a pool with
+   `frp-sh lan create --guest-ips 10.66.0.2,10.66.0.3`; guests take addresses in
+   join order and reuse the same IP across reconnects
+3. **UUID-derived**: with nothing configured, the address derives stably from the
+   device ID (e.g. `10.66.0.42`) — the same device always gets the same IP
+
+The default subnet is `10.66.0.0/24` (one VLAN). For multiple VLANs, open separate
+rooms on different subnets (`--ip` + `--netmask` support any subnet). Everyone in one
+room shares one subnet and can reach each other directly.
+
 ### Why is the default port 25565? Is that Minecraft's?
 
 Yes — 25565 is the default Minecraft (Java Edition) server port. frp-sh was designed for "play with friends" scenarios, so both the host service and the guest listen default to 25565 for out-of-the-box server hosting.

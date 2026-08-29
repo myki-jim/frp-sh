@@ -35,6 +35,10 @@ pub struct Room {
     pub host_subnets: Vec<String>,
     /// 访客局域网打洞地址（房主反向打洞）
     pub guest_lan: Vec<SocketAddr>,
+    /// 房主预留的访客虚拟 IP 池（`--guest-ips`）
+    pub guest_ips: Vec<String>,
+    /// 已分配：visitor UUID -> 虚拟 IP（重连复用）
+    pub ip_assignments: HashMap<String, String>,
     /// 中继等待槽位（配对完成前持有连接）
     pub relay_host: Option<TcpStream>,
     pub relay_guest: Option<TcpStream>,
@@ -87,6 +91,8 @@ async fn create_room(
             host_lan: req.host_lan,
             host_subnets: req.host_subnets,
             guest_lan: Vec::new(),
+            guest_ips: req.guest_ips,
+            ip_assignments: HashMap::new(),
             relay_host: None,
             relay_guest: None,
             pair_notify: Arc::new(Notify::new()),
@@ -111,9 +117,45 @@ async fn join_room(
     }
     room.guest_addr = Some(req.addr);
     room.guest_lan = req.addr_lan;
+    // 虚拟 IP 分配：访客显式指定 > UUID 复用 > 按序取池中未分配的
+    let assigned_ip = if room.guest_ips.is_empty() {
+        req.requested_ip.or_else(|| {
+            req.visitor_id
+                .as_ref()
+                .and_then(|id| room.ip_assignments.get(id).cloned())
+        })
+    } else {
+        let taken: std::collections::HashSet<&str> =
+            room.ip_assignments.values().map(String::as_str).collect();
+        // 已分配给该设备的 IP 优先复用（重连稳定）
+        if let Some(uid) = &req.visitor_id {
+            if let Some(ip) = room.ip_assignments.get(uid) {
+                Some(ip.clone())
+            } else {
+                // 显式指定的 IP 若在池内则用（占位检查）
+                match &req.requested_ip {
+                    Some(ip) if room.guest_ips.contains(ip) && !taken.contains(ip.as_str()) => {
+                        room.ip_assignments.insert(uid.clone(), ip.clone());
+                        Some(ip.clone())
+                    }
+                    _ => room
+                        .guest_ips
+                        .iter()
+                        .find(|ip| !taken.contains(ip.as_str()))
+                        .map(|ip| {
+                            room.ip_assignments.insert(uid.clone(), ip.clone());
+                            ip.clone()
+                        }),
+                }
+            }
+        } else {
+            None
+        }
+    };
     Ok(Json(JoinRoomResponse {
         room_id,
         host_addr: room.host_addr,
+        assigned_ip,
     }))
 }
 

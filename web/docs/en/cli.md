@@ -234,6 +234,26 @@ frp-sh lan create --netmask 255.255.0.0
 frp-sh lan create --mtu 1300
 ```
 
+### `--guest-ips <IP1,IP2,...>`
+
+**Purpose**: reserved guest virtual-IP pool (host-managed assignment).
+
+- **Default**: empty (guests use their UUID-derived IP, or `--ip`)
+- Comma-separated IPs, e.g. `10.66.0.2,10.66.0.3,10.66.0.4`
+- When a guest joins **without `--ip`**, addresses are handed out in join order;
+  the **same device (UUID) reuses the same IP across reconnects**
+- Great for teams where the host wants to manage the vnet addressing
+
+**Example**:
+
+```bash
+# host: reserve 3 guest addresses
+frp-sh lan create --guest-ips 10.66.0.2,10.66.0.3,10.66.0.4
+
+# guest joins (no --ip needed; auto-assigned, prints Assigned IP)
+frp-sh lan join lan-a3f9c2
+```
+
 ### Combined examples
 
 ```bash
@@ -740,6 +760,33 @@ frp-sh
 ---
 
 ## Local network topology support
+
+**One fixed virtual IP per device (VLAN-like)**: the mesh uses the `10.66.0.0/24`
+virtual subnet by default (think of it as one VLAN). Each device gets its address
+one of three ways, priority order:
+
+1. **Explicit**: `--ip 10.66.0.5` (host or guest)
+2. **Host-assigned**: the host reserves a pool with `--guest-ips`; guests take
+   addresses in join order and **reuse the same IP across reconnects**
+3. **UUID-derived**: with no `--ip` at all, the address is derived stably from the
+   device ID (e.g. `10.66.0.42`) — the same device always gets the same IP
+
+**VLANs (multiple subnets)**: different subnets = different VLANs. Any subnet works
+via `--ip` + `--netmask`:
+
+```bash
+# subnet A (default): 10.66.0.0/24
+frp-sh lan create --ip 10.66.0.1
+
+# subnet B: 10.66.1.0/24 (another team)
+frp-sh lan create --prefix team-b --ip 10.66.1.1 --netmask 255.255.255.0
+
+# large subnet: 10.66.0.0/16
+frp-sh lan create --ip 10.66.0.1 --netmask 255.255.0.0
+```
+
+> Note: everyone in one room shares one subnet (naturally reachable); to isolate,
+> use separate rooms/subnets.
 
 **Same-LAN auto-direct**: the host advertises all of its LAN addresses when creating
 a room; the guest punches at both the public address and the LAN addresses

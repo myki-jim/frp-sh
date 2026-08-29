@@ -418,6 +418,8 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
 // ---------- game create ----------
 
 /// `game create`：注册房间，进入房主会话；返回房间号。
+///
+/// `guest_ips`：房主预留的访客虚拟 IP 池（lan 系列 `--guest-ips`；转发系列为空）。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_create(
     cfg: Config,
@@ -429,6 +431,7 @@ pub async fn run_create(
     max_conns: u64,
     spread: u32,
     tun: Option<TunOpts>,
+    guest_ips: Vec<String>,
 ) -> anyhow::Result<String> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
     let engine = PunchEngine::bind().await?;
@@ -452,6 +455,7 @@ pub async fn run_create(
             tun_ip,
             lan_addrs.clone(),
             lan_subnets.clone(),
+            guest_ips.clone(),
         )
         .await?;
     let room_id = resp.room_id.clone();
@@ -471,6 +475,12 @@ pub async fn run_create(
             println!(
                 "  LAN subnets  : {}（访客加入后可访问）",
                 lan_subnets.join(", ")
+            );
+        }
+        if !guest_ips.is_empty() {
+            println!(
+                "  Guest IPs    : {}（按加入顺序分配）",
+                guest_ips.join(", ")
             );
         }
     } else {
@@ -716,6 +726,8 @@ async fn host_punch_phase(
 // ---------- game join ----------
 
 /// `game join`：校验房间号并进入访客会话。
+///
+/// `requested_ip`：访客显式指定的虚拟 IP（`--ip`）；无则 None（由 UUID 派生或服务器分配）。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_join(
     cfg: Config,
@@ -726,6 +738,7 @@ pub async fn run_join(
     max_conns: u64,
     spread: u32,
     tun: Option<TunOpts>,
+    requested_ip: Option<String>,
 ) -> anyhow::Result<()> {
     if !utils::validate_room_id(&room_id) {
         anyhow::bail!("invalid room id: {room_id} (expected format like game-a3f9c2)");
@@ -749,6 +762,7 @@ pub async fn run_join(
         spread,
         tun,
         None, // 无限重连
+        requested_ip,
     );
     tokio::select! {
         r = session => r?,
@@ -761,6 +775,8 @@ pub async fn run_join(
 
 /// 访客会话（房间需已存在）：断线自动重连。
 ///
+/// `requested_ip`：访客显式指定的虚拟 IP（`--ip`），无则 None；
+/// 房主启用 IP 池（`--guest-ips`）且访客未指定时，服务器分配并返回。
 /// `max_rounds` 仅用于测试：限制重连轮数，`None` 表示无限重连直到 Ctrl-C 或房间失效。
 #[allow(clippy::too_many_arguments)]
 pub async fn guest_session(
@@ -773,6 +789,7 @@ pub async fn guest_session(
     spread: u32,
     mut tun: Option<TunOpts>,
     max_rounds: Option<u64>,
+    requested_ip: Option<String>,
 ) -> anyhow::Result<()> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
     let listen_addr: SocketAddr = listen
@@ -845,12 +862,28 @@ pub async fn guest_session(
             }
         };
         let my_lan = utils::lan_socket_addrs(engine.local_addr()?.port());
-        match signaling.join_room(room_id, my_ext, my_lan).await {
+        match signaling
+            .join_room(
+                room_id,
+                my_ext,
+                my_lan,
+                cfg.uuid.clone(),
+                requested_ip.clone(),
+            )
+            .await
+        {
             Ok(join) => {
                 println!("\n  Joined room : {}", join.room_id);
                 println!("  Host address: {}", join.host_addr);
                 if let Some(ip) = &host_tun_ip {
                     println!("  Host vnet IP: {ip}");
+                }
+                // 服务器从房主预留 IP 池分配虚拟 IP（访客未指定 --ip 时）
+                if let (Some(t), Some(ip)) = (tun.as_mut(), &join.assigned_ip) {
+                    if t.ip != *ip {
+                        println!("  Assigned IP  : {ip}（房主分配）");
+                        t.ip = ip.clone();
+                    }
                 }
                 if !info.host_subnets.is_empty() {
                     println!("  Host LAN     : {}", info.host_subnets.join(", "));

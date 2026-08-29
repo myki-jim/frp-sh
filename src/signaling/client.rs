@@ -29,7 +29,8 @@ impl SignalingClient {
     /// 注册房间。`addr` 是本机通过 UDP 探测得到的公网地址；
     /// `tun_ip` 为虚拟网卡模式时通告的虚拟 IP（可选）；
     /// `host_lan` 为本机局域网打洞地址（同局域网直连）；
-    /// `host_subnets` 为本机局域网子网 CIDR（--tun 时访客据此访问房主局域网）。
+    /// `host_subnets` 为本机局域网子网 CIDR（--tun 时访客据此访问房主局域网）；
+    /// `guest_ips` 为房主预留的访客虚拟 IP 池（`--guest-ips`）。
     #[allow(clippy::too_many_arguments)]
     pub async fn create_room(
         &self,
@@ -39,6 +40,7 @@ impl SignalingClient {
         tun_ip: Option<String>,
         host_lan: Vec<SocketAddr>,
         host_subnets: Vec<String>,
+        guest_ips: Vec<String>,
     ) -> Result<CreateRoomResponse> {
         let resp = self
             .http
@@ -50,6 +52,7 @@ impl SignalingClient {
                 tun_ip,
                 host_lan,
                 host_subnets,
+                guest_ips,
             })
             .send()
             .await
@@ -65,17 +68,28 @@ impl SignalingClient {
             .map_err(|e| FrpError::Signaling(format!("bad create response: {e}")))
     }
 
-    /// 访客登记加入房间，返回房主公网地址。`addr_lan` 为本机局域网打洞地址。
+    /// 访客登记加入房间，返回房主公网地址与分配的虚拟 IP。
+    ///
+    /// - `addr_lan`：本机局域网打洞地址
+    /// - `visitor_id`：设备 UUID（房主启用 IP 池时用于稳定复用同一虚拟 IP）
+    /// - `requested_ip`：显式指定的虚拟 IP（`--ip`），无则 None
     pub async fn join_room(
         &self,
         room_id: &str,
         addr: SocketAddr,
         addr_lan: Vec<SocketAddr>,
+        visitor_id: Option<String>,
+        requested_ip: Option<String>,
     ) -> Result<JoinRoomResponse> {
         let resp = self
             .http
             .post(format!("{}/room/{}/join", self.base_url, room_id))
-            .json(&JoinRoomRequest { addr, addr_lan })
+            .json(&JoinRoomRequest {
+                addr,
+                addr_lan,
+                visitor_id,
+                requested_ip,
+            })
             .send()
             .await
             .map_err(|e| FrpError::Signaling(format!("join room: {e}")))?;
