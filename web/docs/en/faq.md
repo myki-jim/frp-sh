@@ -89,13 +89,28 @@ The code body is 6 hex chars (~16M combinations) with a 12h TTL; brute-forcing m
 
 ## Other
 
+### Why is the default port 25565? Is that Minecraft's?
+
+Yes — 25565 is the default Minecraft (Java Edition) server port. frp-sh was designed for "play with friends" scenarios, so both the host service and the guest listen default to 25565 for out-of-the-box server hosting.
+
+Any port works: the host sets `--service` to its service address, the guest sets `--listen` to its local port. For example, a web service on port 3000:
+
+```bash
+frp-sh game create --service 127.0.0.1:3000
+frp-sh game join game-a3f9c2 --listen 127.0.0.1:3000
+```
+
 ### `invalid room id` rules
 
 Format: `prefix-6hex` (e.g., `game-a3f9c2`). `--prefix` keeps only lowercase alphanumerics and `-_`, max 16 chars.
 
 ### How does a session end?
 
-`Ctrl-C` on either side; or automatically when `--max-conns` is exhausted. The host deletes the room on exit.
+By default sessions **reconnect automatically** (backoff from 2s, capped at 15s), so link jitter won't end them. A session truly ends when:
+
+- Either side presses `Ctrl-C` (the host deletes the room on exit)
+- The room expires or is deleted (both sides end automatically)
+- `--max-conns` is exhausted — the current round ends, then it reconnects and waits for the next round
 
 ### IPv6 support?
 
