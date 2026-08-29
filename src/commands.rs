@@ -373,17 +373,15 @@ pub async fn host_session(
             return Err(e.into());
         }
 
-        let outcome = match host_punch_phase(
-            &engine, &signaling, room_id, &token, force_relay, spread,
-        )
-        .await
-        {
-            Ok(o) => o,
-            Err(e) => {
-                log::warn!("打洞阶段异常: {e}");
-                continue;
-            }
-        };
+        let outcome =
+            match host_punch_phase(&engine, &signaling, room_id, &token, force_relay, spread).await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    log::warn!("打洞阶段异常: {e}");
+                    continue;
+                }
+            };
         let run_result = match outcome {
             PunchOutcome::Direct { peer, first } => {
                 state.peer_addr = Some(peer);
@@ -549,7 +547,10 @@ pub async fn run_join(
         println!("  Your ID      : {u}");
     }
     if let Some(t) = &tun {
-        println!("  Vnet IP      : {}（朋友可用此 IP 直连你的虚拟网卡）", t.ip);
+        println!(
+            "  Vnet IP      : {}（朋友可用此 IP 直连你的虚拟网卡）",
+            t.ip
+        );
     }
     let session = guest_session(
         &cfg,
