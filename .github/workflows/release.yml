@@ -59,6 +59,11 @@ jobs:
         if: ${{ !matrix.zigbuild }}
         run: cargo build --release --target ${{ matrix.target }}
 
+      # Apple Silicon 要求二进制至少为 ad-hoc 签名，否则会被系统直接杀掉
+      - name: Codesign (macOS)
+        if: runner.os == 'macOS'
+        run: codesign --force --deep -s - target/${{ matrix.target }}/release/frp-sh
+
       - name: Rename artifact
         shell: bash
         run: |
