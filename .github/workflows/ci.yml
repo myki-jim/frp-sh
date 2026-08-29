@@ -27,7 +27,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test
+        # e2e 测试依赖临时端口的打洞时序，并行执行偶发失败 → 串行运行
+        run: cargo test -- --test-threads=1
 
       - name: Release build
         run: cargo build --release

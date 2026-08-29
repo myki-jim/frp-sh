@@ -111,6 +111,9 @@ jobs:
             echo "no changes"
           else
             git commit -m "chore: sync release binaries to site downloads"
-            # tag 触发的 checkout 处于 detached HEAD，显式推送到 main
+            # tag 触发的 checkout 处于 detached HEAD；先 rebase 到最新 main，
+            # 避免与并发推送（文档/其他提交）冲突导致 non-fast-forward
+            git fetch origin main
+            git rebase origin/main || { git checkout --theirs web/docs/public/downloads/; git add web/docs/public/downloads/; git rebase --continue || true; }
             git push origin HEAD:main
           fi
