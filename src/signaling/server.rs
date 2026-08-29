@@ -29,6 +29,12 @@ pub struct Room {
     pub expires_at: u64,
     /// 房主虚拟网卡 IP（--tun 时通告）
     pub tun_ip: Option<String>,
+    /// 房主局域网打洞地址（同局域网直连）
+    pub host_lan: Vec<SocketAddr>,
+    /// 房主局域网子网 CIDR（--tun 时访客据此加路由）
+    pub host_subnets: Vec<String>,
+    /// 访客局域网打洞地址（房主反向打洞）
+    pub guest_lan: Vec<SocketAddr>,
     /// 中继等待槽位（配对完成前持有连接）
     pub relay_host: Option<TcpStream>,
     pub relay_guest: Option<TcpStream>,
@@ -78,6 +84,9 @@ async fn create_room(
             created_at: now,
             expires_at: now.saturating_add(req.ttl),
             tun_ip: req.tun_ip,
+            host_lan: req.host_lan,
+            host_subnets: req.host_subnets,
+            guest_lan: Vec::new(),
             relay_host: None,
             relay_guest: None,
             pair_notify: Arc::new(Notify::new()),
@@ -101,6 +110,7 @@ async fn join_room(
         return Err(not_found(&room_id));
     }
     room.guest_addr = Some(req.addr);
+    room.guest_lan = req.addr_lan;
     Ok(Json(JoinRoomResponse {
         room_id,
         host_addr: room.host_addr,
@@ -124,10 +134,13 @@ async fn get_room(
         created_at: room.created_at,
         expires_at: room.expires_at,
         tun_ip: room.tun_ip.clone(),
+        host_lan: room.host_lan.clone(),
+        host_subnets: room.host_subnets.clone(),
+        guest_lan: room.guest_lan.clone(),
     }))
 }
 
-/// 房主重连时刷新自己的公网地址（NAT 映射可能已过期）。
+/// 房主重连时刷新自己的公网地址与局域网信息（NAT 映射可能已过期）。
 async fn refresh_room(
     State(state): State<SharedState>,
     Path(room_id): Path<String>,
@@ -140,6 +153,8 @@ async fn refresh_room(
         return Err(not_found(&room_id));
     }
     room.host_addr = req.addr;
+    room.host_lan = req.host_lan;
+    room.host_subnets = req.host_subnets;
     Ok(StatusCode::NO_CONTENT)
 }
 

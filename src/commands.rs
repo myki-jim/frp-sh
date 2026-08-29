@@ -3,7 +3,7 @@
 use crate::config::Config;
 use crate::error::{FrpError, Result};
 use crate::p2p::hole_punch::{
-    parse_ack, parse_punch, punch_targets_excluding, PunchEngine, PunchOutcome,
+    parse_ack, parse_punch, punch_targets_multi, PunchEngine, PunchOutcome,
 };
 use crate::p2p::relay::{self, RelayRole};
 use crate::p2p::stream;
@@ -43,6 +43,9 @@ pub struct TunOpts {
     pub ip: String,
     pub netmask: String,
     pub mtu: u16,
+    /// 访客侧：需经 TUN 路由的房主局域网子网（如 `192.168.1.0/24`）。
+    /// 房主侧为空。
+    pub lan_routes: Vec<String>,
 }
 
 impl TunOpts {
@@ -51,6 +54,7 @@ impl TunOpts {
             ip: "10.66.0.1".into(),
             netmask: "255.255.255.0".into(),
             mtu: 1400,
+            lan_routes: Vec::new(),
         }
     }
 
@@ -59,6 +63,7 @@ impl TunOpts {
             ip: "10.66.0.2".into(),
             netmask: "255.255.255.0".into(),
             mtu: 1400,
+            lan_routes: Vec::new(),
         }
     }
 }
@@ -74,6 +79,15 @@ enum ForwardMode {
 fn reconnect_delay(attempt: u64) -> u64 {
     let exp = 1u64 << attempt.min(4);
     exp.min(15)
+}
+
+/// 打印直连建立信息，并区分本地局域网直连（同 WiFi/网线）与公网打洞直连。
+fn announce_direct(peer: SocketAddr) {
+    if utils::is_local_ip(peer.ip()) {
+        println!(">>> 本地局域网直连 (LAN direct) with {peer}");
+    } else {
+        println!(">>> P2P direct link established with {peer}");
+    }
 }
 
 /// 数据面分发：`--tun` 时走虚拟网卡，否则走 TCP 端口转发。
@@ -99,6 +113,31 @@ async fn run_data_plane(
             o.ip, o.netmask, o.mtu
         );
         println!("    对端现可访问本虚拟网段（如 ping {}）", o.ip);
+        match mode {
+            ForwardMode::Host { .. } => {
+                // 房主：允许内核转发，使访客能通过隧道访问房主局域网
+                let fwd = crate::p2p::tun::enable_ip_forward();
+                if fwd {
+                    println!("    IPv4 转发已开启 → 访客可访问房主局域网");
+                } else {
+                    println!(
+                        "    提示: 开启 IPv4 转发后访客才能访问房主局域网\n      Linux: sysctl -w net.ipv4.ip_forward=1"
+                    );
+                }
+            }
+            ForwardMode::Guest { .. } => {
+                // 访客：为房主局域网子网添加经 TUN 的路由
+                for cidr in &o.lan_routes {
+                    match crate::p2p::tun::add_route(cidr, dev_name, &o.ip) {
+                        Ok(()) => println!("    路由 {cidr} → {dev_name} 已添加（访问房主局域网）"),
+                        Err(e) => println!("    路由 {cidr} 添加失败: {e}"),
+                    }
+                }
+                if !o.lan_routes.is_empty() {
+                    println!("    现在可访问房主局域网（如 ping 房主局域网内设备）");
+                }
+            }
+        }
         crate::p2p::tun::run(transport, dev).await?;
         return Ok(());
     }
@@ -291,16 +330,41 @@ pub async fn run_create(
         .await?;
     log::info!("public address: {my_ext}");
     let tun_ip = tun.as_ref().map(|t| t.ip.clone());
-    let resp = signaling.create_room(&prefix, ttl, my_ext, tun_ip).await?;
+    let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
+    let lan_subnets = if tun.is_some() {
+        utils::lan_subnet_cidrs()
+    } else {
+        Vec::new()
+    };
+    let resp = signaling
+        .create_room(
+            &prefix,
+            ttl,
+            my_ext,
+            tun_ip,
+            lan_addrs.clone(),
+            lan_subnets.clone(),
+        )
+        .await?;
     let room_id = resp.room_id.clone();
     println!("\n  Room created : {room_id}");
     println!("  Signaling    : {}", cfg.signaling_addr);
     if let Some(u) = &cfg.uuid {
         println!("  Your ID      : {u}");
     }
+    let lan_list: Vec<String> = lan_addrs.iter().map(|a| a.to_string()).collect();
+    if !lan_list.is_empty() {
+        println!("  LAN addrs    : {}", lan_list.join(", "));
+    }
     if let Some(t) = &tun {
         println!("  Vnet IP      : {}（对端可 ping/直连此 IP）", t.ip);
         println!("  Mode         : virtual NIC (--tun)");
+        if !lan_subnets.is_empty() {
+            println!(
+                "  LAN subnets  : {}（--tun 时访客可访问）",
+                lan_subnets.join(", ")
+            );
+        }
     } else {
         println!("  Local service: {service}");
     }
@@ -368,7 +432,16 @@ pub async fn host_session(
             .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
             .await?;
         log::info!("public address: {my_ext}");
-        if let Err(e) = signaling.refresh_room(room_id, my_ext).await {
+        let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
+        let lan_subnets = if tun.is_some() {
+            utils::lan_subnet_cidrs()
+        } else {
+            Vec::new()
+        };
+        if let Err(e) = signaling
+            .refresh_room(room_id, my_ext, lan_addrs, lan_subnets)
+            .await
+        {
             // 房间已失效（过期/被删）→ 无法继续，结束
             return Err(e.into());
         }
@@ -385,7 +458,7 @@ pub async fn host_session(
         let run_result = match outcome {
             PunchOutcome::Direct { peer, first } => {
                 state.peer_addr = Some(peer);
-                println!(">>> P2P direct link established with {peer}");
+                announce_direct(peer);
                 let stream = engine.into_stream(peer, first, key_bytes);
                 run_data_plane(
                     stream,
@@ -441,6 +514,8 @@ pub async fn host_session(
 }
 
 /// 房主打洞阶段：轮询房间发现访客，同时监听 PUNCH / ACK / 数据帧。
+///
+/// 访客注册后同时向访客的公网地址与局域网地址打洞（同局域网场景秒连）。
 async fn host_punch_phase(
     engine: &PunchEngine,
     signaling: &SignalingClient,
@@ -449,7 +524,7 @@ async fn host_punch_phase(
     force_relay: bool,
     spread: u32,
 ) -> Result<PunchOutcome> {
-    let mut guest_addr: Option<SocketAddr> = None;
+    let mut guest_addrs: Vec<SocketAddr> = Vec::new();
     let mut deadline: Option<Instant> = None;
     let mut last_poll = Instant::now() - POLL_INTERVAL;
     let mut last_punch = Instant::now() - PUNCH_INTERVAL;
@@ -458,27 +533,30 @@ async fn host_punch_phase(
     loop {
         let now = Instant::now();
         // 1) 轮询房间，等待访客注册
-        if guest_addr.is_none() && now.duration_since(last_poll) >= POLL_INTERVAL {
+        if guest_addrs.is_empty() && now.duration_since(last_poll) >= POLL_INTERVAL {
             last_poll = now;
             if let Ok(info) = signaling.get_room(room_id).await {
-                guest_addr = info.guest_addr;
+                if let Some(g) = info.guest_addr {
+                    guest_addrs.push(g);
+                    guest_addrs.extend(info.guest_lan);
+                }
             }
         }
         // 2) 访客出现后启动打洞窗口（强制中继则直接转入中继，且不收发任何打洞数据报）
         if force_relay {
-            if guest_addr.is_some() {
+            if !guest_addrs.is_empty() {
                 return Ok(PunchOutcome::TimedOut);
             }
             continue;
         }
-        if let Some(g) = guest_addr {
+        if !guest_addrs.is_empty() {
             if deadline.is_none() {
-                log::info!("guest {g} registered, punching ...");
+                log::info!("guest {guest_addrs:?} registered, punching ...");
                 deadline = Some(now + PUNCH_WINDOW);
             }
             if let Some(d) = deadline {
                 if now < d && now.duration_since(last_punch) >= PUNCH_INTERVAL {
-                    for target in punch_targets_excluding(g, spread, my_local) {
+                    for target in punch_targets_multi(&guest_addrs, spread, my_local) {
                         let _ = engine.send_punch(target, token).await;
                     }
                     last_punch = now;
@@ -584,7 +662,7 @@ pub async fn guest_session(
     key: Option<String>,
     max_conns: u64,
     spread: u32,
-    tun: Option<TunOpts>,
+    mut tun: Option<TunOpts>,
     max_rounds: Option<u64>,
 ) -> anyhow::Result<()> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
@@ -608,8 +686,8 @@ pub async fn guest_session(
         let engine = PunchEngine::bind().await?;
 
         // 查询房间（刷新房主地址；房间失效则结束）
-        let (host_addr, host_tun_ip) = match retry_get_room_info(&signaling, room_id).await {
-            Ok(info) => (info.host_addr, info.tun_ip),
+        let info = match retry_get_room_info(&signaling, room_id).await {
+            Ok(info) => info,
             Err(FrpError::RoomNotFound(_)) => {
                 return Err(FrpError::RoomNotFound(room_id.to_string()).into());
             }
@@ -618,6 +696,32 @@ pub async fn guest_session(
                 continue;
             }
         };
+        let host_addr = info.host_addr;
+        let host_tun_ip = info.tun_ip.clone();
+        // 房主打洞候选：公网地址 + 局域网地址（同局域网直连）
+        let mut host_addrs = vec![host_addr];
+        host_addrs.extend(info.host_lan.iter().copied());
+
+        // --tun 时：为房主局域网子网准备路由（跳过与本机子网重叠的）
+        if let Some(t) = tun.as_mut() {
+            let local = utils::lan_subnet_cidrs();
+            let mut skipped = Vec::new();
+            t.lan_routes = info
+                .host_subnets
+                .iter()
+                .filter(|c| {
+                    let overlap = local.iter().any(|l| utils::cidrs_overlap(c, l));
+                    if overlap {
+                        skipped.push(c.to_string());
+                    }
+                    !overlap
+                })
+                .cloned()
+                .collect();
+            if !skipped.is_empty() {
+                println!("  跳过与本地同网段的房主子网: {}", skipped.join(", "));
+            }
+        }
 
         // 刷新本机公网地址并登记（NAT 映射可能已过期）
         let token = utils::rand_token();
@@ -631,12 +735,16 @@ pub async fn guest_session(
                 continue;
             }
         };
-        match signaling.join_room(room_id, my_ext).await {
+        let my_lan = utils::lan_socket_addrs(engine.local_addr()?.port());
+        match signaling.join_room(room_id, my_ext, my_lan).await {
             Ok(join) => {
                 println!("\n  Joined room : {}", join.room_id);
                 println!("  Host address: {}", join.host_addr);
                 if let Some(ip) = &host_tun_ip {
                     println!("  Host vnet IP: {ip}");
+                }
+                if !info.host_subnets.is_empty() {
+                    println!("  Host LAN     : {}", info.host_subnets.join(", "));
                 }
                 if tun.is_some() {
                     println!("  Mode         : virtual NIC (--tun)");
@@ -654,18 +762,18 @@ pub async fn guest_session(
             }
         }
 
-        let outcome = match guest_punch_phase(&engine, host_addr, &token, force_relay, spread).await
-        {
-            Ok(o) => o,
-            Err(e) => {
-                log::warn!("打洞阶段异常: {e}");
-                continue;
-            }
-        };
+        let outcome =
+            match guest_punch_phase(&engine, &host_addrs, &token, force_relay, spread).await {
+                Ok(o) => o,
+                Err(e) => {
+                    log::warn!("打洞阶段异常: {e}");
+                    continue;
+                }
+            };
         let run_result = match outcome {
             PunchOutcome::Direct { peer, first } => {
                 state.peer_addr = Some(peer);
-                println!(">>> P2P direct link established with {peer}");
+                announce_direct(peer);
                 let stream = engine.into_stream(peer, first, key_bytes);
                 run_data_plane(
                     stream,
@@ -708,9 +816,9 @@ pub async fn guest_session(
                     .await
                 } else {
                     // 中继连接后再做一次直连复查（应对"房主已打通、访客 ACK 丢失"的不对称场景）
-                    match final_punch_check(&engine, host_addr, &token, spread).await {
+                    match final_punch_check(&engine, &host_addrs, &token, spread).await {
                         Ok(PunchOutcome::Direct { peer, first }) => {
-                            println!(">>> late P2P link established with {peer}");
+                            announce_direct(peer);
                             drop(stream);
                             let stream = engine.into_stream(peer, first, key_bytes);
                             run_data_plane(
@@ -770,10 +878,10 @@ async fn retry_get_room_info(
     Err(FrpError::RoomNotFound(room_id.to_string()))
 }
 
-/// 访客打洞阶段：向房主地址持续发送 PUNCH 并等待 ACK / 数据帧。
+/// 访客打洞阶段：向房主候选地址（公网 + 局域网）持续发送 PUNCH 并等待 ACK / 数据帧。
 async fn guest_punch_phase(
     engine: &PunchEngine,
-    host_addr: SocketAddr,
+    host_addrs: &[SocketAddr],
     token: &str,
     force_relay: bool,
     spread: u32,
@@ -783,7 +891,7 @@ async fn guest_punch_phase(
     }
     let my_local = engine.local_addr().ok();
     let my_port = my_local.map(|a| a.port());
-    let targets = punch_targets_excluding(host_addr, spread, my_local);
+    let targets = punch_targets_multi(host_addrs, spread, my_local);
     let deadline = Instant::now() + PUNCH_WINDOW;
     let mut last_punch = Instant::now() - PUNCH_INTERVAL;
     loop {
@@ -834,13 +942,13 @@ async fn guest_punch_phase(
 /// 中继连接后的最终直连复查（约 400ms）。
 async fn final_punch_check(
     engine: &PunchEngine,
-    host_addr: SocketAddr,
+    host_addrs: &[SocketAddr],
     token: &str,
     spread: u32,
 ) -> Result<PunchOutcome> {
     let my_local = engine.local_addr().ok();
     let my_port = my_local.map(|a| a.port());
-    let targets = punch_targets_excluding(host_addr, spread, my_local);
+    let targets = punch_targets_multi(host_addrs, spread, my_local);
     for _ in 0..3 {
         for target in &targets {
             let _ = engine.send_punch(*target, token).await;

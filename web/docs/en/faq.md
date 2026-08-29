@@ -89,6 +89,21 @@ The code body is 6 hex chars (~16M combinations) with a 12h TTL; brute-forcing m
 
 ## Other
 
+### Both sides are on the same WiFi — how do we get a LAN direct link?
+
+No action needed — it's automatic. The host advertises its LAN addresses when creating
+a room; the guest punches at both the public and LAN addresses. On the same subnet you
+get `本地局域网直连 (LAN direct)` within seconds — traffic stays entirely on the LAN,
+no server involved, lowest latency (great for gaming).
+
+### Can the guest reach other devices on the host's LAN (NAS/printer)?
+
+Yes. Use `--tun` on both sides: the host advertises its LAN subnets (e.g.
+`192.168.1.0/24`) and enables IPv4 forwarding; the guest automatically adds routes via
+its virtual NIC, then can ping / access devices on the host's LAN (both sides need
+root/admin). If both sides are on the same subnet, that subnet is skipped automatically
+to avoid route conflicts.
+
 ### Why is the default port 25565? Is that Minecraft's?
 
 Yes — 25565 is the default Minecraft (Java Edition) server port. frp-sh was designed for "play with friends" scenarios, so both the host service and the guest listen default to 25565 for out-of-the-box server hosting.

@@ -93,3 +93,90 @@ where
     }
     Ok(())
 }
+
+/// 尝试开启系统 IPv4 转发（房主侧：让访客能经隧道访问房主局域网）。
+///
+/// 需要 root/管理员权限；失败返回 `false`（调用方打印提示）。
+pub fn enable_ip_forward() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("sysctl")
+            .args(["-w", "net.ipv4.ip_forward=1"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("sysctl")
+            .args(["-w", "net.inet.ip.forwarding=1"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("netsh")
+            .args(["routing", "ip", "set", "ipforwarding", "enable"])
+            .output();
+        // netsh 返回码不可靠，交给上层按"可能未生效"提示
+        false
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        false
+    }
+}
+
+/// 为访客添加一条经 TUN 设备访问房主局域网的路由（需 root/管理员）。
+///
+/// `cidr` 形如 `192.168.1.0/24`；`gateway` 为房主虚拟 IP（10.66.0.1）。
+pub fn add_route(cidr: &str, dev_name: &str, gateway: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        run_cmd("ip", &["route", "add", cidr, "dev", dev_name])
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = dev_name;
+        run_cmd("route", &["-n", "add", "-net", cidr, gateway])
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = dev_name;
+        // Windows：route add <network> mask <mask> <gateway>
+        let (net, mask) = crate::utils::parse_cidr(cidr)
+            .map(|(n, p)| {
+                let mask = crate::utils::mask_from_prefix(p);
+                let octets = mask.to_be_bytes();
+                (
+                    std::net::Ipv4Addr::from(n).to_string(),
+                    format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]),
+                )
+            })
+            .ok_or_else(|| FrpError::Tun(format!("bad cidr {cidr}")))?;
+        run_cmd("route", &["add", &net, "mask", &mask, gateway])
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Err(FrpError::Tun(format!(
+            "当前平台不支持自动添加路由，请手动执行: ip route add {cidr} dev {dev_name}"
+        )))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
+    let out = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| FrpError::Tun(format!("{program} 执行失败（需要 root/管理员权限）: {e}")))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(FrpError::Tun(format!(
+            "{program} 返回错误: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}

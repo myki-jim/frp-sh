@@ -92,7 +92,10 @@ frp-sh game join game-a3f9c2 --relay     # force relay
 |--------|---------|
 | `Room created : game-a3f9c2` | host room ready |
 | `Your ID      : <uuid>` | your device unique ID (stored in `%APPDATA%\frp-sh\identity`; derives your stable virtual IP) |
+| `LAN addrs    : 192.168.1.5:51234` | host LAN addresses (same-LAN guests connect directly) |
+| `LAN subnets  : 192.168.1.0/24` | host LAN subnets (reachable by guests in `--tun` mode) |
 | `Vnet IP      : 10.66.0.x` | your virtual NIC IP (friends can use this IP to reach you long-term) |
+| `>>> 本地局域网直连 (LAN direct) with <addr>` | **same-WiFi/LAN direct link** (no server involved, lowest latency) |
 | `>>> P2P direct link established with <addr>` | **punch succeeded**, P2P direct |
 | `>>> UDP hole punching failed, falling back to relay ...` | punching failed, switching to relay |
 | `>>> late P2P link established with <addr>` | direct link re-captured while waiting on relay |
@@ -102,6 +105,38 @@ frp-sh game join game-a3f9c2 --relay     # force relay
 | `max connections (N) reached, ending session` | `--max-conns` exhausted, session ends |
 | `session ended by peer` | the peer closed the session |
 | `>>> 连接已断开，N 秒后自动重连...` | link dropped, auto-reconnecting with backoff (2s, 4s, 8s... capped at 15s) |
+
+## Local network topology support
+
+**Same-LAN auto-direct**: the host advertises all of its LAN addresses when creating a
+room; the guest punches at both the public address and the LAN addresses simultaneously.
+When both sides are on the same WiFi/wired LAN, a direct LAN link is established in
+seconds (`LAN direct` output) with no server in the path; otherwise the public punch
+path is used, falling back to relay only if punching fails.
+
+**Guest reaches the host's whole LAN (`--tun`)**: the host advertises its LAN subnets
+(e.g. `192.168.1.0/24`) in the room; in `--tun` mode the guest automatically adds
+routes for those subnets via its virtual NIC, so it can reach other devices on the
+host's LAN (NAS, printers, other PCs):
+
+```bash
+# host (needs root/admin; enables IPv4 forwarding automatically)
+frp-sh game create --tun
+# → LAN subnets  : 192.168.1.0/24
+
+# guest (needs root/admin; adds routes automatically)
+frp-sh game join game-a3f9c2 --tun
+# → 路由 192.168.1.0/24 → frp1 已添加
+# now you can ping / access devices on the host's LAN
+```
+
+Notes:
+
+- root/admin is required (routing changes, forwarding)
+- if the guest's own LAN is on the same subnet as the host's (e.g. both
+  `192.168.1.0/24`), that subnet is skipped automatically to avoid route conflicts
+  (the output notes `跳过与本地同网段的房主子网`)
+- you reach the host's **current** LAN; if the host changes networks, recreate the room
 
 ## Exiting
 

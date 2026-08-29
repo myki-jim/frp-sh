@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
                             ip: tun_ip.unwrap_or(d.ip),
                             netmask: tun_netmask,
                             mtu: tun_mtu,
+                            lan_routes: Vec::new(),
                         })
                     } else {
                         None
@@ -83,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
                             ip,
                             netmask: tun_netmask,
                             mtu: tun_mtu,
+                            lan_routes: Vec::new(), // 加入房间后由房主通告的子网填充
                         })
                     } else {
                         None

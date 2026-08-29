@@ -144,6 +144,31 @@ pub fn punch_targets_excluding(
     }
 }
 
+/// 单轮打洞目标数上限（公网 + 多个局域网地址 × 端口散布），避免数据报风暴。
+pub const MAX_PUNCH_TARGETS: usize = 24;
+
+/// 打洞目标集合：对多个候选地址（公网 + 局域网）逐一做端口散布，去重并限流。
+pub fn punch_targets_multi(
+    addrs: &[SocketAddr],
+    spread: u32,
+    exclude: Option<SocketAddr>,
+) -> Vec<SocketAddr> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for a in addrs {
+        for t in punch_targets_excluding(*a, spread, exclude) {
+            if seen.insert(t) {
+                out.push(t);
+            }
+        }
+        if out.len() >= MAX_PUNCH_TARGETS {
+            break;
+        }
+    }
+    out.truncate(MAX_PUNCH_TARGETS);
+    out
+}
+
 /// 解析 `PUNCH <token>`。
 pub fn parse_punch(buf: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(buf).ok()?;
@@ -176,5 +201,29 @@ mod tests {
         assert_eq!(parse_punch(b"PUNCH"), None);
         assert_eq!(parse_ack(b"ACK 0000"), Some("0000".to_string()));
         assert_eq!(parse_ack(b"PUNCH x"), None);
+    }
+
+    #[test]
+    fn multi_targets_dedup_and_cap() {
+        let a = "192.168.1.5:1234".parse().unwrap();
+        let b = "192.168.1.5:1234".parse().unwrap(); // 重复地址
+        let c = "192.168.1.6:1234".parse().unwrap();
+        let t = punch_targets_multi(&[a, b, c], 1, None);
+        // 3 个基底地址 × (1 + 2*1) = 9 个目标，重复地址去重后 6 个
+        assert_eq!(t.len(), 6);
+        let mut seen = std::collections::HashSet::new();
+        for x in &t {
+            assert!(seen.insert(*x), "dup target {x}");
+        }
+        // 排除端口生效
+        let ex = "10.0.0.9:9999".parse().unwrap();
+        let t2 = punch_targets_multi(&[a], 2, Some(ex));
+        assert!(t2.iter().all(|x| x.port() != 9999));
+        // 上限截断
+        let many: Vec<SocketAddr> = (1..=20)
+            .map(|i| format!("10.0.{i}.1:5000").parse().unwrap())
+            .collect();
+        let t3 = punch_targets_multi(&many, 8, None);
+        assert!(t3.len() <= MAX_PUNCH_TARGETS);
     }
 }

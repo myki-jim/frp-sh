@@ -92,8 +92,11 @@ frp-sh game join game-a3f9c2 --relay     # 强制走中继
 |------|------|
 | `Room created : game-a3f9c2` | 房主房间创建成功 |
 | `Your ID      : <uuid>` | 你的设备唯一 ID（存于 `%APPDATA%\frp-sh\identity`，用于派生稳定的虚拟 IP） |
+| `LAN addrs    : 192.168.1.5:51234` | 房主局域网地址（同局域网访客将直连此地址） |
+| `LAN subnets  : 192.168.1.0/24` | 房主局域网子网（--tun 时访客可访问整个局域网） |
 | `Vnet IP      : 10.66.0.x` | 你的虚拟网卡 IP（朋友可长期用此 IP 直连） |
-| `>>> P2P direct link established with <addr>` | **打洞成功**，P2P 直连 |
+| `>>> 本地局域网直连 (LAN direct) with <addr>` | **同 WiFi/局域网直连成功**（不经服务器，延迟最低） |
+| `>>> P2P direct link established with <addr>` | **公网打洞成功**，P2P 直连 |
 | `>>> UDP hole punching failed, falling back to relay ...` | 打洞失败，转入中继 |
 | `>>> late P2P link established with <addr>` | 中继等待期间补抓到直连，已切回 P2P |
 | `connection N from <addr>` | 访客侧：本地新连接进入隧道 |
@@ -102,6 +105,35 @@ frp-sh game join game-a3f9c2 --relay     # 强制走中继
 | `max connections (N) reached, ending session` | 达到 `--max-conns`，会话结束 |
 | `session ended by peer` | 对端关闭了会话 |
 | `>>> 连接已断开，N 秒后自动重连...` | 链路断开，退避等待后自动重连（2s, 4s, 8s... 上限 15s） |
+
+## 本地网络拓扑支持
+
+**同局域网自动直连**：房主创建房间时自动通告本机所有局域网地址，访客加入时向
+「公网地址 + 局域网地址」同时打洞。双方在同一 WiFi/网线时秒级建立局域网直连
+（输出 `LAN direct`），完全不经服务器；不在同一局域网时自动走公网打洞，打洞
+失败再回退中继。
+
+**访客访问房主整个局域网（--tun）**：房主在房间中通告自己的局域网子网
+（如 `192.168.1.0/24`），访客 `--tun` 模式下自动为这些子网添加经虚拟网卡的路由，
+即可直接访问房主局域网内的其他设备（NAS、打印机、其他电脑）：
+
+```bash
+# 房主（需 root/管理员，自动开启 IPv4 转发）
+frp-sh game create --tun
+# → LAN subnets  : 192.168.1.0/24
+
+# 访客（需 root/管理员，自动添加路由）
+frp-sh game join game-a3f9c2 --tun
+# → 路由 192.168.1.0/24 → frp1 已添加
+# 之后可 ping / 访问房主局域网内设备
+```
+
+注意事项：
+
+- 需要 root/管理员权限（改路由、开转发）
+- 若访客本机与房主在同一网段（如双方都是 192.168.1.0/24），该子网会被自动跳过
+  以避免路由冲突（输出会提示 `跳过与本地同网段的房主子网`）
+- 访问的是房主**当前所在**的局域网；房主换网络后重新 create 即可刷新
 
 ## 退出方式
 

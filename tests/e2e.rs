@@ -57,7 +57,11 @@ async fn create_room(cfg: &Config) -> String {
         .learn_public_addr(engine.socket(), cfg.signaling_udp_addr().unwrap(), &token)
         .await
         .unwrap();
-    let resp = client.create_room("test", 120, my_ext, None).await.unwrap();
+    let lan = utils::lan_socket_addrs(engine.local_addr().unwrap().port());
+    let resp = client
+        .create_room("test", 120, my_ext, None, lan, Vec::new())
+        .await
+        .unwrap();
     resp.room_id
 }
 
@@ -212,12 +216,18 @@ async fn room_lifecycle_api() {
         .await
         .unwrap();
 
-    let created = client.create_room("api", 60, my_ext, None).await.unwrap();
+    let created = client
+        .create_room("api", 60, my_ext, None, Vec::new(), Vec::new())
+        .await
+        .unwrap();
     let info = client.get_room(&created.room_id).await.unwrap();
     assert_eq!(info.host_addr, my_ext);
     assert!(info.guest_addr.is_none());
 
-    let joined = client.join_room(&created.room_id, my_ext).await.unwrap();
+    let joined = client
+        .join_room(&created.room_id, my_ext, Vec::new())
+        .await
+        .unwrap();
     assert_eq!(joined.host_addr, my_ext);
     let info = client.get_room(&created.room_id).await.unwrap();
     assert_eq!(info.guest_addr, Some(my_ext));

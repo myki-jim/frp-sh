@@ -27,13 +27,18 @@ impl SignalingClient {
     }
 
     /// 注册房间。`addr` 是本机通过 UDP 探测得到的公网地址；
-    /// `tun_ip` 为虚拟网卡模式时通告的虚拟 IP（可选）。
+    /// `tun_ip` 为虚拟网卡模式时通告的虚拟 IP（可选）；
+    /// `host_lan` 为本机局域网打洞地址（同局域网直连）；
+    /// `host_subnets` 为本机局域网子网 CIDR（--tun 时访客据此访问房主局域网）。
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_room(
         &self,
         prefix: &str,
         ttl: u64,
         addr: SocketAddr,
         tun_ip: Option<String>,
+        host_lan: Vec<SocketAddr>,
+        host_subnets: Vec<String>,
     ) -> Result<CreateRoomResponse> {
         let resp = self
             .http
@@ -43,6 +48,8 @@ impl SignalingClient {
                 ttl,
                 addr,
                 tun_ip,
+                host_lan,
+                host_subnets,
             })
             .send()
             .await
@@ -58,12 +65,17 @@ impl SignalingClient {
             .map_err(|e| FrpError::Signaling(format!("bad create response: {e}")))
     }
 
-    /// 访客登记加入房间，返回房主公网地址。
-    pub async fn join_room(&self, room_id: &str, addr: SocketAddr) -> Result<JoinRoomResponse> {
+    /// 访客登记加入房间，返回房主公网地址。`addr_lan` 为本机局域网打洞地址。
+    pub async fn join_room(
+        &self,
+        room_id: &str,
+        addr: SocketAddr,
+        addr_lan: Vec<SocketAddr>,
+    ) -> Result<JoinRoomResponse> {
         let resp = self
             .http
             .post(format!("{}/room/{}/join", self.base_url, room_id))
-            .json(&JoinRoomRequest { addr })
+            .json(&JoinRoomRequest { addr, addr_lan })
             .send()
             .await
             .map_err(|e| FrpError::Signaling(format!("join room: {e}")))?;
@@ -113,12 +125,22 @@ impl SignalingClient {
         }
     }
 
-    /// 房主刷新自己的公网地址（重连时 NAT 映射可能已过期）。
-    pub async fn refresh_room(&self, room_id: &str, addr: SocketAddr) -> Result<()> {
+    /// 房主刷新自己的公网地址与局域网信息（重连时 NAT 映射可能已过期）。
+    pub async fn refresh_room(
+        &self,
+        room_id: &str,
+        addr: SocketAddr,
+        host_lan: Vec<SocketAddr>,
+        host_subnets: Vec<String>,
+    ) -> Result<()> {
         let resp = self
             .http
             .post(format!("{}/room/{}/refresh", self.base_url, room_id))
-            .json(&RefreshRoomRequest { addr })
+            .json(&RefreshRoomRequest {
+                addr,
+                host_lan,
+                host_subnets,
+            })
             .send()
             .await
             .map_err(|e| FrpError::Signaling(format!("refresh room: {e}")))?;
