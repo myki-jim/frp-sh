@@ -77,17 +77,22 @@ async fn run_data_plane(
     mode: ForwardMode,
 ) -> anyhow::Result<()> {
     if let Some(o) = tun {
+        // 设备名按角色区分（双端同机时不冲突）
+        let dev_name = match mode {
+            ForwardMode::Host { .. } => "frp0",
+            ForwardMode::Guest { .. } => "frp1",
+        };
         let dev = crate::p2p::tun::create(&crate::p2p::tun::TunConfig {
-            name: "frp0".into(),
+            name: dev_name.into(),
             ip: o.ip.clone(),
             netmask: o.netmask.clone(),
             mtu: o.mtu,
         })?;
         println!(
-            ">>> 虚拟网卡模式: IP {} / {} (MTU {})",
+            ">>> 虚拟网卡模式: IP {} / {} (MTU {}, 设备 {dev_name})",
             o.ip, o.netmask, o.mtu
         );
-        println!("    访客现可访问本虚拟网段（如 ping {}）", o.ip);
+        println!("    对端现可访问本虚拟网段（如 ping {}）", o.ip);
         crate::p2p::tun::run(transport, dev).await?;
         return Ok(());
     }
