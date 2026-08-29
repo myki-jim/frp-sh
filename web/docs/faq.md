@@ -99,10 +99,23 @@ NAT 映射有超时（通常 30~120s）。frp-sh 每秒互发 keepalive ACK 帧�
 
 可以，用 **`lan` 系列**（组网，类 Tailscale）。房主 `frp-sh lan create` 自动通告局域网
 子网（如 `192.168.1.0/24`）并开启 IPv4 转发，访客 `frp-sh lan join` 自动添加经虚拟
-网卡的路由，之后即可直接 ping / 访问房主局域网内的设备（需双方 root/管理员权限）。
-若双方在同一网段，该子网会被自动跳过以避免路由冲突。
+网卡的路由，之后即可直接 ping / 访问房主局域网内的设备。若双方在同一网段，该子网
+会被自动跳过以避免路由冲突。
 
 `game` / `dev` 系列是纯端口转发，不提供访问对方局域网的能力。
+
+### Windows / macOS 上 lan 模式需要管理员权限吗？
+
+需要。创建虚拟网卡、设置 IP、添加路由都属于特权操作。为免去手动「右键以管理员身份
+运行」的麻烦：
+
+- **Windows**：直接运行 `frp-sh lan create/join` 即可——程序检测到权限不足时会
+  自动弹出 UAC 提权窗口，点一次「是」就以管理员继续运行（首次需确认，之后每次运行
+  仍会弹一次 UAC 确认）
+- **macOS / Linux**：用 `sudo frp-sh lan create/join` 运行
+- Windows 的 `wintun.dll` 由安装脚本自动下载（`irm https://frp.sh/install.ps1 | iex`）
+
+`game` / `dev` 系列是纯端口转发，**不需要**管理员权限。
 
 ### 为什么默认端口是 25565？是 Minecraft 的吗？
 

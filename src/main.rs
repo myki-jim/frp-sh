@@ -29,6 +29,16 @@ async fn real_main() -> anyhow::Result<()> {
         command, config, ..
     } = cli;
 
+    // lan 组网需要管理员/root（创建虚拟网卡、设 IP、加路由）。
+    // 未提权时：Windows 自动弹 UAC 以管理员重启自身（用户点一次"是"）；
+    // macOS/Linux 提示用 sudo。
+    if frp_sh::commands::needs_elevation(&command) && !frp_sh::commands::is_elevated() {
+        if frp_sh::commands::handle_elevation(&command)? {
+            return Ok(()); // 已在提权子进程中继续运行，本进程结束
+        }
+        std::process::exit(1);
+    }
+
     match command {
         Some(Commands::Serve { addr, relay_addr }) => {
             frp_sh::commands::run_serve(addr, relay_addr).await?;

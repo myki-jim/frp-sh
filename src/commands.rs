@@ -81,6 +81,103 @@ fn reconnect_delay(attempt: u64) -> u64 {
     exp.min(15)
 }
 
+// ---------- 权限处理：lan 组网需要管理员/root ----------
+
+/// 该命令是否需要管理员/root 权限（Windows：UAC 提权；macOS/Linux：sudo）。
+pub fn needs_elevation(command: &Option<crate::cli::Commands>) -> bool {
+    matches!(command, Some(crate::cli::Commands::Lan { .. }))
+}
+
+/// 当前进程是否已具备管理员/root 权限。
+pub fn is_elevated() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        // IsUserAnAdmin：判断当前进程是否提升（UAC 提权后返回 true）
+        unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 非 Windows：检查 euid 是否为 0（root）
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+            .unwrap_or(false)
+    }
+}
+
+/// 需要提权但当前未提权时的处理：
+///
+/// - Windows：通过 UAC 以管理员身份重启自身（用户点一次"是"即可），
+///   原进程等待子进程结束后透传退出码，返回 `true`。
+/// - macOS/Linux：打印 `sudo` 提示，返回 `false`（调用方应退出）。
+pub fn handle_elevation(_command: &Option<crate::cli::Commands>) -> anyhow::Result<bool> {
+    #[cfg(target_os = "windows")]
+    {
+        relaunch_elevated()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        println!(
+            "\nlan 组网模式需要 root 权限（创建虚拟网卡）。\n请用 sudo 运行，例如：\n  sudo frp-sh lan create\n"
+        );
+        Ok(false)
+    }
+}
+
+/// Windows：以管理员身份（UAC）重启自身并等待其退出。
+#[cfg(target_os = "windows")]
+fn relaunch_elevated() -> anyhow::Result<bool> {
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, WaitForSingleObject, INFINITE,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
+
+    let exe = std::env::current_exe()?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cmdline = args.join(" ");
+    let cwd = std::env::current_dir()?;
+
+    let mut file: Vec<u16> = exe.to_string_lossy().encode_utf16().collect();
+    file.push(0);
+    let mut params: Vec<u16> = cmdline.encode_utf16().collect();
+    params.push(0);
+    let mut verb: Vec<u16> = "runas".encode_utf16().collect();
+    verb.push(0);
+    let mut dir: Vec<u16> = cwd.to_string_lossy().encode_utf16().collect();
+    dir.push(0);
+
+    let mut si: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    si.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    si.fMask = SEE_MASK_NOCLOSEPROCESS;
+    si.lpVerb = verb.as_ptr();
+    si.lpFile = file.as_ptr();
+    si.lpParameters = if cmdline.is_empty() {
+        std::ptr::null()
+    } else {
+        params.as_ptr()
+    };
+    si.lpDirectory = dir.as_ptr();
+    si.nShow = 1; // SW_SHOWNORMAL
+
+    println!("需要管理员权限，正在请求 UAC 提权（请在弹出的窗口点击“是”）...");
+    let launched = unsafe { ShellExecuteExW(&mut si) };
+    if launched == 0 || si.hProcess.is_null() {
+        eprintln!("提权失败：可能取消了 UAC 提示。请右键“以管理员身份运行”后重试。");
+        return Ok(false);
+    }
+    unsafe {
+        WaitForSingleObject(si.hProcess, INFINITE);
+        let mut code: u32 = 0;
+        GetExitCodeProcess(si.hProcess, &mut code);
+        std::process::exit(code as i32);
+    }
+    #[allow(unreachable_code)]
+    Ok(true)
+}
+
 /// 打印直连建立信息，并区分本地局域网直连（同 WiFi/网线）与公网打洞直连。
 fn announce_direct(peer: SocketAddr) {
     if utils::is_local_ip(peer.ip()) {

@@ -101,10 +101,24 @@ no server involved, lowest latency (great for gaming).
 Yes — use the **`lan` series** (mesh, Tailscale-like). The host's `frp-sh lan create`
 advertises its LAN subnets (e.g. `192.168.1.0/24`) and enables IPv4 forwarding; the
 guest's `frp-sh lan join` automatically adds routes via its virtual NIC, then can
-ping / access devices on the host's LAN (both sides need root/admin). If both sides
-are on the same subnet, that subnet is skipped automatically to avoid route conflicts.
+ping / access devices on the host's LAN. If both sides are on the same subnet, that
+subnet is skipped automatically to avoid route conflicts.
 
 `game` / `dev` are pure port forwarding and do not provide access to the peer's LAN.
+
+### Do Windows / macOS need admin rights for `lan` mode?
+
+Yes. Creating the virtual NIC, setting IPs, and adding routes are privileged
+operations. To avoid manually right-clicking "Run as administrator":
+
+- **Windows**: just run `frp-sh lan create/join` — when the program detects
+  insufficient rights it pops a UAC elevation prompt automatically; click "Yes"
+  once and it continues as admin (a UAC confirmation appears on each run)
+- **macOS / Linux**: run `sudo frp-sh lan create/join`
+- Windows `wintun.dll` is downloaded automatically by the installer
+  (`irm https://frp.sh/install.ps1 | iex`)
+
+`game` / `dev` are pure port forwarding and need **no** admin rights.
 
 ### Why is the default port 25565? Is that Minecraft's?
 
