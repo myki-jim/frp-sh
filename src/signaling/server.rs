@@ -63,6 +63,7 @@ pub fn new_state() -> SharedState {
 pub async fn run_http(listener: TcpListener, state: SharedState) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/version", get(version_info))
         .route("/room/create", post(create_room))
         .route("/room/{id}/join", post(join_room))
         .route("/room/{id}/refresh", post(refresh_room))
@@ -70,6 +71,14 @@ pub async fn run_http(listener: TcpListener, state: SharedState) -> anyhow::Resu
         .with_state(state);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// 返回服务器版本与线协议版本（客户端据此做版本冲突检查）。
+async fn version_info() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "version": crate::version::VERSION,
+        "protocol": crate::version::PROTOCOL_VERSION,
+    }))
 }
 
 async fn create_room(

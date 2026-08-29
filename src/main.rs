@@ -29,6 +29,13 @@ async fn real_main() -> anyhow::Result<()> {
         command, config, ..
     } = cli;
 
+    // 版本横幅：每次运行显示当前版本与线协议版本
+    println!(
+        "frp-sh v{} (protocol {})",
+        frp_sh::version::VERSION,
+        frp_sh::version::PROTOCOL_VERSION
+    );
+
     // lan 组网需要管理员/root（创建虚拟网卡、设 IP、加路由）。
     // 未提权时：Windows 自动弹 UAC 以管理员重启自身（用户点一次"是"）；
     // macOS/Linux 提示用 sudo。
@@ -38,6 +45,10 @@ async fn real_main() -> anyhow::Result<()> {
         }
         std::process::exit(1);
     }
+
+    // 更新检查（serve 只提示不询问；其余命令交互询问）
+    let interactive = !matches!(command, Some(Commands::Serve { .. }));
+    frp_sh::update::maybe_check_update(interactive).await?;
 
     match command {
         Some(Commands::Serve { addr, relay_addr }) => {

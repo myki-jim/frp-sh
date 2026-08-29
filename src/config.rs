@@ -70,6 +70,11 @@ impl Config {
         Self::default_path().map(|p| p.exists()).unwrap_or(false)
     }
 
+    /// 默认配置目录（存放 config.toml / identity / 更新检查缓存等）。
+    pub fn default_dir() -> Option<PathBuf> {
+        Self::default_path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    }
+
     /// 从 TOML 文件加载；未提供路径时使用内置默认值（127.0.0.1:8080 / 8081）。
     pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
         match path {

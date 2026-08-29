@@ -11,4 +11,6 @@ pub mod p2p;
 pub mod room;
 pub mod signaling;
 pub mod tunnel;
+pub mod update;
 pub mod utils;
+pub mod version;

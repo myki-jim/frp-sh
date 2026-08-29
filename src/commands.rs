@@ -433,6 +433,25 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 版本冲突控制：校验与信令服务器的线协议版本一致。
+///
+/// - 服务器有 `/version` 且协议不一致 → 拒绝运行（提示升级）
+/// - 旧服务器无 `/version`（404）→ 视为协议 1，向后兼容
+async fn check_server_protocol(signaling: &SignalingClient) -> anyhow::Result<()> {
+    let Some((server_ver, server_proto)) = signaling.get_version().await? else {
+        return Ok(()); // 旧服务器（无 /version），协议 1 兼容
+    };
+    if server_proto != crate::version::PROTOCOL_VERSION {
+        anyhow::bail!(
+            "与信令服务器版本冲突：服务器 {server_ver} (protocol v{server_proto})，\
+             本机 v{} (protocol v{})。请升级 frp-sh 或服务器后重试。",
+            crate::version::VERSION,
+            crate::version::PROTOCOL_VERSION
+        );
+    }
+    Ok(())
+}
+
 // ---------- game create ----------
 
 /// `game create`：注册房间，进入房主会话；返回房间号。
@@ -454,6 +473,8 @@ pub async fn run_create(
     expose_lan: bool,
 ) -> anyhow::Result<String> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
+    // 版本冲突控制：与信令服务器的线协议必须一致（不一致拒绝运行）
+    check_server_protocol(&signaling).await?;
     let engine = PunchEngine::bind().await?;
     let token = utils::rand_token();
     let my_ext = signaling
@@ -774,6 +795,9 @@ pub async fn run_join(
     requested_ip: Option<String>,
     expose_lan: bool,
 ) -> anyhow::Result<()> {
+    let signaling = SignalingClient::new(&cfg.signaling_addr);
+    // 版本冲突控制：与信令服务器的线协议必须一致（不一致拒绝运行）
+    check_server_protocol(&signaling).await?;
     if !utils::validate_room_id(&room_id) {
         anyhow::bail!("invalid room id: {room_id} (expected format like game-a3f9c2)");
     }

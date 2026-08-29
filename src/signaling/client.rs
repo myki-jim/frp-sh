@@ -169,6 +169,31 @@ impl SignalingClient {
         }
     }
 
+    /// 查询服务器版本与线协议版本。
+    ///
+    /// 旧服务器没有 `/version` 端点（404）时返回 `None`（按协议 1 兼容）。
+    pub async fn get_version(&self) -> Result<Option<(String, u32)>> {
+        let resp = self
+            .http
+            .get(format!("{}/version", self.base_url))
+            .send()
+            .await
+            .map_err(|e| FrpError::Signaling(format!("get version: {e}")))?;
+        match resp.status() {
+            StatusCode::NOT_FOUND => Ok(None),
+            s if !s.is_success() => Err(FrpError::Signaling(format!("get version: HTTP {s}"))),
+            _ => {
+                let v: serde_json::Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| FrpError::Signaling(format!("bad version response: {e}")))?;
+                let ver = v.get("version").and_then(|x| x.as_str()).unwrap_or("");
+                let proto = v.get("protocol").and_then(|x| x.as_u64()).unwrap_or(0);
+                Ok(Some((ver.to_string(), proto as u32)))
+            }
+        }
+    }
+
     /// 通过服务器 UDP 探测端口学习本机公网地址（STUN 简化版）。
     ///
     /// 注意：必须使用与后续打洞**相同的 socket**（同一本地端口），
