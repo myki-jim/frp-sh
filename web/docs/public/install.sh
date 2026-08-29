@@ -14,7 +14,7 @@
 #   FRPSH_INSTALL_DIR=路径   覆盖安装目录（默认 /usr/local/bin）
 set -e
 
-REPO="${FRPSH_REPO:-frp-sh/frp-sh}"
+REPO="${FRPSH_REPO:-myki-jim/frp-sh}"
 BASE="https://github.com/${REPO}/releases/latest/download"
 DEST_DIR="${FRPSH_INSTALL_DIR:-/usr/local/bin}"
 DEST="${DEST_DIR}/frp-sh"

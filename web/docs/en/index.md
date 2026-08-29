@@ -14,7 +14,7 @@ hero:
       link: /en/architecture
     - theme: alt
       text: GitHub
-      link: https://github.com/frp-sh/frp-sh
+      link: https://github.com/myki-jim/frp-sh
 
 features:
   - title:  Room-based social networking

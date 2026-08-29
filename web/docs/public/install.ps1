@@ -13,7 +13,7 @@
 #   $env:FRPSH_INSTALL_DIR 覆盖安装目录
 $ErrorActionPreference = 'Stop'
 
-$repo = if ($env:FRPSH_REPO) { $env:FRPSH_REPO } else { 'frp-sh/frp-sh' }
+$repo = if ($env:FRPSH_REPO) { $env:FRPSH_REPO } else { 'myki-jim/frp-sh' }
 $base = "https://github.com/$repo/releases/latest/download"
 $destDir = if ($env:FRPSH_INSTALL_DIR) { $env:FRPSH_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'frp-sh' }
 $exe = Join-Path $destDir 'frp-sh.exe'

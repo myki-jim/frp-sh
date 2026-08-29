@@ -7,7 +7,7 @@ const zhNav = [
   { text: '命令参考', link: '/cli' },
   { text: '网络原理', link: '/architecture' },
   { text: 'FAQ', link: '/faq' },
-  { text: 'GitHub', link: 'https://github.com/frp-sh/frp-sh' },
+  { text: 'GitHub', link: 'https://github.com/myki-jim/frp-sh' },
 ]
 
 const zhSidebar = [
@@ -37,7 +37,7 @@ const enNav = [
   { text: 'CLI', link: '/en/cli' },
   { text: 'Architecture', link: '/en/architecture' },
   { text: 'FAQ', link: '/en/faq' },
-  { text: 'GitHub', link: 'https://github.com/frp-sh/frp-sh' },
+  { text: 'GitHub', link: 'https://github.com/myki-jim/frp-sh' },
 ]
 
 const enSidebar = [
@@ -101,8 +101,8 @@ export default withMermaid({
   themeConfig: {
     logo: { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>' },
     siteTitle: 'frp-sh',
-    socialLinks: [{ icon: 'github', link: 'https://github.com/frp-sh/frp-sh' }],
-    editLink: { pattern: 'https://github.com/frp-sh/frp-sh/edit/main/docs/:path', text: '在 GitHub 上编辑此页' },
+    socialLinks: [{ icon: 'github', link: 'https://github.com/myki-jim/frp-sh' }],
+    editLink: { pattern: 'https://github.com/myki-jim/frp-sh/edit/main/docs/:path', text: '在 GitHub 上编辑此页' },
     footer: { message: 'frp-sh · 社交化 P2P 打洞工具', copyright: 'MIT License' },
   },
   mermaid: { theme: 'default' },
