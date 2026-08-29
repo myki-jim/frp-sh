@@ -41,49 +41,88 @@ relay_addr     = "YOUR-SERVER-IP:8081"          # TCP relay
 Use it with `--config`:
 
 ```bash
-frp-sh --config config/server.toml game create
+frp-sh --config config/server.toml lan create
 ```
 
-## Step 3: Host creates a room
+## Step 3: Pick your series
 
-On the machine running the game/service:
+frp-sh has three usage series. This tutorial leads with **mesh (`lan`)**, the most
+powerful, most general mode:
+
+| Series | Command | Use case |
+|--------|---------|----------|
+| **Mesh (recommended)** | `frp-sh lan create/join` | reach the peer's whole machine + their entire LAN (Tailscale-like) |
+| **Game** | `frp-sh game create/join` | multiplayer games like Minecraft, pure port forwarding (default 25565) |
+| **Dev** | `frp-sh dev create/join` | development, application-level port forwarding |
+
+### Mesh: host creates a room (`lan`)
+
+On the host machine:
 
 ```bash
-frp-sh game create --service 127.0.0.1:25565
+frp-sh lan create
 ```
 
-`--service` is the host's local service address (default `127.0.0.1:25565`, the Minecraft default port; use `--service` to change it). Example output:
+Example output:
 
 ```text
-  Room created : game-a3f9c2
+  Room created : lan-a3f9c2
   Signaling    : http://YOUR-SERVER-IP:8080
   Your ID      : 123e4567-e89b-12d3-a456-426614174000
-  Local service: 127.0.0.1:25565
+  LAN addrs    : 192.168.1.5:51234
+  Vnet IP      : 10.66.0.1（对端可 ping/直连此 IP）
+  Mode         : LAN mesh (virtual NIC)
+  LAN subnets  : 192.168.1.0/24（访客加入后可访问）
   Waiting for a guest to join ...
 ```
 
-Send **`game-a3f9c2`** to your friend.
+Send **`lan-a3f9c2`** to your friend.
 
-## Step 4: Guest joins
+### Mesh: guest joins (`lan`)
 
 On the friend's machine:
 
 ```bash
+frp-sh lan join lan-a3f9c2
+```
+
+The guest gets a stable virtual IP derived from its device ID (e.g. `10.66.0.42`).
+After joining:
+
+- `ping 10.66.0.1` / SSH / file sharing reach the host's whole machine
+- routes are added automatically to reach the host's LAN devices (NAS, printers, etc.)
+- root/admin is required (virtual NIC creation, routing changes)
+
+```text
+  Joined room : lan-a3f9c2
+  Host address: YOUR-SERVER-IP:xxx
+  Host vnet IP: 10.66.0.1
+  Host LAN     : 192.168.1.0/24
+  Mode         : LAN mesh (virtual NIC)
+  Punching through NAT ...
+
+>>> 本地局域网直连 (LAN direct) with 192.168.1.5:51234   ← same-WiFi instant link!
+```
+
+## Step 4: Game / Dev series (pure port forwarding)
+
+If you only need to forward one port, use `game` (games) or `dev` (development):
+
+```bash
+# host: forward local Minecraft (default 25565)
+frp-sh game create --service 127.0.0.1:25565
+
+# guest: connecting to local 25565 reaches the host's game server
 frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565
 ```
 
-`--listen` is the local port the guest listens on (default `127.0.0.1:25565`). Example output:
-
-```text
-  Joined room : game-a3f9c2
-  Host address: YOUR-SERVER-IP:xxx
-  Local listen: 127.0.0.1:25565
-  Punching through NAT ...
-
->>> P2P direct link established with YOUR-SERVER-IP:xxx   ← punch succeeded!
+```bash
+# dev: share a local web service on 8080 with a teammate
+frp-sh dev create --service 127.0.0.1:8080
+frp-sh dev join dev-a3f9c2 --listen 127.0.0.1:8080
 ```
 
-Now connecting to `127.0.0.1:25565` on the friend's machine reaches the host's `127.0.0.1:25565`.
+`game` / `dev` are pure port forwarding — no virtual NIC, no admin rights needed.
 
 If punching fails, it falls back automatically:
 
@@ -106,8 +145,9 @@ No manual action needed; the retry backoff is 2s, 4s, 8s... capped at 15s.
 
 | Role | Minimal command | Notes |
 |------|-----------------|-------|
-| Host | `frp-sh game create` | every option has a default |
-| Guest | `frp-sh game join game-xxxxxx` | only the room code is required |
+| Mesh host | `frp-sh lan create` | virtual-NIC whole-machine mesh (needs root/admin) |
+| Mesh guest | `frp-sh lan join lan-xxxxxx` | only the room code is required |
+| Game host | `frp-sh game create` | pure port forwarding (default 25565) |
 | Server | `frp-sh serve` | listens on 0.0.0.0:8080/8081 |
 
 ## Next Steps

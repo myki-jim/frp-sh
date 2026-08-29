@@ -358,15 +358,16 @@ pub async fn run_create(
     }
     if let Some(t) = &tun {
         println!("  Vnet IP      : {}（对端可 ping/直连此 IP）", t.ip);
-        println!("  Mode         : virtual NIC (--tun)");
+        println!("  Mode         : LAN mesh (virtual NIC)");
         if !lan_subnets.is_empty() {
             println!(
-                "  LAN subnets  : {}（--tun 时访客可访问）",
+                "  LAN subnets  : {}（访客加入后可访问）",
                 lan_subnets.join(", ")
             );
         }
     } else {
         println!("  Local service: {service}");
+        println!("  Mode         : port forwarding");
     }
     if key.is_some() {
         println!("  Encryption   : on (--key)");
@@ -626,7 +627,7 @@ pub async fn run_join(
     }
     if let Some(t) = &tun {
         println!(
-            "  Vnet IP      : {}（朋友可用此 IP 直连你的虚拟网卡）",
+            "  Vnet IP      : {}（组网虚拟 IP，朋友可直连你的整机）",
             t.ip
         );
     }
@@ -747,9 +748,10 @@ pub async fn guest_session(
                     println!("  Host LAN     : {}", info.host_subnets.join(", "));
                 }
                 if tun.is_some() {
-                    println!("  Mode         : virtual NIC (--tun)");
+                    println!("  Mode         : LAN mesh (virtual NIC)");
                 } else {
                     println!("  Local listen: {listen}");
+                    println!("  Mode         : port forwarding");
                 }
                 if key.is_some() {
                     println!("  Encryption   : on (--key)");

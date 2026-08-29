@@ -98,11 +98,13 @@ no server involved, lowest latency (great for gaming).
 
 ### Can the guest reach other devices on the host's LAN (NAS/printer)?
 
-Yes. Use `--tun` on both sides: the host advertises its LAN subnets (e.g.
-`192.168.1.0/24`) and enables IPv4 forwarding; the guest automatically adds routes via
-its virtual NIC, then can ping / access devices on the host's LAN (both sides need
-root/admin). If both sides are on the same subnet, that subnet is skipped automatically
-to avoid route conflicts.
+Yes — use the **`lan` series** (mesh, Tailscale-like). The host's `frp-sh lan create`
+advertises its LAN subnets (e.g. `192.168.1.0/24`) and enables IPv4 forwarding; the
+guest's `frp-sh lan join` automatically adds routes via its virtual NIC, then can
+ping / access devices on the host's LAN (both sides need root/admin). If both sides
+are on the same subnet, that subnet is skipped automatically to avoid route conflicts.
+
+`game` / `dev` are pure port forwarding and do not provide access to the peer's LAN.
 
 ### Why is the default port 25565? Is that Minecraft's?
 

@@ -35,81 +35,143 @@ pub enum Commands {
     },
     /// 交互式配置信令服务器（首次运行向导）
     Config,
-    /// 社交组网子命令
+    /// 游戏联机：应用层端口转发（如 Minecraft），纯转发不组网
     Game {
         #[command(subcommand)]
         cmd: GameCmd,
     },
+    /// 开发调试：应用层端口转发（任意 TCP 服务）
+    Dev {
+        #[command(subcommand)]
+        cmd: DevCmd,
+    },
+    /// 组网（类 Tailscale）：虚拟网卡整机入网，可访问对方整个局域网
+    Lan {
+        #[command(subcommand)]
+        cmd: LanCmd,
+    },
+}
+
+/// 端口转发模式的公共参数（game / dev 共用）。
+#[derive(clap::Args, Debug)]
+pub struct ForwardCreateArgs {
+    /// 房间前缀（game 系列默认 game；dev 系列默认 dev）
+    #[arg(short, long)]
+    pub prefix: Option<String>,
+    /// 房间有效时长（秒），默认 12 小时
+    #[arg(short, long, default_value_t = 12 * 3600)]
+    pub ttl: u64,
+    /// 本机服务地址（隧道打通后向其转发流量）
+    #[arg(long, default_value = "127.0.0.1:25565")]
+    pub service: String,
+    /// 跳过打洞，直接使用中继
+    #[arg(long)]
+    pub relay: bool,
+    /// 共享口令：双方使用相同口令即启用端到端加密（ChaCha20-Poly1305）
+    #[arg(long)]
+    pub key: Option<String>,
+    /// 最多接受的连接数（0 = 无限，默认无限）
+    #[arg(long, default_value_t = 0)]
+    pub max_conns: u64,
+    /// 打洞端口散布范围（轻量端口预测，默认 ±2）
+    #[arg(long, default_value_t = 2)]
+    pub spread: u32,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ForwardJoinArgs {
+    /// 房间号，如 game-a3f9c2
+    pub room_id: String,
+    /// 强制使用中继模式
+    #[arg(short, long)]
+    pub relay: bool,
+    /// 本地监听地址（玩家/程序连接此端口）
+    #[arg(long, default_value = "127.0.0.1:25565")]
+    pub listen: String,
+    /// 共享口令：与房主一致即启用端到端加密
+    #[arg(long)]
+    pub key: Option<String>,
+    /// 最多建立的连接数（0 = 无限，默认无限）
+    #[arg(long, default_value_t = 0)]
+    pub max_conns: u64,
+    /// 打洞端口散布范围（默认 ±2）
+    #[arg(long, default_value_t = 2)]
+    pub spread: u32,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum GameCmd {
     /// 创建房间（房主）
-    Create {
-        /// 房间前缀，如 game / dev / lan
-        #[arg(short, long, default_value = "game")]
-        prefix: String,
-        /// 房间有效时长（秒），默认 12 小时
-        #[arg(short, long, default_value_t = 12 * 3600)]
-        ttl: u64,
-        /// 房主本地服务地址（隧道打通后向其转发流量）
-        #[arg(long, default_value = "127.0.0.1:25565")]
-        service: String,
-        /// 跳过打洞，直接使用中继
-        #[arg(long)]
-        relay: bool,
-        /// 共享口令：双方使用相同口令即启用端到端加密（ChaCha20-Poly1305）
-        #[arg(long)]
-        key: Option<String>,
-        /// 最多接受的连接数（0 = 无限，默认无限）
-        #[arg(long, default_value_t = 0)]
-        max_conns: u64,
-        /// 打洞端口散布范围（轻量端口预测，默认 ±2）
-        #[arg(long, default_value_t = 2)]
-        spread: u32,
-        /// 虚拟网卡模式：创建 TUN 设备接入对端虚拟局域网（替代端口转发，需 root/管理员）
-        #[arg(long)]
-        tun: bool,
-        /// TUN 虚拟 IP（默认房主 10.66.0.1）
-        #[arg(long)]
-        tun_ip: Option<String>,
-        /// TUN 子网掩码
-        #[arg(long, default_value = "255.255.255.0")]
-        tun_netmask: String,
-        /// TUN MTU
-        #[arg(long, default_value_t = 1400)]
-        tun_mtu: u16,
-    },
+    Create(ForwardCreateArgs),
     /// 加入房间（访客）
-    Join {
-        /// 房间号，如 game-a3f9c2
-        room_id: String,
-        /// 强制使用中继模式
-        #[arg(short, long)]
-        relay: bool,
-        /// 访客本地监听地址（玩家连接此端口）
-        #[arg(long, default_value = "127.0.0.1:25565")]
-        listen: String,
-        /// 共享口令：与房主一致即启用端到端加密
-        #[arg(long)]
-        key: Option<String>,
-        /// 最多建立的连接数（0 = 无限，默认无限）
-        #[arg(long, default_value_t = 0)]
-        max_conns: u64,
-        /// 打洞端口散布范围（默认 ±2）
-        #[arg(long, default_value_t = 2)]
-        spread: u32,
-        /// 虚拟网卡模式：创建 TUN 设备接入对端虚拟局域网（替代端口转发，需 root/管理员）
-        #[arg(long)]
-        tun: bool,
-        /// TUN 虚拟 IP（默认访客 10.66.0.2）
-        #[arg(long)]
-        tun_ip: Option<String>,
-        /// TUN 子网掩码
-        #[arg(long, default_value = "255.255.255.0")]
-        tun_netmask: String,
-        /// TUN MTU
-        #[arg(long, default_value_t = 1400)]
-        tun_mtu: u16,
-    },
+    Join(ForwardJoinArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DevCmd {
+    /// 创建房间（房主）
+    Create(ForwardCreateArgs),
+    /// 加入房间（访客）
+    Join(ForwardJoinArgs),
+}
+
+/// 组网模式公共参数（lan）。
+#[derive(clap::Args, Debug)]
+pub struct LanCreateArgs {
+    /// 房间前缀（默认 lan）
+    #[arg(short, long)]
+    pub prefix: Option<String>,
+    /// 房间有效时长（秒），默认 12 小时
+    #[arg(short, long, default_value_t = 12 * 3600)]
+    pub ttl: u64,
+    /// 跳过打洞，直接使用中继
+    #[arg(long)]
+    pub relay: bool,
+    /// 共享口令：双方使用相同口令即启用端到端加密
+    #[arg(long)]
+    pub key: Option<String>,
+    /// 打洞端口散布范围（默认 ±2）
+    #[arg(long, default_value_t = 2)]
+    pub spread: u32,
+    /// 虚拟网卡 IP（默认房主 10.66.0.1）
+    #[arg(long)]
+    pub ip: Option<String>,
+    /// 虚拟网卡子网掩码
+    #[arg(long, default_value = "255.255.255.0")]
+    pub netmask: String,
+    /// 虚拟网卡 MTU
+    #[arg(long, default_value_t = 1400)]
+    pub mtu: u16,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct LanJoinArgs {
+    /// 房间号，如 lan-a3f9c2
+    pub room_id: String,
+    /// 强制使用中继模式
+    #[arg(short, long)]
+    pub relay: bool,
+    /// 共享口令：与房主一致即启用端到端加密
+    #[arg(long)]
+    pub key: Option<String>,
+    /// 打洞端口散布范围（默认 ±2）
+    #[arg(long, default_value_t = 2)]
+    pub spread: u32,
+    /// 虚拟网卡 IP（默认由设备 ID 稳定派生，如 10.66.0.42）
+    #[arg(long)]
+    pub ip: Option<String>,
+    /// 虚拟网卡子网掩码
+    #[arg(long, default_value = "255.255.255.0")]
+    pub netmask: String,
+    /// 虚拟网卡 MTU
+    #[arg(long, default_value_t = 1400)]
+    pub mtu: u16,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LanCmd {
+    /// 创建房间（房主）
+    Create(LanCreateArgs),
+    /// 加入房间（访客）
+    Join(LanJoinArgs),
 }

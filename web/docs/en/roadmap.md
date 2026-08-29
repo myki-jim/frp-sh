@@ -31,7 +31,7 @@ The current version focuses on "simple, robust, good enough". Planned capabiliti
 -  TCP relay fallback (pairing + bidirectional copy + late-direct re-check)
 -  Auto-reconnect with exponential backoff (refreshes public address + room)
 -  Same-LAN auto-direct (advertises LAN addresses, dual-path punching)
--  Virtual NIC mode (`--tun`, layer-2 tunnel, 10.66.0.0/24; guest can reach the host's LAN)
+-  Mesh mode (`lan` series: virtual-NIC whole-machine mesh, 10.66.0.0/24; guest can reach the host's LAN)
 -  Per-device unique ID (UUID) + stable derived virtual IP
 -  Windows compatibility (ICMP poisoning handling, TUN/WinTun)
 -  End-to-end tests and real-NAT verification
