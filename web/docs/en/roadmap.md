@@ -29,7 +29,10 @@ The current version focuses on "simple, robust, good enough". Planned capabiliti
 -  ChaCha20-Poly1305 end-to-end encryption (`--key`)
 -  Sequential multi-connection reuse (`--max-conns`)
 -  TCP relay fallback (pairing + bidirectional copy + late-direct re-check)
--  Windows compatibility (ICMP poisoning handling)
+-  Auto-reconnect with exponential backoff (refreshes public address + room)
+-  Virtual NIC mode (`--tun`, layer-2 tunnel, 10.66.0.0/24)
+-  Per-device unique ID (UUID) + stable derived virtual IP
+-  Windows compatibility (ICMP poisoning handling, TUN/WinTun)
 -  End-to-end tests and real-NAT verification
 
 ## Contributing

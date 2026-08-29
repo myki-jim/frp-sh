@@ -52,11 +52,12 @@ On the machine running the game/service:
 frp-sh game create --service 127.0.0.1:25565
 ```
 
-`--service` is the host's local service address (default `127.0.0.1:25565`). Example output:
+`--service` is the host's local service address (default `127.0.0.1:25565`, the Minecraft default port; use `--service` to change it). Example output:
 
 ```text
   Room created : game-a3f9c2
   Signaling    : http://YOUR-SERVER-IP:8080
+  Your ID      : 123e4567-e89b-12d3-a456-426614174000
   Local service: 127.0.0.1:25565
   Waiting for a guest to join ...
 ```
@@ -92,6 +93,14 @@ If punching fails, it falls back automatically:
 ```
 
 The tunnel still works — traffic just goes through the server (see [Architecture](./architecture)).
+
+After a drop (network jitter, expired NAT mappings), both sides reconnect automatically:
+
+```text
+>>> 连接已断开，2 秒后自动重连（Ctrl-C 退出）...
+```
+
+No manual action needed; the retry backoff is 2s, 4s, 8s... capped at 15s.
 
 ## Minimal Commands
 

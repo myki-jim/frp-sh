@@ -36,11 +36,15 @@ frp-sh game create [options]
 |--------|---------|-------------|
 | `-p, --prefix` | `game` | room prefix (room code = `prefix-6hex`) |
 | `-t, --ttl <sec>` | `43200` (12h) | room lifetime in seconds |
-| `--service <addr>` | `127.0.0.1:25565` | host's local service address |
+| `--service <addr>` | `127.0.0.1:25565` | host's local service address (25565 is the Minecraft default port; use any port) |
 | `--relay` | off | skip punching, use relay directly |
 | `--key <passphrase>` | none | end-to-end encryption (both sides must match) |
 | `--max-conns <N>` | `0` (unlimited) | max connections per session |
 | `--spread <N>` | `2` | punch port spread (±N ports) |
+| `--tun` | off | virtual NIC mode (layer-2 tunnel; peer can reach your virtual IP) |
+| `--tun-ip <IP>` | `10.66.0.1` | virtual NIC IP (stable address in the same subnet) |
+| `--tun-netmask <mask>` | `255.255.255.0` | virtual NIC netmask |
+| `--tun-mtu <N>` | `1400` | virtual NIC MTU |
 
 Examples:
 
@@ -50,6 +54,9 @@ frp-sh game create
 
 # full: encryption + 5-connection cap + wider spread
 frp-sh game create --service 127.0.0.1:25565 --key mypass --max-conns 5 --spread 3
+
+# virtual NIC mode (friends can ping 10.66.0.1 to reach you)
+frp-sh game create --tun
 ```
 
 ## `frp-sh game join <room_id>` — guest joins a room
@@ -62,10 +69,14 @@ frp-sh game join <ROOM_ID> [options]
 |--------|---------|-------------|
 | `room_id` | (required) | room code, e.g. `game-a3f9c2`; format validated as `prefix-6hex` |
 | `-r, --relay` | off | force relay mode (skip punching) |
-| `--listen <addr>` | `127.0.0.1:25565` | local listen address for the guest |
+| `--listen <addr>` | `127.0.0.1:25565` | local listen address for the guest (25565 is the Minecraft default port; use any port) |
 | `--key <passphrase>` | none | encryption passphrase matching the host |
 | `--max-conns <N>` | `0` (unlimited) | max connections per session |
 | `--spread <N>` | `2` | punch port spread |
+| `--tun` | off | virtual NIC mode (IP derived stably from your device ID, e.g. `10.66.0.42`) |
+| `--tun-ip <IP>` | auto-derived | custom virtual NIC IP (same subnet as host) |
+| `--tun-netmask <mask>` | `255.255.255.0` | virtual NIC netmask |
+| `--tun-mtu <N>` | `1400` | virtual NIC MTU |
 
 Examples:
 
@@ -80,6 +91,8 @@ frp-sh game join game-a3f9c2 --relay     # force relay
 | Output | Meaning |
 |--------|---------|
 | `Room created : game-a3f9c2` | host room ready |
+| `Your ID      : <uuid>` | your device unique ID (stored in `%APPDATA%\frp-sh\identity`; derives your stable virtual IP) |
+| `Vnet IP      : 10.66.0.x` | your virtual NIC IP (friends can use this IP to reach you long-term) |
 | `>>> P2P direct link established with <addr>` | **punch succeeded**, P2P direct |
 | `>>> UDP hole punching failed, falling back to relay ...` | punching failed, switching to relay |
 | `>>> late P2P link established with <addr>` | direct link re-captured while waiting on relay |
@@ -88,11 +101,13 @@ frp-sh game join game-a3f9c2 --relay     # force relay
 | `connection N closed` | a tunnel connection ended normally |
 | `max connections (N) reached, ending session` | `--max-conns` exhausted, session ends |
 | `session ended by peer` | the peer closed the session |
+| `>>> 连接已断开，N 秒后自动重连...` | link dropped, auto-reconnecting with backoff (2s, 4s, 8s... capped at 15s) |
 
 ## Exiting
 
-- **Host**: `Ctrl-C` ends the session and deletes the room
-- **Guest**: `Ctrl-C` ends the session; or it ends automatically when `--max-conns` is exhausted
+- **Auto-reconnect**: dropped links (network jitter, expired NAT mappings, service restarts) reconnect automatically
+- **Host**: `Ctrl-C` ends the session and deletes the room; the session also ends when the room expires
+- **Guest**: `Ctrl-C` ends the session; it also ends when the room is deleted or expires
 
 ## Common errors
 

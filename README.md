@@ -28,6 +28,10 @@ frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565 --key mypass
 - 打洞失败自动回退中继；`--relay` 强制中继
 - `--key` 启用 ChaCha20-Poly1305 端到端加密
 - `--max-conns N` 限制连接数（默认无限）；`--spread N` 调打洞散布
+- `--tun` 虚拟网卡模式：双方建立二层隧道，朋友可直连你的虚拟 IP（如 `ping 10.66.0.1`）
+- 断线自动重连：网络抖动 / NAT 映射过期后按 2s、4s、8s…退避自动重连（上限 15s）
+- 每台设备有唯一 ID（UUID），虚拟网卡 IP 由 ID 稳定派生，长期不变
+- 默认端口 `25565` 是 Minecraft 的默认端口，可通过 `--service` / `--listen` 改成任意端口
 - 详见文档：https://frp.sh
 
 ## 文档

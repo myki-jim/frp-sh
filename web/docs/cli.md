@@ -36,11 +36,15 @@ frp-sh game create [选项]
 |------|--------|------|
 | `-p, --prefix` | `game` | 房间前缀（房间号 = `前缀-6位hex`） |
 | `-t, --ttl <秒>` | `43200` (12h) | 房间有效时长，过期后自动失效 |
-| `--service <地址>` | `127.0.0.1:25565` | 房主本地服务地址，隧道打通后向其转发 |
+| `--service <地址>` | `127.0.0.1:25565` | 房主本地服务地址，隧道打通后向其转发（25565 是 Minecraft 默认端口，可改成任意端口） |
 | `--relay` | 关 | 跳过打洞，直接使用中继 |
 | `--key <口令>` | 无 | 端到端加密口令（双方一致才可通信） |
 | `--max-conns <N>` | `0` (无限) | 会话内最多接受的连接数 |
 | `--spread <N>` | `2` | 打洞端口散布范围（±N 端口） |
+| `--tun` | 关 | 虚拟网卡模式（建立二层隧道，对端可直连你的虚拟 IP） |
+| `--tun-ip <IP>` | `10.66.0.1` | 虚拟网卡 IP（同一网段内的稳定地址） |
+| `--tun-netmask <掩码>` | `255.255.255.0` | 虚拟网卡掩码 |
+| `--tun-mtu <N>` | `1400` | 虚拟网卡 MTU |
 
 示例：
 
@@ -50,6 +54,9 @@ frp-sh game create
 
 # 完整示例：加密 + 限 5 个连接 + 打洞散布 ±3
 frp-sh game create --service 127.0.0.1:25565 --key mypass --max-conns 5 --spread 3
+
+# 虚拟网卡模式（朋友可 ping 10.66.0.1 直连）
+frp-sh game create --tun
 ```
 
 ## `frp-sh game join <room_id>` —— 访客加入房间
@@ -62,10 +69,14 @@ frp-sh game join <房间号> [选项]
 |------|--------|------|
 | `room_id` | （必填） | 房间号，如 `game-a3f9c2`；格式校验 `前缀-6位hex` |
 | `-r, --relay` | 关 | 强制中继模式（跳过打洞） |
-| `--listen <地址>` | `127.0.0.1:25565` | 访客本地监听地址，玩家连接此端口 |
+| `--listen <地址>` | `127.0.0.1:25565` | 访客本地监听地址，玩家连接此端口（25565 是 Minecraft 默认端口，可改成任意端口） |
 | `--key <口令>` | 无 | 与房主一致的加密口令 |
 | `--max-conns <N>` | `0` (无限) | 会话内最多建立的连接数 |
 | `--spread <N>` | `2` | 打洞端口散布范围 |
+| `--tun` | 关 | 虚拟网卡模式（默认 IP 由你的设备 ID 稳定派生，如 `10.66.0.42`） |
+| `--tun-ip <IP>` | 自动派生 | 自定义虚拟网卡 IP（须与房主同网段） |
+| `--tun-netmask <掩码>` | `255.255.255.0` | 虚拟网卡掩码 |
+| `--tun-mtu <N>` | `1400` | 虚拟网卡 MTU |
 
 示例：
 
@@ -80,6 +91,8 @@ frp-sh game join game-a3f9c2 --relay     # 强制走中继
 | 输出 | 含义 |
 |------|------|
 | `Room created : game-a3f9c2` | 房主房间创建成功 |
+| `Your ID      : <uuid>` | 你的设备唯一 ID（存于 `%APPDATA%\frp-sh\identity`，用于派生稳定的虚拟 IP） |
+| `Vnet IP      : 10.66.0.x` | 你的虚拟网卡 IP（朋友可长期用此 IP 直连） |
 | `>>> P2P direct link established with <addr>` | **打洞成功**，P2P 直连 |
 | `>>> UDP hole punching failed, falling back to relay ...` | 打洞失败，转入中继 |
 | `>>> late P2P link established with <addr>` | 中继等待期间补抓到直连，已切回 P2P |
@@ -88,11 +101,13 @@ frp-sh game join game-a3f9c2 --relay     # 强制走中继
 | `connection N closed` | 一条隧道连接正常结束 |
 | `max connections (N) reached, ending session` | 达到 `--max-conns`，会话结束 |
 | `session ended by peer` | 对端关闭了会话 |
+| `>>> 连接已断开，N 秒后自动重连...` | 链路断开，退避等待后自动重连（2s, 4s, 8s... 上限 15s） |
 
 ## 退出方式
 
-- **房主**：`Ctrl-C` 结束会话并自动删除房间
-- **访客**：`Ctrl-C` 结束会话；或在 `--max-conns` 用尽后自动结束
+- **自动重连**：断线（网络抖动、NAT 映射过期、服务重启）后自动重连，无需手动操作
+- **房主**：`Ctrl-C` 结束会话并自动删除房间；房间过期后自动结束
+- **访客**：`Ctrl-C` 结束会话；房间被删除/过期后自动结束
 
 ## 常见错误
 

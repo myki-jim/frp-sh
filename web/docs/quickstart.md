@@ -52,11 +52,12 @@ frp-sh --config config/server.toml game create
 frp-sh game create --service 127.0.0.1:25565
 ```
 
-其中 `--service` 是房主本地服务的地址（默认 `127.0.0.1:25565`）。输出示例：
+其中 `--service` 是房主本地服务的地址（默认 `127.0.0.1:25565`，这是 Minecraft 的默认端口，可通过 `--service` 改成任意端口）。输出示例：
 
 ```text
   Room created : game-a3f9c2
   Signaling    : http://你的服务器IP:8080
+  Your ID      : 123e4567-e89b-12d3-a456-426614174000
   Local service: 127.0.0.1:25565
   Waiting for a guest to join ...
 ```
@@ -92,6 +93,14 @@ frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565
 ```
 
 隧道依然可用，只是数据经过服务器转发（见[网络原理](./architecture.md)）。
+
+断线后（网络抖动、NAT 映射过期）双方都会自动重连：
+
+```text
+>>> 连接已断开，2 秒后自动重连（Ctrl-C 退出）...
+```
+
+无需手动干预，重连间隔按 2s、4s、8s…退避，上限 15s。
 
 ## 最小可用命令
 
