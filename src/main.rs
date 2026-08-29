@@ -64,6 +64,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.spread,
                         None,
                         Vec::new(),
+                        false,
                     )
                     .await?;
                 }
@@ -79,6 +80,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.spread,
                         None,
                         None,
+                        false,
                     )
                     .await?;
                 }
@@ -102,6 +104,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.spread,
                         None,
                         Vec::new(),
+                        false,
                     )
                     .await?;
                 }
@@ -117,6 +120,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.spread,
                         None,
                         None,
+                        false,
                     )
                     .await?;
                 }
@@ -147,6 +151,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.spread,
                         tun_opts,
                         args.guest_ips,
+                        args.expose_lan,
                     )
                     .await?;
                 }
@@ -177,6 +182,7 @@ async fn real_main() -> anyhow::Result<()> {
                         args.spread,
                         tun_opts,
                         requested_ip,
+                        args.expose_lan,
                     )
                     .await?;
                 }

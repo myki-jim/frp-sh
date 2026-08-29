@@ -113,6 +113,7 @@ async fn run_session(
             2,       // spread
             None,    // tun
             Some(1), // 测试：单轮即返回
+            false,   // expose_lan
         )
         .await
     });
@@ -132,6 +133,7 @@ async fn run_session(
             None,
             Some(1), // 测试：单轮即返回
             None,    // requested_ip
+            false,   // expose_lan
         )
         .await
     });
@@ -226,7 +228,7 @@ async fn room_lifecycle_api() {
     assert!(info.guest_addr.is_none());
 
     let joined = client
-        .join_room(&created.room_id, my_ext, Vec::new(), None, None)
+        .join_room(&created.room_id, my_ext, Vec::new(), None, None, Vec::new())
         .await
         .unwrap();
     assert_eq!(joined.host_addr, my_ext);
@@ -269,11 +271,25 @@ async fn guest_ip_pool_assigns_stable_ips() {
     // 同一访客（同 UUID）两次加入 → 复用同一 IP
     let uid = "123e4567-e89b-12d3-a456-426614174000";
     let j1 = client
-        .join_room(&created.room_id, my_ext, Vec::new(), Some(uid.into()), None)
+        .join_room(
+            &created.room_id,
+            my_ext,
+            Vec::new(),
+            Some(uid.into()),
+            None,
+            Vec::new(),
+        )
         .await
         .unwrap();
     let j2 = client
-        .join_room(&created.room_id, my_ext, Vec::new(), Some(uid.into()), None)
+        .join_room(
+            &created.room_id,
+            my_ext,
+            Vec::new(),
+            Some(uid.into()),
+            None,
+            Vec::new(),
+        )
         .await
         .unwrap();
     assert_eq!(j1.assigned_ip.as_deref(), Some("10.66.0.2"));
@@ -287,6 +303,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Vec::new(),
             Some("223e4567-e89b-12d3-a456-426614174000".into()),
             None,
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -304,6 +321,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Vec::new(),
             Some(uid.into()),
             None,
+            Vec::new(),
         )
         .await
         .unwrap();

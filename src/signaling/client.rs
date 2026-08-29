@@ -73,6 +73,8 @@ impl SignalingClient {
     /// - `addr_lan`：本机局域网打洞地址
     /// - `visitor_id`：设备 UUID（房主启用 IP 池时用于稳定复用同一虚拟 IP）
     /// - `requested_ip`：显式指定的虚拟 IP（`--ip`），无则 None
+    /// - `guest_subnets`：访客暴露的局域网子网（`--expose-lan` 时通告）
+    #[allow(clippy::too_many_arguments)]
     pub async fn join_room(
         &self,
         room_id: &str,
@@ -80,6 +82,7 @@ impl SignalingClient {
         addr_lan: Vec<SocketAddr>,
         visitor_id: Option<String>,
         requested_ip: Option<String>,
+        guest_subnets: Vec<String>,
     ) -> Result<JoinRoomResponse> {
         let resp = self
             .http
@@ -89,6 +92,7 @@ impl SignalingClient {
                 addr_lan,
                 visitor_id,
                 requested_ip,
+                guest_subnets,
             })
             .send()
             .await

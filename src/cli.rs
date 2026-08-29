@@ -146,6 +146,10 @@ pub struct LanCreateArgs {
     /// 访客未指定 --ip 时按加入顺序分配，同一设备重连复用同一 IP
     #[arg(long, value_delimiter = ',')]
     pub guest_ips: Vec<String>,
+    /// 将本机局域网接入隧道（对端可访问你的局域网设备）。
+    /// 默认关闭：只互访虚拟网段，不暴露本地网络
+    #[arg(long)]
+    pub expose_lan: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -170,6 +174,10 @@ pub struct LanJoinArgs {
     /// 虚拟网卡 MTU
     #[arg(long, default_value_t = 1400)]
     pub mtu: u16,
+    /// 将本机局域网接入隧道（对端可访问你的局域网设备）。
+    /// 默认关闭：只互访虚拟网段，不暴露本地网络
+    #[arg(long)]
+    pub expose_lan: bool,
 }
 
 #[derive(Subcommand, Debug)]

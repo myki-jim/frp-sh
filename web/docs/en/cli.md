@@ -254,6 +254,31 @@ frp-sh lan create --guest-ips 10.66.0.2,10.66.0.3,10.66.0.4
 frp-sh lan join lan-a3f9c2
 ```
 
+### `--expose-lan`
+
+**Purpose**: bring your **local LAN into the tunnel** (the peer can reach devices on
+your LAN, such as NAS or printers).
+
+- **Default**: off. By default only the virtual subnet (`10.66.0.0/24`) is reachable
+  between peers — your real LAN is **not exposed**
+- When enabled: your LAN subnets are advertised (`LAN subnets`), IPv4 forwarding is
+  turned on, and the peer automatically adds routes via its virtual NIC so it can
+  reach devices on your LAN
+- Requires root/admin (routing changes, enabling forwarding)
+
+**Example**:
+
+```bash
+# host: open your home LAN (e.g. 192.168.1.0/24) to the guest
+frp-sh lan create --expose-lan
+
+# after joining, the guest can reach devices on the host's LAN
+frp-sh lan join lan-a3f9c2
+```
+
+> Not exposing by default is safer; when both sides want to reach each other's LAN,
+> each side adds `--expose-lan`.
+
 ### Combined examples
 
 ```bash
@@ -372,6 +397,22 @@ frp-sh lan join lan-a3f9c2 --netmask 255.255.0.0
 
 ```bash
 frp-sh lan join lan-a3f9c2 --mtu 1300
+```
+
+### `--expose-lan`
+
+**Purpose**: bring your **local LAN into the tunnel** on the guest side too, so the
+host can reach devices on your LAN.
+
+- **Default**: off. By default only the virtual subnet is reachable
+- Same behavior as on the host side: your LAN subnets are advertised, IPv4
+  forwarding is enabled, and the host adds routes to your LAN automatically
+- Requires root/admin
+
+**Example**:
+
+```bash
+frp-sh lan join lan-a3f9c2 --expose-lan
 ```
 
 ### Combined examples
@@ -795,21 +836,25 @@ simultaneously. On the same WiFi/wired LAN a direct link is established in secon
 public punch path is used, falling back to relay only if punching fails. This works
 in all three series (lan / game / dev).
 
-**Guest reaches the host's whole LAN (lan series)**: the host advertises its LAN
-subnets (e.g. `192.168.1.0/24`) in the room; after `lan join` the guest
-automatically adds routes for those subnets via its virtual NIC, so it can reach
-other devices on the host's LAN (NAS, printers, other PCs):
+**Guest reaches the host's whole LAN (lan series; host needs `--expose-lan`)**: by
+default **neither side's real LAN is exposed** — the tunnel only carries the virtual
+subnet. Only a side that adds `--expose-lan` advertises its LAN subnets (e.g.
+`192.168.1.0/24`); the peer automatically adds routes for those subnets via its
+virtual NIC, so it can reach devices on that LAN (NAS, printers, other PCs):
 
 ```bash
 # host (needs root/admin; enables IPv4 forwarding automatically)
-frp-sh lan create
+frp-sh lan create --expose-lan
 # → LAN subnets  : 192.168.1.0/24
 
-# guest (needs root/admin; adds routes automatically)
+# guest (adds routes automatically, no extra options needed)
 frp-sh lan join lan-a3f9c2
 # → 路由 192.168.1.0/24 → frp1 已添加
 # now you can ping / access devices on the host's LAN
 ```
+
+Both directions: if the guest also wants the host to reach its LAN, add
+`--expose-lan` to `lan join` as well.
 
 Notes:
 

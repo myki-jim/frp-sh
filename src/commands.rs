@@ -188,10 +188,13 @@ fn announce_direct(peer: SocketAddr) {
 }
 
 /// 数据面分发：`--tun` 时走虚拟网卡，否则走 TCP 端口转发。
+///
+/// `guest_subnets`：访客 `--expose-lan` 通告的局域网子网（房主侧据此加路由，访问访客局域网）。
 async fn run_data_plane(
     transport: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     tun: Option<&TunOpts>,
     mode: ForwardMode,
+    guest_subnets: &[String],
 ) -> anyhow::Result<()> {
     if let Some(o) = tun {
         // 设备名按角色区分（双端同机时不冲突）
@@ -226,18 +229,28 @@ async fn run_data_plane(
         println!("    对端现可访问本虚拟网段（如 ping {}）", o.ip);
         match mode {
             ForwardMode::Host { .. } => {
-                // 房主：允许内核转发，使访客能通过隧道访问房主局域网
-                let fwd = crate::p2p::tun::enable_ip_forward();
-                if fwd {
-                    println!("    IPv4 转发已开启 → 访客可访问房主局域网");
-                } else {
-                    println!(
-                        "    提示: 开启 IPv4 转发后访客才能访问房主局域网\n      Linux: sysctl -w net.ipv4.ip_forward=1"
-                    );
+                // 房主：允许内核转发；若访客 --expose-lan，为其局域网子网加路由
+                if !guest_subnets.is_empty() {
+                    let fwd = crate::p2p::tun::enable_ip_forward();
+                    for cidr in guest_subnets {
+                        match crate::p2p::tun::add_route(cidr, &real_name, &o.ip) {
+                            Ok(()) => {
+                                println!("    路由 {cidr} → {real_name} 已添加（访问访客局域网）")
+                            }
+                            Err(e) => println!("    路由 {cidr} 添加失败: {e}"),
+                        }
+                    }
+                    if fwd {
+                        println!("    IPv4 转发已开启 → 可访问访客局域网");
+                    } else {
+                        println!(
+                            "    提示: 开启 IPv4 转发后访客局域网才可达\n      Linux: sysctl -w net.ipv4.ip_forward=1"
+                        );
+                    }
                 }
             }
             ForwardMode::Guest { .. } => {
-                // 访客：为房主局域网子网添加经 TUN 的路由
+                // 访客：为房主 --expose-lan 通告的局域网子网添加经 TUN 的路由
                 for cidr in &o.lan_routes {
                     match crate::p2p::tun::add_route(cidr, &real_name, &o.ip) {
                         Ok(()) => {
@@ -424,7 +437,8 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
 
 /// `game create`：注册房间，进入房主会话；返回房间号。
 ///
-/// `guest_ips`：房主预留的访客虚拟 IP 池（lan 系列 `--guest-ips`；转发系列为空）。
+/// - `guest_ips`：房主预留的访客虚拟 IP 池（lan 系列 `--guest-ips`；转发系列为空）
+/// - `expose_lan`：是否把本机局域网接入隧道（lan 系列 `--expose-lan`；默认不暴露）
 #[allow(clippy::too_many_arguments)]
 pub async fn run_create(
     cfg: Config,
@@ -437,6 +451,7 @@ pub async fn run_create(
     spread: u32,
     tun: Option<TunOpts>,
     guest_ips: Vec<String>,
+    expose_lan: bool,
 ) -> anyhow::Result<String> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
     let engine = PunchEngine::bind().await?;
@@ -447,7 +462,8 @@ pub async fn run_create(
     log::info!("public address: {my_ext}");
     let tun_ip = tun.as_ref().map(|t| t.ip.clone());
     let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
-    let lan_subnets = if tun.is_some() {
+    // 默认不暴露本地局域网；仅 --expose-lan 时通告子网
+    let lan_subnets = if tun.is_some() && expose_lan {
         utils::lan_subnet_cidrs()
     } else {
         Vec::new()
@@ -478,7 +494,7 @@ pub async fn run_create(
         println!("  Mode         : LAN mesh (virtual NIC)");
         if !lan_subnets.is_empty() {
             println!(
-                "  LAN subnets  : {}（访客加入后可访问）",
+                "  LAN subnets  : {}（--expose-lan：访客可访问）",
                 lan_subnets.join(", ")
             );
         }
@@ -507,6 +523,7 @@ pub async fn run_create(
         spread,
         tun,
         None, // 无限重连
+        expose_lan,
     );
     tokio::select! {
         r = session => r?,
@@ -533,6 +550,7 @@ pub async fn host_session(
     spread: u32,
     tun: Option<TunOpts>,
     max_rounds: Option<u64>,
+    expose_lan: bool,
 ) -> anyhow::Result<()> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
     let service_addr: SocketAddr = service
@@ -557,7 +575,8 @@ pub async fn host_session(
             .await?;
         log::info!("public address: {my_ext}");
         let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
-        let lan_subnets = if tun.is_some() {
+        // 默认不暴露本地局域网；仅 --expose-lan 时通告子网
+        let lan_subnets = if tun.is_some() && expose_lan {
             utils::lan_subnet_cidrs()
         } else {
             Vec::new()
@@ -579,6 +598,13 @@ pub async fn host_session(
                     continue;
                 }
             };
+        // 访客若 --expose-lan，取其通告的局域网子网（房主据此加路由访问访客局域网）
+        let guest_subnets: Vec<String> = signaling
+            .get_room(room_id)
+            .await
+            .ok()
+            .map(|i| i.guest_subnets)
+            .unwrap_or_default();
         let run_result = match outcome {
             PunchOutcome::Direct { peer, first } => {
                 state.peer_addr = Some(peer);
@@ -591,6 +617,7 @@ pub async fn host_session(
                         service: service_addr,
                         max_conns,
                     },
+                    &guest_subnets,
                 )
                 .await
             }
@@ -619,6 +646,7 @@ pub async fn host_session(
                         service: service_addr,
                         max_conns,
                     },
+                    &guest_subnets,
                 )
                 .await
             }
@@ -744,6 +772,7 @@ pub async fn run_join(
     spread: u32,
     tun: Option<TunOpts>,
     requested_ip: Option<String>,
+    expose_lan: bool,
 ) -> anyhow::Result<()> {
     if !utils::validate_room_id(&room_id) {
         anyhow::bail!("invalid room id: {room_id} (expected format like game-a3f9c2)");
@@ -768,6 +797,7 @@ pub async fn run_join(
         tun,
         None, // 无限重连
         requested_ip,
+        expose_lan,
     );
     tokio::select! {
         r = session => r?,
@@ -780,9 +810,10 @@ pub async fn run_join(
 
 /// 访客会话（房间需已存在）：断线自动重连。
 ///
-/// `requested_ip`：访客显式指定的虚拟 IP（`--ip`），无则 None；
-/// 房主启用 IP 池（`--guest-ips`）且访客未指定时，服务器分配并返回。
-/// `max_rounds` 仅用于测试：限制重连轮数，`None` 表示无限重连直到 Ctrl-C 或房间失效。
+/// - `requested_ip`：访客显式指定的虚拟 IP（`--ip`），无则 None；
+///   房主启用 IP 池（`--guest-ips`）且访客未指定时，服务器分配并返回
+/// - `expose_lan`：是否把本机局域网接入隧道（`--expose-lan`；默认不暴露）
+/// - `max_rounds` 仅用于测试：限制重连轮数，`None` 表示无限重连直到 Ctrl-C 或房间失效
 #[allow(clippy::too_many_arguments)]
 pub async fn guest_session(
     cfg: &Config,
@@ -795,6 +826,7 @@ pub async fn guest_session(
     mut tun: Option<TunOpts>,
     max_rounds: Option<u64>,
     requested_ip: Option<String>,
+    expose_lan: bool,
 ) -> anyhow::Result<()> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
     let listen_addr: SocketAddr = listen
@@ -867,6 +899,12 @@ pub async fn guest_session(
             }
         };
         let my_lan = utils::lan_socket_addrs(engine.local_addr()?.port());
+        // 默认不暴露本地局域网；仅 --expose-lan 时通告子网
+        let guest_subnets = if expose_lan {
+            utils::lan_subnet_cidrs()
+        } else {
+            Vec::new()
+        };
         match signaling
             .join_room(
                 room_id,
@@ -874,6 +912,7 @@ pub async fn guest_session(
                 my_lan,
                 cfg.uuid.clone(),
                 requested_ip.clone(),
+                guest_subnets,
             )
             .await
         {
@@ -930,6 +969,7 @@ pub async fn guest_session(
                         listen: listen_addr,
                         max_conns,
                     },
+                    &[],
                 )
                 .await
             }
@@ -960,6 +1000,7 @@ pub async fn guest_session(
                             listen: listen_addr,
                             max_conns,
                         },
+                        &[],
                     )
                     .await
                 } else {
@@ -976,6 +1017,7 @@ pub async fn guest_session(
                                     listen: listen_addr,
                                     max_conns,
                                 },
+                                &[],
                             )
                             .await
                         }
@@ -988,6 +1030,7 @@ pub async fn guest_session(
                                     listen: listen_addr,
                                     max_conns,
                                 },
+                                &[],
                             )
                             .await
                         }

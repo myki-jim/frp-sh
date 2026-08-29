@@ -1,4 +1,4 @@
-﻿# Troubleshooting FAQ
+# Troubleshooting FAQ
 
 ## Connection issues
 
@@ -98,11 +98,16 @@ no server involved, lowest latency (great for gaming).
 
 ### Can the guest reach other devices on the host's LAN (NAS/printer)?
 
-Yes 鈥?use the **`lan` series** (mesh, Tailscale-like). The host's `frp-sh lan create`
-advertises its LAN subnets (e.g. `192.168.1.0/24`) and enables IPv4 forwarding; the
-guest's `frp-sh lan join` automatically adds routes via its virtual NIC, then can
-ping / access devices on the host's LAN. If both sides are on the same subnet, that
-subnet is skipped automatically to avoid route conflicts.
+Yes, but **it's not exposed by default**. Use the **`lan` series** (mesh,
+Tailscale-like), and the host must add `--expose-lan` when creating the room:
+`frp-sh lan create --expose-lan` advertises its LAN subnets (e.g. `192.168.1.0/24`)
+and enables IPv4 forwarding; the guest's `frp-sh lan join` automatically adds routes
+via its virtual NIC, then can ping / access devices on the host's LAN. If both sides
+are on the same subnet, that subnet is skipped automatically to avoid route
+conflicts.
+
+The guest can also add `--expose-lan` (`frp-sh lan join <ROOM_ID> --expose-lan`) to
+let the host reach devices on the guest's own LAN.
 
 `game` / `dev` are pure port forwarding and do not provide access to the peer's LAN.
 

@@ -35,6 +35,8 @@ pub struct Room {
     pub host_subnets: Vec<String>,
     /// 访客局域网打洞地址（房主反向打洞）
     pub guest_lan: Vec<SocketAddr>,
+    /// 访客暴露的局域网子网 CIDR（`--expose-lan`）
+    pub guest_subnets: Vec<String>,
     /// 房主预留的访客虚拟 IP 池（`--guest-ips`）
     pub guest_ips: Vec<String>,
     /// 已分配：visitor UUID -> 虚拟 IP（重连复用）
@@ -91,6 +93,7 @@ async fn create_room(
             host_lan: req.host_lan,
             host_subnets: req.host_subnets,
             guest_lan: Vec::new(),
+            guest_subnets: Vec::new(),
             guest_ips: req.guest_ips,
             ip_assignments: HashMap::new(),
             relay_host: None,
@@ -117,6 +120,7 @@ async fn join_room(
     }
     room.guest_addr = Some(req.addr);
     room.guest_lan = req.addr_lan;
+    room.guest_subnets = req.guest_subnets;
     // 虚拟 IP 分配：访客显式指定 > UUID 复用 > 按序取池中未分配的
     let assigned_ip = if room.guest_ips.is_empty() {
         req.requested_ip.or_else(|| {
@@ -179,6 +183,7 @@ async fn get_room(
         host_lan: room.host_lan.clone(),
         host_subnets: room.host_subnets.clone(),
         guest_lan: room.guest_lan.clone(),
+        guest_subnets: room.guest_subnets.clone(),
     }))
 }
 

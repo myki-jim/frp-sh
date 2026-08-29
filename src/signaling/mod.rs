@@ -48,6 +48,9 @@ pub struct JoinRoomRequest {
     /// 访客显式指定的虚拟 IP（--ip）
     #[serde(default)]
     pub requested_ip: Option<String>,
+    /// 访客暴露的局域网子网 CIDR（`--expose-lan` 时通告，房主据此加路由访问访客局域网）
+    #[serde(default)]
+    pub guest_subnets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,4 +91,7 @@ pub struct RoomInfo {
     /// 访客局域网打洞地址（房主反向打洞）
     #[serde(default)]
     pub guest_lan: Vec<SocketAddr>,
+    /// 访客暴露的局域网子网 CIDR（`--expose-lan`）
+    #[serde(default)]
+    pub guest_subnets: Vec<String>,
 }
