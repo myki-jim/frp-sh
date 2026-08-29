@@ -7,6 +7,9 @@ node_modules/
 web/.vitepress/cache
 web/.vitepress/dist
 web/.vitepress/.cache
+web/docs/.vitepress/cache
+web/docs/.vitepress/dist
+web/docs/.vitepress/.cache
 
 # 本地测试/部署产物
 .testappdata/
