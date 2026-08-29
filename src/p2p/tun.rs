@@ -134,6 +134,7 @@ pub fn enable_ip_forward() -> bool {
 pub fn add_route(cidr: &str, dev_name: &str, gateway: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
+        let _ = gateway; // Linux 用 dev 而非网关
         run_cmd("ip", &["route", "add", cidr, "dev", dev_name])
     }
     #[cfg(target_os = "macos")]
