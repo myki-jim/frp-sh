@@ -72,8 +72,15 @@ async fn main() -> anyhow::Result<()> {
                     let cfg = Config::load_auto(config.as_deref())?;
                     let tun_opts = if tun {
                         let d = frp_sh::commands::TunOpts::guest_default();
+                        // 默认虚拟 IP 由设备 UUID 确定性派生 → 每次连接地址稳定
+                        let ip = tun_ip.unwrap_or_else(|| {
+                            cfg.uuid
+                                .as_deref()
+                                .map(frp_sh::utils::derive_vnet_ip)
+                                .unwrap_or(d.ip)
+                        });
                         Some(frp_sh::commands::TunOpts {
-                            ip: tun_ip.unwrap_or(d.ip),
+                            ip,
                             netmask: tun_netmask,
                             mtu: tun_mtu,
                         })
@@ -101,9 +108,13 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(u) = &cfg.signaling_udp {
                     println!("    UDP 探测   : {u}");
                 }
+                if let Some(id) = &cfg.uuid {
+                    println!("    你的 ID    : {id}");
+                }
                 println!("\n  常用命令:");
                 println!("    frp-sh game create             # 房主：创建房间");
                 println!("    frp-sh game join game-xxxxxx   # 访客：加入房间");
+                println!("    frp-sh game create --tun       # 虚拟网卡模式（整机入网）");
                 println!("    frp-sh serve                   # 启动信令服务器");
                 println!("    frp-sh config                  # 重新配置");
                 println!("    frp-sh --help                  # 查看全部命令\n");

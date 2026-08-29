@@ -43,13 +43,13 @@ async fn try_start_server() -> Option<TestServer> {
             signaling_addr: format!("http://127.0.0.1:{http_port}"),
             relay_addr: format!("127.0.0.1:{relay_port}"),
             signaling_udp: Some(format!("127.0.0.1:{udp_port}")),
+            uuid: None,
         },
     })
 }
 
-/// 创建房间并返回 (room_id, engine, token)。
-/// engine 与 token 必须原样传给 host_session，保证通告地址与打洞 socket 一致。
-async fn create_room(cfg: &Config) -> (String, PunchEngine, String) {
+/// 创建房间并返回 room_id。
+async fn create_room(cfg: &Config) -> String {
     let client = SignalingClient::new(&cfg.signaling_addr);
     let engine = PunchEngine::bind().await.unwrap();
     let token = utils::rand_token();
@@ -57,8 +57,8 @@ async fn create_room(cfg: &Config) -> (String, PunchEngine, String) {
         .learn_public_addr(engine.socket(), cfg.signaling_udp_addr().unwrap(), &token)
         .await
         .unwrap();
-    let resp = client.create_room("test", 120, my_ext).await.unwrap();
-    (resp.room_id, engine, token)
+    let resp = client.create_room("test", 120, my_ext, None).await.unwrap();
+    resp.room_id
 }
 
 /// 一个 echo TCP 服务（循环接受连接，逐个原样返回）。
@@ -88,8 +88,6 @@ async fn free_local_port() -> SocketAddr {
 async fn run_session(
     cfg: Config,
     room_id: String,
-    engine: PunchEngine,
-    token: String,
     force_relay: bool,
     key: Option<String>,
     max_conns: u64,
@@ -106,12 +104,11 @@ async fn run_session(
             &room_id_h,
             echo.to_string(),
             force_relay,
-            engine,
-            token,
             key_h,
             max_conns,
             2,    // spread
             None, // tun
+            Some(1), // 测试：单轮即返回
         )
         .await
     });
@@ -129,6 +126,7 @@ async fn run_session(
             max_conns,
             2,
             None,
+            Some(1), // 测试：单轮即返回
         )
         .await
     });
@@ -166,8 +164,8 @@ async fn run_session(
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_direct_hole_punch() {
     let srv = start_server().await;
-    let (room_id, engine, token) = create_room(&srv.cfg).await;
-    let (host, guest) = run_session(srv.cfg, room_id, engine, token, false, None, 1).await;
+    let room_id = create_room(&srv.cfg).await;
+    let (host, guest) = run_session(srv.cfg, room_id, false, None, 1).await;
     assert!(host.is_ok(), "host session failed: {host:?}");
     assert!(guest.is_ok(), "guest session failed: {guest:?}");
 }
@@ -175,8 +173,8 @@ async fn e2e_direct_hole_punch() {
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_direct_multiconn() {
     let srv = start_server().await;
-    let (room_id, engine, token) = create_room(&srv.cfg).await;
-    let (host, guest) = run_session(srv.cfg, room_id, engine, token, false, None, 3).await;
+    let room_id = create_room(&srv.cfg).await;
+    let (host, guest) = run_session(srv.cfg, room_id, false, None, 3).await;
     assert!(host.is_ok(), "host session failed: {host:?}");
     assert!(guest.is_ok(), "guest session failed: {guest:?}");
 }
@@ -184,17 +182,8 @@ async fn e2e_direct_multiconn() {
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_direct_encrypted() {
     let srv = start_server().await;
-    let (room_id, engine, token) = create_room(&srv.cfg).await;
-    let (host, guest) = run_session(
-        srv.cfg,
-        room_id,
-        engine,
-        token,
-        false,
-        Some("test-secret".into()),
-        1,
-    )
-    .await;
+    let room_id = create_room(&srv.cfg).await;
+    let (host, guest) = run_session(srv.cfg, room_id, false, Some("test-secret".into()), 1).await;
     assert!(host.is_ok(), "host session failed: {host:?}");
     assert!(guest.is_ok(), "guest session failed: {guest:?}");
 }
@@ -202,8 +191,8 @@ async fn e2e_direct_encrypted() {
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_relay_fallback() {
     let srv = start_server().await;
-    let (room_id, engine, token) = create_room(&srv.cfg).await;
-    let (host, guest) = run_session(srv.cfg, room_id, engine, token, true, None, 1).await;
+    let room_id = create_room(&srv.cfg).await;
+    let (host, guest) = run_session(srv.cfg, room_id, true, None, 1).await;
     assert!(host.is_ok(), "host session failed: {host:?}");
     assert!(guest.is_ok(), "guest session failed: {guest:?}");
 }
@@ -223,7 +212,7 @@ async fn room_lifecycle_api() {
         .await
         .unwrap();
 
-    let created = client.create_room("api", 60, my_ext).await.unwrap();
+    let created = client.create_room("api", 60, my_ext, None).await.unwrap();
     let info = client.get_room(&created.room_id).await.unwrap();
     assert_eq!(info.host_addr, my_ext);
     assert!(info.guest_addr.is_none());

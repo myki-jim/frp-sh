@@ -15,6 +15,9 @@ pub struct CreateRoomRequest {
     pub ttl: u64,
     /// 发起者自测到的公网 UDP 地址（IP:Port）
     pub addr: SocketAddr,
+    /// 房主虚拟网卡 IP（--tun 时通告，访客可据此直连）
+    #[serde(default)]
+    pub tun_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +37,12 @@ pub struct JoinRoomResponse {
     pub host_addr: SocketAddr,
 }
 
+/// 房主刷新自己的公网地址（重连时 NAT 映射可能已过期）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshRoomRequest {
+    pub addr: SocketAddr,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomInfo {
     pub room_id: String,
@@ -41,4 +50,7 @@ pub struct RoomInfo {
     pub guest_addr: Option<SocketAddr>,
     pub created_at: u64,
     pub expires_at: u64,
+    /// 房主虚拟网卡 IP（--tun 时才有）
+    #[serde(default)]
+    pub tun_ip: Option<String>,
 }

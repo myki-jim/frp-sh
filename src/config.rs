@@ -25,6 +25,9 @@ pub struct Config {
     /// 某些云防火墙 TCP/UDP 端口需要分开时设置此项）。
     #[serde(default)]
     pub signaling_udp: Option<String>,
+    /// 设备身份 UUID（首次运行生成，用于派生稳定虚拟网卡 IP 等）。
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 impl Default for Config {
@@ -33,6 +36,7 @@ impl Default for Config {
             signaling_addr: default_signaling(),
             relay_addr: default_relay(),
             signaling_udp: None,
+            uuid: None,
         }
     }
 }
@@ -80,17 +84,46 @@ impl Config {
         }
     }
 
-    /// 自动加载：显式路径 > 默认配置文件 > 内置默认值。
+    /// 自动加载：显式路径 > 默认配置文件 > 内置默认值；并确保设备身份 UUID。
     pub fn load_auto(path: Option<&Path>) -> anyhow::Result<Self> {
-        if let Some(p) = path {
-            return Self::load(Some(p));
-        }
-        if let Some(dp) = Self::default_path() {
+        let mut cfg = if let Some(p) = path {
+            Self::load(Some(p))?
+        } else if let Some(dp) = Self::default_path() {
             if dp.exists() {
-                return Self::load(Some(&dp));
+                Self::load(Some(&dp))?
+            } else {
+                Self::default()
             }
+        } else {
+            Self::default()
+        };
+        // 设备身份：UUID 存于独立文件（不随配置文件增删而丢失）
+        cfg.uuid = Some(Self::ensure_identity());
+        Ok(cfg)
+    }
+
+    /// 设备身份文件路径（与默认配置同目录，文件名为 `identity`）。
+    pub fn identity_path() -> Option<PathBuf> {
+        Self::default_path().and_then(|p| p.parent().map(|d| d.join("identity")))
+    }
+
+    /// 读取或创建设备 UUID。
+    pub fn ensure_identity() -> String {
+        if let Some(p) = Self::identity_path() {
+            if let Ok(s) = std::fs::read_to_string(&p) {
+                let s = s.trim();
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
+            let id = crate::utils::new_uuid();
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&p, &id);
+            return id;
         }
-        Ok(Self::default())
+        crate::utils::new_uuid()
     }
 
     /// 保存到指定路径（自动创建父目录）。
@@ -167,6 +200,7 @@ mod tests {
             signaling_addr: "http://1.2.3.4:9000".into(),
             relay_addr: "1.2.3.4:9001".into(),
             signaling_udp: Some("1.2.3.4:9002".into()),
+            uuid: Some("123e4567-e89b-12d3-a456-426614174000".into()),
         };
         cfg.save(&path).unwrap();
         let loaded = Config::load(Some(&path)).unwrap();

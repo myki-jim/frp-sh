@@ -1,6 +1,9 @@
 //! 信令服务器：axum REST（房间注册/查询）+ UDP 公网探测 + TCP 中继配对。
 
-use super::{CreateRoomRequest, CreateRoomResponse, JoinRoomRequest, JoinRoomResponse, RoomInfo};
+use super::{
+    CreateRoomRequest, CreateRoomResponse, JoinRoomRequest, JoinRoomResponse, RefreshRoomRequest,
+    RoomInfo,
+};
 use crate::utils;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -24,6 +27,8 @@ pub struct Room {
     pub guest_addr: Option<SocketAddr>,
     pub created_at: u64,
     pub expires_at: u64,
+    /// 房主虚拟网卡 IP（--tun 时通告）
+    pub tun_ip: Option<String>,
     /// 中继等待槽位（配对完成前持有连接）
     pub relay_host: Option<TcpStream>,
     pub relay_guest: Option<TcpStream>,
@@ -48,6 +53,7 @@ pub async fn run_http(listener: TcpListener, state: SharedState) -> anyhow::Resu
         .route("/health", get(|| async { "ok" }))
         .route("/room/create", post(create_room))
         .route("/room/{id}/join", post(join_room))
+        .route("/room/{id}/refresh", post(refresh_room))
         .route("/room/{id}", get(get_room).delete(delete_room))
         .with_state(state);
     axum::serve(listener, app).await?;
@@ -71,6 +77,7 @@ async fn create_room(
             guest_addr: None,
             created_at: now,
             expires_at: now.saturating_add(req.ttl),
+            tun_ip: req.tun_ip,
             relay_host: None,
             relay_guest: None,
             pair_notify: Arc::new(Notify::new()),
@@ -116,7 +123,24 @@ async fn get_room(
         guest_addr: room.guest_addr,
         created_at: room.created_at,
         expires_at: room.expires_at,
+        tun_ip: room.tun_ip.clone(),
     }))
+}
+
+/// 房主重连时刷新自己的公网地址（NAT 映射可能已过期）。
+async fn refresh_room(
+    State(state): State<SharedState>,
+    Path(room_id): Path<String>,
+    Json(req): Json<RefreshRoomRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mut map = state.lock().await;
+    let room = map.get_mut(&room_id).ok_or_else(|| not_found(&room_id))?;
+    if room.expired() {
+        map.remove(&room_id);
+        return Err(not_found(&room_id));
+    }
+    room.host_addr = req.addr;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn delete_room(State(state): State<SharedState>, Path(room_id): Path<String>) -> StatusCode {

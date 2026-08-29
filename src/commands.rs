@@ -70,6 +70,12 @@ enum ForwardMode {
     Guest { listen: SocketAddr, max_conns: u64 },
 }
 
+/// 重连退避：2s, 4s, 8s, ... 上限 15s。
+fn reconnect_delay(attempt: u64) -> u64 {
+    let exp = 1u64 << attempt.min(4);
+    exp.min(15)
+}
+
 /// 数据面分发：`--tun` 时走虚拟网卡，否则走 TCP 端口转发。
 async fn run_data_plane(
     transport: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -219,6 +225,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         signaling_addr,
         relay_addr,
         signaling_udp,
+        uuid: None, // 设备 UUID 存于独立 identity 文件
     };
 
     // 保存
@@ -283,11 +290,16 @@ pub async fn run_create(
         .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
         .await?;
     log::info!("public address: {my_ext}");
-    let resp = signaling.create_room(&prefix, ttl, my_ext).await?;
+    let tun_ip = tun.as_ref().map(|t| t.ip.clone());
+    let resp = signaling.create_room(&prefix, ttl, my_ext, tun_ip).await?;
     let room_id = resp.room_id.clone();
     println!("\n  Room created : {room_id}");
     println!("  Signaling    : {}", cfg.signaling_addr);
-    if tun.is_some() {
+    if let Some(u) = &cfg.uuid {
+        println!("  Your ID      : {u}");
+    }
+    if let Some(t) = &tun {
+        println!("  Vnet IP      : {}（对端可 ping/直连此 IP）", t.ip);
         println!("  Mode         : virtual NIC (--tun)");
     } else {
         println!("  Local service: {service}");
@@ -302,12 +314,11 @@ pub async fn run_create(
         &room_id,
         service,
         force_relay,
-        engine,
-        token,
         key,
         max_conns,
         spread,
         tun,
+        None, // 无限重连
     );
     tokio::select! {
         r = session => r?,
@@ -321,66 +332,114 @@ pub async fn run_create(
 
 /// 房主会话（房间已创建）：打洞监听（或强制中继），随后进入数据面（转发或虚拟网卡）。
 ///
-/// `engine` 与 `token` 必须与创建房间时探测公网地址所用的一致。
+/// 断线后自动重连（重新绑定 socket、刷新公网地址）。`max_rounds` 仅用于测试：
+/// 限制重连轮数，`None` 表示无限重连直到 Ctrl-C 或房间失效。
 #[allow(clippy::too_many_arguments)]
 pub async fn host_session(
     cfg: &Config,
     room_id: &str,
     service: String,
     force_relay: bool,
-    engine: PunchEngine,
-    token: String,
     key: Option<String>,
     max_conns: u64,
     spread: u32,
     tun: Option<TunOpts>,
+    max_rounds: Option<u64>,
 ) -> anyhow::Result<()> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
-    let outcome =
-        host_punch_phase(&engine, &signaling, room_id, &token, force_relay, spread).await?;
     let service_addr: SocketAddr = service
         .parse()
         .map_err(|e| FrpError::Config(format!("bad service addr {service}: {e}")))?;
     let mut state = RoomState::new(room_id.to_string(), Role::Host, service_addr);
     let key_bytes = derive_key(key.as_deref());
-    match outcome {
-        PunchOutcome::Direct { peer, first } => {
-            state.peer_addr = Some(peer);
-            println!(">>> P2P direct link established with {peer}");
-            let stream = engine.into_stream(peer, first, key_bytes);
-            run_data_plane(
-                stream,
-                tun.as_ref(),
-                ForwardMode::Host {
-                    service: service_addr,
-                    max_conns,
-                },
-            )
-            .await?;
+    let mut attempt: u64 = 0;
+
+    loop {
+        attempt += 1;
+        if attempt > 1 {
+            let wait = reconnect_delay(attempt);
+            println!("\n>>> 连接已断开，{wait} 秒后自动重连（Ctrl-C 退出）...");
+            tokio::time::sleep(Duration::from_secs(wait)).await;
         }
-        PunchOutcome::TimedOut => {
-            state.relay_mode = true;
-            println!(">>> UDP hole punching failed, falling back to relay ...");
-            let relay_addr = cfg
-                .relay_addr
-                .parse()
-                .map_err(|e| FrpError::Config(format!("bad relay addr: {e}")))?;
-            let stream = relay::connect(relay_addr, room_id, RelayRole::Host).await?;
-            println!(">>> relay connected, waiting for guest ...");
-            run_data_plane(
-                stream,
-                tun.as_ref(),
-                ForwardMode::Host {
-                    service: service_addr,
-                    max_conns,
-                },
-            )
+        // 每次（重）连接绑定新 socket 并刷新公网地址（NAT 映射可能已过期）
+        let engine = PunchEngine::bind().await?;
+        let token = utils::rand_token();
+        let my_ext = signaling
+            .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
             .await?;
+        log::info!("public address: {my_ext}");
+        if let Err(e) = signaling.refresh_room(room_id, my_ext).await {
+            // 房间已失效（过期/被删）→ 无法继续，结束
+            return Err(e.into());
         }
+
+        let outcome = match host_punch_phase(
+            &engine, &signaling, room_id, &token, force_relay, spread,
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("打洞阶段异常: {e}");
+                continue;
+            }
+        };
+        let run_result = match outcome {
+            PunchOutcome::Direct { peer, first } => {
+                state.peer_addr = Some(peer);
+                println!(">>> P2P direct link established with {peer}");
+                let stream = engine.into_stream(peer, first, key_bytes);
+                run_data_plane(
+                    stream,
+                    tun.as_ref(),
+                    ForwardMode::Host {
+                        service: service_addr,
+                        max_conns,
+                    },
+                )
+                .await
+            }
+            PunchOutcome::TimedOut => {
+                state.relay_mode = true;
+                println!(">>> UDP hole punching failed, falling back to relay ...");
+                let relay_addr = match cfg.relay_addr.parse() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        log::warn!("bad relay addr: {e}");
+                        continue;
+                    }
+                };
+                let stream = match relay::connect(relay_addr, room_id, RelayRole::Host).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!("中继连接失败: {e}");
+                        continue;
+                    }
+                };
+                println!(">>> relay connected, waiting for guest ...");
+                run_data_plane(
+                    stream,
+                    tun.as_ref(),
+                    ForwardMode::Host {
+                        service: service_addr,
+                        max_conns,
+                    },
+                )
+                .await
+            }
+        };
+        if let Err(e) = run_result {
+            log::warn!("会话异常结束: {e}");
+        } else {
+            println!(">>> 会话结束，准备重连 ...");
+        }
+        if let Some(n) = max_rounds {
+            if attempt >= n {
+                return Ok(());
+            }
+        }
+        // 循环 → 自动重连
     }
-    let _ = signaling.delete_room(room_id).await;
-    println!("Session finished.");
-    Ok(())
 }
 
 /// 房主打洞阶段：轮询房间发现访客，同时监听 PUNCH / ACK / 数据帧。
@@ -486,6 +545,12 @@ pub async fn run_join(
     if !utils::validate_room_id(&room_id) {
         anyhow::bail!("invalid room id: {room_id} (expected format like game-a3f9c2)");
     }
+    if let Some(u) = &cfg.uuid {
+        println!("  Your ID      : {u}");
+    }
+    if let Some(t) = &tun {
+        println!("  Vnet IP      : {}（朋友可用此 IP 直连你的虚拟网卡）", t.ip);
+    }
     let session = guest_session(
         &cfg,
         &room_id,
@@ -495,6 +560,7 @@ pub async fn run_join(
         max_conns,
         spread,
         tun,
+        None, // 无限重连
     );
     tokio::select! {
         r = session => r?,
@@ -505,7 +571,9 @@ pub async fn run_join(
     Ok(())
 }
 
-/// 访客会话（房间需已存在）。
+/// 访客会话（房间需已存在）：断线自动重连。
+///
+/// `max_rounds` 仅用于测试：限制重连轮数，`None` 表示无限重连直到 Ctrl-C 或房间失效。
 #[allow(clippy::too_many_arguments)]
 pub async fn guest_session(
     cfg: &Config,
@@ -516,62 +584,88 @@ pub async fn guest_session(
     max_conns: u64,
     spread: u32,
     tun: Option<TunOpts>,
+    max_rounds: Option<u64>,
 ) -> anyhow::Result<()> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
-    let engine = PunchEngine::bind().await?;
-    let token = utils::rand_token();
-
-    // 查询房间（带重试，容忍房主刚创建时的时间差）
-    let host_addr = retry_get_host(&signaling, room_id).await?;
-    let my_ext = signaling
-        .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
-        .await?;
-    log::info!("public address: {my_ext}");
-    let join = signaling.join_room(room_id, my_ext).await?;
     let listen_addr: SocketAddr = listen
         .parse()
         .map_err(|e| FrpError::Config(format!("bad listen addr {listen}: {e}")))?;
-    println!("\n  Joined room : {}", join.room_id);
-    println!("  Host address: {}", join.host_addr);
-    if tun.is_some() {
-        println!("  Mode         : virtual NIC (--tun)");
-    } else {
-        println!("  Local listen: {listen}");
-    }
-    if key.is_some() {
-        println!("  Encryption   : on (--key)");
-    }
-    println!("  Punching through NAT ...\n");
-
-    let outcome = guest_punch_phase(&engine, host_addr, &token, force_relay, spread).await?;
-    let mut state = RoomState::new(room_id.to_string(), Role::Guest, listen_addr);
     let key_bytes = derive_key(key.as_deref());
-    match outcome {
-        PunchOutcome::Direct { peer, first } => {
-            state.peer_addr = Some(peer);
-            println!(">>> P2P direct link established with {peer}");
-            let stream = engine.into_stream(peer, first, key_bytes);
-            run_data_plane(
-                stream,
-                tun.as_ref(),
-                ForwardMode::Guest {
-                    listen: listen_addr,
-                    max_conns,
-                },
-            )
-            .await?;
+    let mut state = RoomState::new(room_id.to_string(), Role::Guest, listen_addr);
+    let mut attempt: u64 = 0;
+    let mut first = true;
+
+    loop {
+        attempt += 1;
+        if !first {
+            let wait = reconnect_delay(attempt);
+            println!("\n>>> 连接已断开，{wait} 秒后自动重连（Ctrl-C 退出）...");
+            tokio::time::sleep(Duration::from_secs(wait)).await;
         }
-        PunchOutcome::TimedOut => {
-            state.relay_mode = true;
-            println!(">>> UDP hole punching failed, trying relay ...");
-            let relay_addr = cfg
-                .relay_addr
-                .parse()
-                .map_err(|e| FrpError::Config(format!("bad relay addr: {e}")))?;
-            let stream = relay::connect(relay_addr, room_id, RelayRole::Guest).await?;
-            if force_relay {
-                // 强制中继：不再尝试任何打洞
-                println!(">>> relay connected, waiting for host ...");
+        first = false;
+        // 每次（重）连接绑定新 socket（旧 NAT 映射已失效）
+        let engine = PunchEngine::bind().await?;
+
+        // 查询房间（刷新房主地址；房间失效则结束）
+        let (host_addr, host_tun_ip) = match retry_get_room_info(&signaling, room_id).await {
+            Ok(info) => (info.host_addr, info.tun_ip),
+            Err(FrpError::RoomNotFound(_)) => {
+                return Err(FrpError::RoomNotFound(room_id.to_string()).into());
+            }
+            Err(e) => {
+                log::warn!("查询房间失败: {e}");
+                continue;
+            }
+        };
+
+        // 刷新本机公网地址并登记（NAT 映射可能已过期）
+        let token = utils::rand_token();
+        let my_ext = match signaling
+            .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                log::warn!("公网地址探测失败: {e}");
+                continue;
+            }
+        };
+        match signaling.join_room(room_id, my_ext).await {
+            Ok(join) => {
+                println!("\n  Joined room : {}", join.room_id);
+                println!("  Host address: {}", join.host_addr);
+                if let Some(ip) = &host_tun_ip {
+                    println!("  Host vnet IP: {ip}");
+                }
+                if tun.is_some() {
+                    println!("  Mode         : virtual NIC (--tun)");
+                } else {
+                    println!("  Local listen: {listen}");
+                }
+                if key.is_some() {
+                    println!("  Encryption   : on (--key)");
+                }
+                println!("  Punching through NAT ...\n");
+            }
+            Err(e) => {
+                log::warn!("登记房间失败: {e}");
+                continue;
+            }
+        }
+
+        let outcome = match guest_punch_phase(&engine, host_addr, &token, force_relay, spread).await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("打洞阶段异常: {e}");
+                continue;
+            }
+        };
+        let run_result = match outcome {
+            PunchOutcome::Direct { peer, first } => {
+                state.peer_addr = Some(peer);
+                println!(">>> P2P direct link established with {peer}");
+                let stream = engine.into_stream(peer, first, key_bytes);
                 run_data_plane(
                     stream,
                     tun.as_ref(),
@@ -580,48 +674,92 @@ pub async fn guest_session(
                         max_conns,
                     },
                 )
-                .await?;
-            } else {
-                // 中继连接后再做一次直连复查（应对"房主已打通、访客 ACK 丢失"的不对称场景）
-                match final_punch_check(&engine, host_addr, &token, spread).await? {
-                    PunchOutcome::Direct { peer, first } => {
-                        println!(">>> late P2P link established with {peer}");
-                        drop(stream);
-                        let stream = engine.into_stream(peer, first, key_bytes);
-                        run_data_plane(
-                            stream,
-                            tun.as_ref(),
-                            ForwardMode::Guest {
-                                listen: listen_addr,
-                                max_conns,
-                            },
-                        )
-                        .await?;
+                .await
+            }
+            PunchOutcome::TimedOut => {
+                state.relay_mode = true;
+                println!(">>> UDP hole punching failed, trying relay ...");
+                let relay_addr = match cfg.relay_addr.parse() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        log::warn!("bad relay addr: {e}");
+                        continue;
                     }
-                    PunchOutcome::TimedOut => {
-                        println!(">>> relay connected, waiting for host ...");
-                        run_data_plane(
-                            stream,
-                            tun.as_ref(),
-                            ForwardMode::Guest {
-                                listen: listen_addr,
-                                max_conns,
-                            },
-                        )
-                        .await?;
+                };
+                let stream = match relay::connect(relay_addr, room_id, RelayRole::Guest).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!("中继连接失败: {e}");
+                        continue;
+                    }
+                };
+                if force_relay {
+                    // 强制中继：不再尝试任何打洞
+                    println!(">>> relay connected, waiting for host ...");
+                    run_data_plane(
+                        stream,
+                        tun.as_ref(),
+                        ForwardMode::Guest {
+                            listen: listen_addr,
+                            max_conns,
+                        },
+                    )
+                    .await
+                } else {
+                    // 中继连接后再做一次直连复查（应对"房主已打通、访客 ACK 丢失"的不对称场景）
+                    match final_punch_check(&engine, host_addr, &token, spread).await {
+                        Ok(PunchOutcome::Direct { peer, first }) => {
+                            println!(">>> late P2P link established with {peer}");
+                            drop(stream);
+                            let stream = engine.into_stream(peer, first, key_bytes);
+                            run_data_plane(
+                                stream,
+                                tun.as_ref(),
+                                ForwardMode::Guest {
+                                    listen: listen_addr,
+                                    max_conns,
+                                },
+                            )
+                            .await
+                        }
+                        _ => {
+                            println!(">>> relay connected, waiting for host ...");
+                            run_data_plane(
+                                stream,
+                                tun.as_ref(),
+                                ForwardMode::Guest {
+                                    listen: listen_addr,
+                                    max_conns,
+                                },
+                            )
+                            .await
+                        }
                     }
                 }
             }
+        };
+        if let Err(e) = run_result {
+            log::warn!("会话异常结束: {e}");
+        } else {
+            println!(">>> 会话结束，准备重连 ...");
         }
+        if let Some(n) = max_rounds {
+            if attempt >= n {
+                return Ok(());
+            }
+        }
+        // 循环 → 自动重连
     }
-    println!("Session finished.");
-    Ok(())
 }
 
-async fn retry_get_host(signaling: &SignalingClient, room_id: &str) -> Result<SocketAddr> {
+/// 查询房间信息（容忍房主刚创建时的时间差）。
+async fn retry_get_room_info(
+    signaling: &SignalingClient,
+    room_id: &str,
+) -> Result<crate::signaling::RoomInfo> {
     for attempt in 0..10 {
         match signaling.get_room(room_id).await {
-            Ok(info) => return Ok(info.host_addr),
+            Ok(info) => return Ok(info),
             Err(FrpError::RoomNotFound(_)) if attempt < 9 => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }

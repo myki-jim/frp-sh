@@ -1,6 +1,9 @@
 //! 信令 REST 客户端。
 
-use super::{CreateRoomRequest, CreateRoomResponse, JoinRoomRequest, JoinRoomResponse, RoomInfo};
+use super::{
+    CreateRoomRequest, CreateRoomResponse, JoinRoomRequest, JoinRoomResponse, RefreshRoomRequest,
+    RoomInfo,
+};
 use crate::error::{FrpError, Result};
 use reqwest::StatusCode;
 use std::net::SocketAddr;
@@ -23,12 +26,14 @@ impl SignalingClient {
         }
     }
 
-    /// 注册房间。`addr` 是本机通过 UDP 探测得到的公网地址。
+    /// 注册房间。`addr` 是本机通过 UDP 探测得到的公网地址；
+    /// `tun_ip` 为虚拟网卡模式时通告的虚拟 IP（可选）。
     pub async fn create_room(
         &self,
         prefix: &str,
         ttl: u64,
         addr: SocketAddr,
+        tun_ip: Option<String>,
     ) -> Result<CreateRoomResponse> {
         let resp = self
             .http
@@ -37,6 +42,7 @@ impl SignalingClient {
                 prefix: prefix.to_string(),
                 ttl,
                 addr,
+                tun_ip,
             })
             .send()
             .await
@@ -104,6 +110,22 @@ impl SignalingClient {
                 "delete room: HTTP {}",
                 resp.status()
             )))
+        }
+    }
+
+    /// 房主刷新自己的公网地址（重连时 NAT 映射可能已过期）。
+    pub async fn refresh_room(&self, room_id: &str, addr: SocketAddr) -> Result<()> {
+        let resp = self
+            .http
+            .post(format!("{}/room/{}/refresh", self.base_url, room_id))
+            .json(&RefreshRoomRequest { addr })
+            .send()
+            .await
+            .map_err(|e| FrpError::Signaling(format!("refresh room: {e}")))?;
+        match resp.status() {
+            StatusCode::NOT_FOUND => Err(FrpError::RoomNotFound(room_id.to_string())),
+            s if !s.is_success() => Err(FrpError::Signaling(format!("refresh room: HTTP {s}"))),
+            _ => Ok(()),
         }
     }
 
