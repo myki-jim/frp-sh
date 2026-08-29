@@ -35,6 +35,73 @@ fn derive_key(passphrase: Option<&str>) -> Option<[u8; 32]> {
     })
 }
 
+// ---------- 数据面：端口转发 或 虚拟网卡 ----------
+
+/// 虚拟网卡（TUN）参数。
+#[derive(Debug, Clone)]
+pub struct TunOpts {
+    pub ip: String,
+    pub netmask: String,
+    pub mtu: u16,
+}
+
+impl TunOpts {
+    pub fn host_default() -> Self {
+        Self {
+            ip: "10.66.0.1".into(),
+            netmask: "255.255.255.0".into(),
+            mtu: 1400,
+        }
+    }
+
+    pub fn guest_default() -> Self {
+        Self {
+            ip: "10.66.0.2".into(),
+            netmask: "255.255.255.0".into(),
+            mtu: 1400,
+        }
+    }
+}
+
+/// 端口转发模式的目标。
+#[derive(Debug, Clone, Copy)]
+enum ForwardMode {
+    Host { service: SocketAddr, max_conns: u64 },
+    Guest { listen: SocketAddr, max_conns: u64 },
+}
+
+/// 数据面分发：`--tun` 时走虚拟网卡，否则走 TCP 端口转发。
+async fn run_data_plane(
+    transport: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    tun: Option<&TunOpts>,
+    mode: ForwardMode,
+) -> anyhow::Result<()> {
+    if let Some(o) = tun {
+        let dev = crate::p2p::tun::create(&crate::p2p::tun::TunConfig {
+            name: "frp0".into(),
+            ip: o.ip.clone(),
+            netmask: o.netmask.clone(),
+            mtu: o.mtu,
+        })?;
+        println!(
+            ">>> 虚拟网卡模式: IP {} / {} (MTU {})",
+            o.ip, o.netmask, o.mtu
+        );
+        println!("    访客现可访问本虚拟网段（如 ping {}）", o.ip);
+        crate::p2p::tun::run(transport, dev).await?;
+        return Ok(());
+    }
+    match mode {
+        ForwardMode::Host { service, max_conns } => {
+            tunnel::host_forward(transport, service, max_conns).await?
+        }
+        ForwardMode::Guest { listen, max_conns } => {
+            tunnel::guest_forward(transport, listen, max_conns).await?
+        }
+    }
+    Ok(())
+}
+
 // ---------- serve ----------
 
 /// `frp-sh serve`：同时提供 HTTP REST、UDP 公网探测与 TCP 中继。
@@ -202,6 +269,7 @@ pub async fn run_create(
     key: Option<String>,
     max_conns: u64,
     spread: u32,
+    tun: Option<TunOpts>,
 ) -> anyhow::Result<String> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
     let engine = PunchEngine::bind().await?;
@@ -214,7 +282,11 @@ pub async fn run_create(
     let room_id = resp.room_id.clone();
     println!("\n  Room created : {room_id}");
     println!("  Signaling    : {}", cfg.signaling_addr);
-    println!("  Local service: {service}");
+    if tun.is_some() {
+        println!("  Mode         : virtual NIC (--tun)");
+    } else {
+        println!("  Local service: {service}");
+    }
     if key.is_some() {
         println!("  Encryption   : on (--key)");
     }
@@ -230,6 +302,7 @@ pub async fn run_create(
         key,
         max_conns,
         spread,
+        tun,
     );
     tokio::select! {
         r = session => r?,
@@ -241,7 +314,7 @@ pub async fn run_create(
     Ok(room_id)
 }
 
-/// 房主会话（房间已创建）：打洞监听（或强制中继），随后进入隧道转发。
+/// 房主会话（房间已创建）：打洞监听（或强制中继），随后进入数据面（转发或虚拟网卡）。
 ///
 /// `engine` 与 `token` 必须与创建房间时探测公网地址所用的一致。
 #[allow(clippy::too_many_arguments)]
@@ -255,6 +328,7 @@ pub async fn host_session(
     key: Option<String>,
     max_conns: u64,
     spread: u32,
+    tun: Option<TunOpts>,
 ) -> anyhow::Result<()> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
     let outcome =
@@ -269,7 +343,15 @@ pub async fn host_session(
             state.peer_addr = Some(peer);
             println!(">>> P2P direct link established with {peer}");
             let stream = engine.into_stream(peer, first, key_bytes);
-            tunnel::host_forward(stream, service_addr, max_conns).await?;
+            run_data_plane(
+                stream,
+                tun.as_ref(),
+                ForwardMode::Host {
+                    service: service_addr,
+                    max_conns,
+                },
+            )
+            .await?;
         }
         PunchOutcome::TimedOut => {
             state.relay_mode = true;
@@ -280,7 +362,15 @@ pub async fn host_session(
                 .map_err(|e| FrpError::Config(format!("bad relay addr: {e}")))?;
             let stream = relay::connect(relay_addr, room_id, RelayRole::Host).await?;
             println!(">>> relay connected, waiting for guest ...");
-            tunnel::host_forward(stream, service_addr, max_conns).await?;
+            run_data_plane(
+                stream,
+                tun.as_ref(),
+                ForwardMode::Host {
+                    service: service_addr,
+                    max_conns,
+                },
+            )
+            .await?;
         }
     }
     let _ = signaling.delete_room(room_id).await;
@@ -377,6 +467,7 @@ async fn host_punch_phase(
 // ---------- game join ----------
 
 /// `game join`：校验房间号并进入访客会话。
+#[allow(clippy::too_many_arguments)]
 pub async fn run_join(
     cfg: Config,
     room_id: String,
@@ -385,11 +476,21 @@ pub async fn run_join(
     key: Option<String>,
     max_conns: u64,
     spread: u32,
+    tun: Option<TunOpts>,
 ) -> anyhow::Result<()> {
     if !utils::validate_room_id(&room_id) {
         anyhow::bail!("invalid room id: {room_id} (expected format like game-a3f9c2)");
     }
-    let session = guest_session(&cfg, &room_id, listen, force_relay, key, max_conns, spread);
+    let session = guest_session(
+        &cfg,
+        &room_id,
+        listen,
+        force_relay,
+        key,
+        max_conns,
+        spread,
+        tun,
+    );
     tokio::select! {
         r = session => r?,
         _ = tokio::signal::ctrl_c() => {
@@ -409,6 +510,7 @@ pub async fn guest_session(
     key: Option<String>,
     max_conns: u64,
     spread: u32,
+    tun: Option<TunOpts>,
 ) -> anyhow::Result<()> {
     let signaling = SignalingClient::new(&cfg.signaling_addr);
     let engine = PunchEngine::bind().await?;
@@ -426,7 +528,11 @@ pub async fn guest_session(
         .map_err(|e| FrpError::Config(format!("bad listen addr {listen}: {e}")))?;
     println!("\n  Joined room : {}", join.room_id);
     println!("  Host address: {}", join.host_addr);
-    println!("  Local listen: {listen}");
+    if tun.is_some() {
+        println!("  Mode         : virtual NIC (--tun)");
+    } else {
+        println!("  Local listen: {listen}");
+    }
     if key.is_some() {
         println!("  Encryption   : on (--key)");
     }
@@ -440,7 +546,15 @@ pub async fn guest_session(
             state.peer_addr = Some(peer);
             println!(">>> P2P direct link established with {peer}");
             let stream = engine.into_stream(peer, first, key_bytes);
-            tunnel::guest_forward(stream, listen_addr, max_conns).await?;
+            run_data_plane(
+                stream,
+                tun.as_ref(),
+                ForwardMode::Guest {
+                    listen: listen_addr,
+                    max_conns,
+                },
+            )
+            .await?;
         }
         PunchOutcome::TimedOut => {
             state.relay_mode = true;
@@ -453,7 +567,15 @@ pub async fn guest_session(
             if force_relay {
                 // 强制中继：不再尝试任何打洞
                 println!(">>> relay connected, waiting for host ...");
-                tunnel::guest_forward(stream, listen_addr, max_conns).await?;
+                run_data_plane(
+                    stream,
+                    tun.as_ref(),
+                    ForwardMode::Guest {
+                        listen: listen_addr,
+                        max_conns,
+                    },
+                )
+                .await?;
             } else {
                 // 中继连接后再做一次直连复查（应对"房主已打通、访客 ACK 丢失"的不对称场景）
                 match final_punch_check(&engine, host_addr, &token, spread).await? {
@@ -461,11 +583,27 @@ pub async fn guest_session(
                         println!(">>> late P2P link established with {peer}");
                         drop(stream);
                         let stream = engine.into_stream(peer, first, key_bytes);
-                        tunnel::guest_forward(stream, listen_addr, max_conns).await?;
+                        run_data_plane(
+                            stream,
+                            tun.as_ref(),
+                            ForwardMode::Guest {
+                                listen: listen_addr,
+                                max_conns,
+                            },
+                        )
+                        .await?;
                     }
                     PunchOutcome::TimedOut => {
                         println!(">>> relay connected, waiting for host ...");
-                        tunnel::guest_forward(stream, listen_addr, max_conns).await?;
+                        run_data_plane(
+                            stream,
+                            tun.as_ref(),
+                            ForwardMode::Guest {
+                                listen: listen_addr,
+                                max_conns,
+                            },
+                        )
+                        .await?;
                     }
                 }
             }

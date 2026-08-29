@@ -67,6 +67,18 @@ pub enum GameCmd {
         /// 打洞端口散布范围（轻量端口预测，默认 ±2）
         #[arg(long, default_value_t = 2)]
         spread: u32,
+        /// 虚拟网卡模式：创建 TUN 设备接入对端虚拟局域网（替代端口转发，需 root/管理员）
+        #[arg(long)]
+        tun: bool,
+        /// TUN 虚拟 IP（默认房主 10.66.0.1）
+        #[arg(long)]
+        tun_ip: Option<String>,
+        /// TUN 子网掩码
+        #[arg(long, default_value = "255.255.255.0")]
+        tun_netmask: String,
+        /// TUN MTU
+        #[arg(long, default_value_t = 1400)]
+        tun_mtu: u16,
     },
     /// 加入房间（访客）
     Join {
@@ -87,5 +99,17 @@ pub enum GameCmd {
         /// 打洞端口散布范围（默认 ±2）
         #[arg(long, default_value_t = 2)]
         spread: u32,
+        /// 虚拟网卡模式：创建 TUN 设备接入对端虚拟局域网（替代端口转发，需 root/管理员）
+        #[arg(long)]
+        tun: bool,
+        /// TUN 虚拟 IP（默认访客 10.66.0.2）
+        #[arg(long)]
+        tun_ip: Option<String>,
+        /// TUN 子网掩码
+        #[arg(long, default_value = "255.255.255.0")]
+        tun_netmask: String,
+        /// TUN MTU
+        #[arg(long, default_value_t = 1400)]
+        tun_mtu: u16,
     },
 }

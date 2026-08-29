@@ -182,7 +182,12 @@ mod tests {
 
     #[test]
     fn load_auto_falls_back_to_defaults() {
+        // 隔离 APPDATA，避免读到真实用户配置导致测试不确定
+        let tmp = std::env::temp_dir().join(format!("frpsh-test-appdata-{}", std::process::id()));
+        std::env::set_var("APPDATA", &tmp);
         let cfg = Config::load_auto(None).unwrap();
         assert_eq!(cfg.signaling_addr, "http://127.0.0.1:8080");
+        std::env::remove_var("APPDATA");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

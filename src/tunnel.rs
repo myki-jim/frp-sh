@@ -23,7 +23,7 @@ const MAX_FRAME: usize = 1 << 20;
 
 // ---------- 帧读写 ----------
 
-async fn write_frame(w: &mut (impl AsyncWrite + Unpin), data: &[u8]) -> io::Result<()> {
+pub(crate) async fn write_frame(w: &mut (impl AsyncWrite + Unpin), data: &[u8]) -> io::Result<()> {
     let len = data.len() as u32;
     w.write_all(&len.to_be_bytes()).await?;
     if !data.is_empty() {
@@ -34,7 +34,7 @@ async fn write_frame(w: &mut (impl AsyncWrite + Unpin), data: &[u8]) -> io::Resu
 
 /// 从累计缓冲提取一个完整帧。
 /// `Ok(Some(data))` 数据帧；`Ok(Some(&[]))` 结束帧；`Ok(None)` 缓冲不足；`Err` 帧超限。
-fn take_frame(acc: &mut Vec<u8>) -> io::Result<Option<Vec<u8>>> {
+pub(crate) fn take_frame(acc: &mut Vec<u8>) -> io::Result<Option<Vec<u8>>> {
     if acc.len() < 4 {
         return Ok(None);
     }

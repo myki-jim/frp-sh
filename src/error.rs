@@ -24,6 +24,9 @@ pub enum FrpError {
 
     #[error("config error: {0}")]
     Config(String),
+
+    #[error("TUN device error: {0}")]
+    Tun(String),
 }
 
 pub type Result<T> = std::result::Result<T, FrpError>;

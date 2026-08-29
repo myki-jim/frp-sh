@@ -36,10 +36,24 @@ async fn main() -> anyhow::Result<()> {
                     key,
                     max_conns,
                     spread,
+                    tun,
+                    tun_ip,
+                    tun_netmask,
+                    tun_mtu,
                 } => {
                     let cfg = Config::load_auto(config.as_deref())?;
+                    let tun_opts = if tun {
+                        let d = frp_sh::commands::TunOpts::host_default();
+                        Some(frp_sh::commands::TunOpts {
+                            ip: tun_ip.unwrap_or(d.ip),
+                            netmask: tun_netmask,
+                            mtu: tun_mtu,
+                        })
+                    } else {
+                        None
+                    };
                     frp_sh::commands::run_create(
-                        cfg, prefix, ttl, service, relay, key, max_conns, spread,
+                        cfg, prefix, ttl, service, relay, key, max_conns, spread, tun_opts,
                     )
                     .await?;
                 }
@@ -50,10 +64,26 @@ async fn main() -> anyhow::Result<()> {
                     key,
                     max_conns,
                     spread,
+                    tun,
+                    tun_ip,
+                    tun_netmask,
+                    tun_mtu,
                 } => {
                     let cfg = Config::load_auto(config.as_deref())?;
-                    frp_sh::commands::run_join(cfg, room_id, listen, relay, key, max_conns, spread)
-                        .await?;
+                    let tun_opts = if tun {
+                        let d = frp_sh::commands::TunOpts::guest_default();
+                        Some(frp_sh::commands::TunOpts {
+                            ip: tun_ip.unwrap_or(d.ip),
+                            netmask: tun_netmask,
+                            mtu: tun_mtu,
+                        })
+                    } else {
+                        None
+                    };
+                    frp_sh::commands::run_join(
+                        cfg, room_id, listen, relay, key, max_conns, spread, tun_opts,
+                    )
+                    .await?;
                 }
             }
         }

@@ -110,7 +110,8 @@ async fn run_session(
             token,
             key_h,
             max_conns,
-            2, // spread
+            2,    // spread
+            None, // tun
         )
         .await
     });
@@ -119,7 +120,17 @@ async fn run_session(
     let room_id2 = room_id.clone();
     let listen = guest_listen.to_string();
     let guest = tokio::spawn(async move {
-        commands::guest_session(&cfg2, &room_id2, listen, force_relay, key, max_conns, 2).await
+        commands::guest_session(
+            &cfg2,
+            &room_id2,
+            listen,
+            force_relay,
+            key,
+            max_conns,
+            2,
+            None,
+        )
+        .await
     });
 
     // 等待访客本地监听就绪后，依次建立连接
