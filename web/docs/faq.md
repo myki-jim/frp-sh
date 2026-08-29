@@ -111,7 +111,8 @@ NAT 映射有超时（通常 30~120s）。frp-sh 每秒互发 keepalive ACK 帧�
 
 - **Windows**：直接运行 `frp-sh lan create/join` 即可——程序检测到权限不足时会
   自动弹出 UAC 提权窗口，点一次「是」就以管理员继续运行（首次需确认，之后每次运行
-  仍会弹一次 UAC 确认）
+  仍会弹一次 UAC 确认），并**自动放行虚拟网卡入站流量**（否则对端 ping / 访问你会
+  被 Windows 防火墙拦截）
 - **macOS / Linux**：用 `sudo frp-sh lan create/join` 运行
 - Windows 的 `wintun.dll` 由安装脚本自动下载（`irm https://frp.sh/install.ps1 | iex`）
 

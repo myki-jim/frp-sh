@@ -211,6 +211,11 @@ async fn run_data_plane(
             ">>> 虚拟网卡模式: IP {} / {} (MTU {}, 设备 {real_name})",
             o.ip, o.netmask, o.mtu
         );
+        // Windows：放行虚拟网卡入站流量（否则对端 ping / 访问本机被防火墙拦截）
+        match crate::p2p::tun::allow_firewall(&real_name) {
+            Ok(()) => println!("    防火墙已放行 {real_name}（对端可 ping/访问本机）"),
+            Err(e) => println!("    防火墙规则添加失败（对端可能无法 ping/访问本机）: {e}"),
+        }
         // macOS：utun 点对点，需显式添加虚拟网段路由，否则对端回包路由失败（ping 不通）
         if let Some(cidr) = utils::cidr_from_ip_netmask(&o.ip, &o.netmask) {
             match crate::p2p::tun::add_subnet_route(&cidr, &real_name) {

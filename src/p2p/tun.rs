@@ -87,6 +87,40 @@ pub fn add_subnet_route(cidr: &str, dev: &str) -> Result<()> {
     }
 }
 
+/// Windows：放行虚拟网卡接口的入站流量与 ICMPv4。
+///
+/// Windows Defender 防火墙默认阻止**入站** ICMP 回显请求与其他入站连接，
+/// 导致对端（房主/访客）ping 或访问本机失败。会话以管理员权限运行时
+/// 自动添加两条规则：
+/// - `frp-sh LAN mesh`：放行该接口（frp1）的所有入站流量
+/// - `frp-sh ICMPv4-in`：放行 ICMPv4 入站（兜底，接口重建后仍生效）
+///
+/// 幂等：先删除同名旧规则再添加。
+#[cfg(target_os = "windows")]
+pub fn allow_firewall(iface: &str) -> Result<()> {
+    let script = format!(
+        "Remove-NetFirewallRule -DisplayName 'frp-sh LAN mesh' -ErrorAction SilentlyContinue; \
+         New-NetFirewallRule -DisplayName 'frp-sh LAN mesh' -Direction Inbound -Action Allow -InterfaceAlias '{iface}' -Profile Any | Out-Null; \
+         Remove-NetFirewallRule -DisplayName 'frp-sh ICMPv4-in' -ErrorAction SilentlyContinue; \
+         New-NetFirewallRule -DisplayName 'frp-sh ICMPv4-in' -Direction Inbound -Action Allow -Protocol ICMPv4 -Profile Any | Out-Null"
+    );
+    run_cmd(
+        "powershell",
+        &[
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ],
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn allow_firewall(_iface: &str) -> Result<()> {
+    Ok(())
+}
+
 /// 在 TUN 设备与数据通道之间双向转发 IP 包，直到会话结束。
 pub async fn run<TR>(mut transport: TR, mut dev: tun::AsyncDevice) -> Result<()>
 where
