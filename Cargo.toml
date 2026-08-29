@@ -1,0 +1,28 @@
+[package]
+name = "frp-sh"
+version = "0.1.0"
+edition = "2021"
+description = "Social P2P tunnel: room-based UDP hole punching with relay fallback"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+thiserror = "1"
+rand = "0.8"
+hex = "0.4"
+env_logger = "0.11"
+log = "0.4"
+bytes = "1"
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
+
+[profile.release]
+strip = true
+lto = "thin"

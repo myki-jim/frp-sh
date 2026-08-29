@@ -1,0 +1,14 @@
+[book]
+title = "frp-sh 使用手册"
+authors = ["frp-sh"]
+language = "zh"
+description = "社交化 P2P 打洞工具 frp-sh 的完整使用文档"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "ayu"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/example/frp-sh"
+site-url = "/"

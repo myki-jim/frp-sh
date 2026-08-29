@@ -1,0 +1,17 @@
+# Rust
+/target
+Cargo.lock.bak
+
+# Node
+node_modules/
+web/.vitepress/cache
+web/.vitepress/dist
+web/.vitepress/.cache
+
+# 本地测试/部署产物
+.testappdata/
+*.log
+docs/book/
+
+# 部署脚本含服务器凭据，不入库
+deploy/

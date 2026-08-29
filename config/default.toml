@@ -1,0 +1,7 @@
+# frp-sh 默认配置（可通过 `--config <path>` 覆盖）
+#
+# 信令服务器 HTTP 基地址（REST API，UDP 公网探测复用同一端口）
+signaling_addr = "http://127.0.0.1:8080"
+
+# 信令服务器 TCP 中继地址（打洞失败时数据经此转发）
+relay_addr = "127.0.0.1:8081"
