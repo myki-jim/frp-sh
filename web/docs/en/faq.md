@@ -18,11 +18,11 @@ The client cannot reach the server's UDP probe port:
 
 ### Stuck at `UDP hole punching failed, falling back to relay ...`
 
-Punch failure is normal for strict NATs and **does not break usage** 鈥?it falls back to relay automatically. To get direct:
+Punch failure is normal for strict NATs and **does not break usage** —it falls back to relay automatically. To get direct:
 
 - Try a larger `--spread` (symmetric NAT)
 - Make sure UDP outbound works on both sides
-- If both ends are behind the same NAT/LAN, public-IP punching is a hairpin case and may fail 鈥?use `--relay`
+- If both ends are behind the same NAT/LAN, public-IP punching is a hairpin case and may fail —use `--relay`
 
 ### Direct link established but no data flows
 
@@ -52,7 +52,7 @@ AddrInUse
 
 After a TCP listener closes, Windows briefly holds the port in a transitional state; immediately re-binding UDP on the same port can fail:
 
-- Wait 2鈥? seconds before restarting
+- Wait 2— seconds before restarting
 - Or use a separate UDP probe port (`signaling_udp` + a dedicated server listener)
 
 ## Performance & stability
@@ -65,11 +65,11 @@ After a TCP listener closes, Windows briefly holds the port in a transitional st
 
 ### Connection dies after long idle
 
-NAT mappings expire (usually 30鈥?20 s). frp-sh sends keepalive ACKs every second, so this normally doesn't happen; if your NAT has an extremely short timeout, keep a trickle of data flowing.
+NAT mappings expire (usually 30—20 s). frp-sh sends keepalive ACKs every second, so this normally doesn't happen; if your NAT has an extremely short timeout, keep a trickle of data flowing.
 
 ### Frames dropped under heavy load
 
-The read buffer caps at 1 MB; beyond that frames are dropped and recovered by retransmit (go-back-N flow control). Expected behavior 鈥?correctness is unaffected.
+The read buffer caps at 1 MB; beyond that frames are dropped and recovered by retransmit (go-back-N flow control). Expected behavior —correctness is unaffected.
 
 ## Security questions
 
@@ -82,18 +82,18 @@ Relay traffic is **plaintext** (it passes through your signaling server). For co
 
 ### Can room codes be guessed?
 
-The code body is 6 hex chars (~16M combinations) with a 12h TTL; brute-forcing means hitting the server millions of times in a short window 鈥?low risk but nonzero. For higher assurance:
+The code body is 6 hex chars (~16M combinations) with a 12h TTL; brute-forcing means hitting the server millions of times in a short window —low risk but nonzero. For higher assurance:
 
 - Use a longer custom prefix: `frp-sh game create --prefix my-long-room-2024`
 - Add `--key` (even if the code leaks, the traffic stays encrypted)
 
 ## Other
 
-### Both sides are on the same WiFi 鈥?how do we get a LAN direct link?
+### Both sides are on the same WiFi —how do we get a LAN direct link?
 
-No action needed 鈥?it's automatic. The host advertises its LAN addresses when creating
+No action needed —it's automatic. The host advertises its LAN addresses when creating
 a room; the guest punches at both the public and LAN addresses. On the same subnet you
-get `鏈湴灞€鍩熺綉鐩磋繛 (LAN direct)` within seconds 鈥?traffic stays entirely on the LAN,
+get `本地局域网直连 (LAN direct)` within seconds —traffic stays entirely on the LAN,
 no server involved, lowest latency (great for gaming).
 
 ### Can the guest reach other devices on the host's LAN (NAS/printer)?
@@ -116,7 +116,7 @@ let the host reach devices on the guest's own LAN.
 Yes. Creating the virtual NIC, setting IPs, and adding routes are privileged
 operations. To avoid manually right-clicking "Run as administrator":
 
-- **Windows**: just run `frp-sh lan create/join` 鈥?when the program detects
+- **Windows**: just run `frp-sh lan create/join` —when the program detects
   insufficient rights it pops a UAC elevation prompt automatically; click "Yes"
   once and it continues as admin (a UAC confirmation appears on each run), and it auto-allows inbound traffic on the virtual NIC (otherwise the peer's ping/connections would be blocked by the Windows firewall)
 - **macOS / Linux**: run `sudo frp-sh lan create/join`
@@ -127,14 +127,14 @@ operations. To avoid manually right-clicking "Run as administrator":
 
 ### Is each device's virtual IP fixed? How do I manage them (VLAN-like)?
 
-Yes 鈥?**every device gets a fixed virtual IP**, one of three ways (priority order):
+Yes —**every device gets a fixed virtual IP**, one of three ways (priority order):
 
 1. **Explicit**: `frp-sh lan join lan-xxx --ip 10.66.0.5`
 2. **Host-assigned**: the host reserves a pool with
    `frp-sh lan create --guest-ips 10.66.0.2,10.66.0.3`; guests take addresses in
    join order and reuse the same IP across reconnects
 3. **UUID-derived**: with nothing configured, the address derives stably from the
-   device ID (e.g. `10.66.0.42`) 鈥?the same device always gets the same IP
+   device ID (e.g. `10.66.0.42`) —the same device always gets the same IP
 
 The default subnet is `10.66.0.0/24` (one VLAN). For multiple VLANs, open separate
 rooms on different subnets (`--ip` + `--netmask` support any subnet). Everyone in one
@@ -142,7 +142,7 @@ room shares one subnet and can reach each other directly.
 
 ### Why is the default port 25565? Is that Minecraft's?
 
-Yes 鈥?25565 is the default Minecraft (Java Edition) server port. frp-sh was designed for "play with friends" scenarios, so both the host service and the guest listen default to 25565 for out-of-the-box server hosting.
+Yes —25565 is the default Minecraft (Java Edition) server port. frp-sh was designed for "play with friends" scenarios, so both the host service and the guest listen default to 25565 for out-of-the-box server hosting.
 
 Any port works: the host sets `--service` to its service address, the guest sets `--listen` to its local port. For example, a web service on port 3000:
 
@@ -161,7 +161,7 @@ By default sessions **reconnect automatically** (backoff from 2s, capped at 15s)
 
 - Either side presses `Ctrl-C` (the host deletes the room on exit)
 - The room expires or is deleted (both sides end automatically)
-- `--max-conns` is exhausted 鈥?the current round ends, then it reconnects and waits for the next round
+- `--max-conns` is exhausted —the current round ends, then it reconnects and waits for the next round
 
 ### IPv6 support?
 
@@ -169,7 +169,7 @@ Signaling, relay, and punching all use standard `SocketAddr` and support IPv6 (`
 
 ### Can it run in Docker?
 
-Yes 鈥?the static binary drops straight into an image:
+Yes —the static binary drops straight into an image:
 
 ```dockerfile
 FROM ubuntu:24.04
