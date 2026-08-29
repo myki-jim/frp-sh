@@ -11,7 +11,8 @@ use std::time::Duration;
 
 /// 两次检查的最小间隔（秒）。
 const CHECK_INTERVAL_SECS: u64 = 6 * 3600;
-/// 下载超时（秒）。
+/// 下载超时（秒，仅 Windows 自动替换使用）。
+#[cfg(target_os = "windows")]
 const DOWNLOAD_TIMEOUT_SECS: u64 = 180;
 
 /// 版本来源（按顺序尝试）。
@@ -192,6 +193,7 @@ async fn install_latest(latest: &str) -> anyhow::Result<()> {
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = latest;
         println!(
             "  请运行以下命令更新（当前进程退出后执行）：\n    curl -fsSL https://frp.sh/install.sh | sh\n"
         );
