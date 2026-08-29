@@ -33,31 +33,33 @@ esac
 
 # 检测架构
 uname_m="$(uname -m)"
-case "${uname_m}" in
-  x86_64 | amd64) arch="x86_64" ;;
-  aarch64 | arm64) arch="aarch64" ;;
+# 检测架构并确定资产名（注意：Linux 用 aarch64，macOS 用 arm64）
+case "${os}-${uname_m}" in
+  linux-x86_64 | linux-amd64)    asset="frp-sh-linux-x86_64" ;;
+  linux-aarch64 | linux-arm64)   asset="frp-sh-linux-aarch64" ;;
+  macos-x86_64 | macos-amd64)    asset="frp-sh-macos-x86_64" ;;
+  macos-arm64 | macos-aarch64)   asset="frp-sh-macos-arm64" ;;
   *)
-    echo "error: 不支持的架构 ${uname_m}" >&2
+    echo "error: 不支持的平台/架构 ${os}/${uname_m}" >&2
     exit 1
     ;;
 esac
 
-ASSET="frp-sh-${os}-${arch}"
-echo "==> frp-sh 安装器 (${os}/${arch})"
+echo "==> frp-sh 安装器 (${os}/${uname_m})"
 echo "    安装到: ${DEST}"
 
 TMP="$(mktemp)"
 ok=0
 for base in ${BASES}; do
-  echo "    尝试: ${base}/${ASSET}"
-  if curl -fsSL "${base}/${ASSET}" -o "${TMP}"; then
+  echo "    尝试: ${base}/${asset}"
+  if curl -fsSL "${base}/${asset}" -o "${TMP}"; then
     ok=1
     break
   fi
 done
 if [ "${ok}" != "1" ]; then
   rm -f "${TMP}"
-  echo "error: 下载失败 ${ASSET}（已尝试 frp.sh 与 GitHub Releases，请检查网络）" >&2
+  echo "error: 下载失败 ${asset}（已尝试 frp.sh 与 GitHub Releases，请检查网络）" >&2
   exit 1
 fi
 chmod +x "${TMP}"
