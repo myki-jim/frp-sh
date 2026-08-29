@@ -111,5 +111,6 @@ jobs:
             echo "no changes"
           else
             git commit -m "chore: sync release binaries to site downloads"
-            git push
+            # tag 触发的 checkout 处于 detached HEAD，显式推送到 main
+            git push origin HEAD:main
           fi
