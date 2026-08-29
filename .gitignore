@@ -17,3 +17,4 @@ docs/book/
 deploy/
 .wrangler/
 ci_publish_log.txt
+.crate-check/
