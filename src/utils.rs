@@ -148,6 +148,16 @@ pub fn parse_cidr(cidr: &str) -> Option<(u32, u8)> {
     Some((u32::from(ip), pfx))
 }
 
+/// 由 (IP, 子网掩码) 计算 CIDR（如 `10.66.0.18/255.255.255.0` → `10.66.0.0/24`）。
+pub fn cidr_from_ip_netmask(ip: &str, netmask: &str) -> Option<String> {
+    let ip: Ipv4Addr = ip.parse().ok()?;
+    let mask: Ipv4Addr = netmask.parse().ok()?;
+    let mask_u = u32::from(mask);
+    let prefix = mask_u.count_ones() as u8;
+    let net = u32::from(ip) & mask_u;
+    Some(format!("{}/{}", Ipv4Addr::from(net), prefix))
+}
+
 /// 判断两个 CIDR 子网是否重叠。
 pub fn cidrs_overlap(a: &str, b: &str) -> bool {
     let Some((na, pa)) = parse_cidr(a) else {

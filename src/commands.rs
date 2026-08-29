@@ -211,6 +211,13 @@ async fn run_data_plane(
             ">>> 虚拟网卡模式: IP {} / {} (MTU {}, 设备 {real_name})",
             o.ip, o.netmask, o.mtu
         );
+        // macOS：utun 点对点，需显式添加虚拟网段路由，否则对端回包路由失败（ping 不通）
+        if let Some(cidr) = utils::cidr_from_ip_netmask(&o.ip, &o.netmask) {
+            match crate::p2p::tun::add_subnet_route(&cidr, &real_name) {
+                Ok(()) => println!("    虚拟网段路由 {cidr} → {real_name} 已添加"),
+                Err(e) => println!("    虚拟网段路由添加失败: {e}"),
+            }
+        }
         println!("    对端现可访问本虚拟网段（如 ping {}）", o.ip);
         match mode {
             ForwardMode::Host { .. } => {

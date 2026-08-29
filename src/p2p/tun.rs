@@ -69,6 +69,24 @@ pub fn device_name(dev: &tun::AsyncDevice) -> Option<String> {
     dev.tun_name().ok()
 }
 
+/// 为虚拟网段添加经 TUN 设备的网络路由。
+///
+/// 仅 macOS 需要：utun 是**点对点**接口，设置接口地址后内核不会自动生成
+/// 整个网段的路由，导致对端虚拟 IP 的回包路由失败（ping 不通）。
+/// 必须显式 `route -n add -net <cidr> -interface <dev>`。
+/// Linux（普通接口，自动 on-link 路由）与 Windows（wintun 同理）无需处理。
+pub fn add_subnet_route(cidr: &str, dev: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        run_cmd("route", &["-n", "add", "-net", cidr, "-interface", dev])
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (cidr, dev);
+        Ok(())
+    }
+}
+
 /// 在 TUN 设备与数据通道之间双向转发 IP 包，直到会话结束。
 pub async fn run<TR>(mut transport: TR, mut dev: tun::AsyncDevice) -> Result<()>
 where
