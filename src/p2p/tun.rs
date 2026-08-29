@@ -25,13 +25,22 @@ pub struct TunConfig {
 }
 
 /// 创建并启用 TUN 设备。
+///
+/// - Linux：设备名可自定义（如 `frp0`），需 root / CAP_NET_ADMIN
+/// - macOS：utun 设备名由系统分配（`utunN`），**不能自定义**（否则报
+///   `invalid device tun name`）；不设置名称即可，创建后实际名为 `utunN`
+/// - Windows：设备名取自 Wintun；需要 `wintun.dll` 放在可执行文件旁，
+///   或用 `WINTUN_DLL` 环境变量指定路径，且需管理员权限
 pub fn create(cfg: &TunConfig) -> Result<tun::AsyncDevice> {
     let mut c = tun::configure();
-    c.tun_name(&cfg.name)
-        .address(&cfg.ip)
-        .netmask(&cfg.netmask)
-        .mtu(cfg.mtu)
-        .up();
+    #[cfg(target_os = "macos")]
+    {
+        // macOS utun 名称由系统分配，跳过自定义名称
+        let _ = &cfg.name;
+    }
+    #[cfg(not(target_os = "macos"))]
+    c.tun_name(&cfg.name);
+    c.address(&cfg.ip).netmask(&cfg.netmask).mtu(cfg.mtu).up();
     #[cfg(target_os = "windows")]
     {
         let dll = std::env::var("WINTUN_DLL")
@@ -44,8 +53,20 @@ pub fn create(cfg: &TunConfig) -> Result<tun::AsyncDevice> {
             });
         c.platform_config(|pc| pc.wintun_file(dll));
     }
-    tun::create_as_async(&c)
-        .map_err(|e| FrpError::Tun(format!("创建 TUN 设备失败（需要 root/管理员权限）: {e}")))
+    tun::create_as_async(&c).map_err(|e| {
+        let hint = if cfg!(target_os = "windows") {
+            "；Windows 需要 wintun.dll 放在可执行文件旁（或用 WINTUN_DLL 环境变量指定），且需管理员权限"
+        } else {
+            ""
+        };
+        FrpError::Tun(format!("创建 TUN 设备失败{hint}: {e}"))
+    })
+}
+
+/// 获取 TUN 设备的实际系统名称（macOS 为 `utunN`，Linux 为自定义名）。
+pub fn device_name(dev: &tun::AsyncDevice) -> Option<String> {
+    use tun::AbstractDevice;
+    dev.tun_name().ok()
 }
 
 /// 在 TUN 设备与数据通道之间双向转发 IP 包，直到会话结束。

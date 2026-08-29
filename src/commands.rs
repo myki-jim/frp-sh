@@ -108,8 +108,10 @@ async fn run_data_plane(
             netmask: o.netmask.clone(),
             mtu: o.mtu,
         })?;
+        // 实际设备名（macOS 为系统分配的 utunN；Linux 为自定义名；Windows 为 wintun 适配器名）
+        let real_name = crate::p2p::tun::device_name(&dev).unwrap_or_else(|| dev_name.to_string());
         println!(
-            ">>> 虚拟网卡模式: IP {} / {} (MTU {}, 设备 {dev_name})",
+            ">>> 虚拟网卡模式: IP {} / {} (MTU {}, 设备 {real_name})",
             o.ip, o.netmask, o.mtu
         );
         println!("    对端现可访问本虚拟网段（如 ping {}）", o.ip);
@@ -128,8 +130,10 @@ async fn run_data_plane(
             ForwardMode::Guest { .. } => {
                 // 访客：为房主局域网子网添加经 TUN 的路由
                 for cidr in &o.lan_routes {
-                    match crate::p2p::tun::add_route(cidr, dev_name, &o.ip) {
-                        Ok(()) => println!("    路由 {cidr} → {dev_name} 已添加（访问房主局域网）"),
+                    match crate::p2p::tun::add_route(cidr, &real_name, &o.ip) {
+                        Ok(()) => {
+                            println!("    路由 {cidr} → {real_name} 已添加（访问房主局域网）")
+                        }
                         Err(e) => println!("    路由 {cidr} 添加失败: {e}"),
                     }
                 }

@@ -42,6 +42,22 @@ if (-not $downloaded) {
 }
 Move-Item -Force $tmp $exe
 
+# Windows 组网（lan）需要 Wintun 驱动库：下载 wintun.dll 放到 exe 旁边
+$dll = Join-Path $destDir 'wintun.dll'
+if (-not (Test-Path $dll)) {
+  try {
+    Write-Host "    下载 wintun.dll（lan 组网模式需要）..."
+    $wz = Join-Path $destDir 'wintun.zip'
+    Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $wz -UseBasicParsing -ErrorAction Stop
+    Expand-Archive -Path $wz -DestinationPath (Join-Path $destDir '_wintun_tmp') -Force
+    Copy-Item (Join-Path $destDir '_wintun_tmp\wintun\bin\amd64\wintun.dll') $dll -Force
+    Remove-Item -Recurse -Force (Join-Path $destDir '_wintun_tmp'), $wz -ErrorAction SilentlyContinue
+    Write-Host "    wintun.dll 已安装"
+  } catch {
+    Write-Host "    [警告] wintun.dll 下载失败：lan 组网模式将不可用（game/dev 转发模式不受影响）"
+  }
+}
+
 # 加入用户 PATH（若尚未包含）
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$destDir*") {
@@ -53,3 +69,4 @@ if ($userPath -notlike "*$destDir*") {
 $ver = & $exe --version 2>$null | Select-Object -First 1
 Write-Host "==> 安装完成: $exe ($ver)"
 Write-Host "    运行 frp-sh --help 开始使用；重新执行本命令即可更新。"
+Write-Host "    提示: lan 组网模式需以管理员身份运行（创建虚拟网卡）。"
