@@ -32,8 +32,15 @@ The current version focuses on "simple, robust, good enough". Planned capabiliti
 -  Auto-reconnect with exponential backoff (refreshes public address + room)
 -  Same-LAN auto-direct (advertises LAN addresses, dual-path punching)
 -  Mesh mode (`lan` series: virtual-NIC whole-machine mesh, 10.66.0.0/24; guest can reach the host's LAN)
--  Per-device unique ID (UUID) + stable derived virtual IP
--  Windows compatibility (ICMP poisoning handling, TUN/WinTun)
+-  Per-device unique ID (UUID) + stable derived virtual IP + host IP pool (`--guest-ips`)
+-  Server password auth (`serve --password`: 401 request checks + relay auth)
+-  Relay traffic encryption (ChaCha20-Poly1305 stream, anti-eavesdropping)
+-  Version governance: protocol conflict control (`/version`), startup update
+  checks (skippable / big-gap forced), server & host version yellow/red hints
+-  LAN exposure off by default (`--expose-lan` opts in)
+-  Windows compatibility (ICMP poisoning, TUN/WinTun, auto UAC elevation, firewall auto-allow)
+-  macOS utun compatibility (point-to-point route fix)
+-  English CLI with colors, ASCII logo, interactive installer setup
 -  End-to-end tests and real-NAT verification
 
 ## Contributing

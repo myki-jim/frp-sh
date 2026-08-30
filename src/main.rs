@@ -66,9 +66,10 @@ async fn real_main() -> anyhow::Result<()> {
         Some(Commands::Serve {
             addr,
             relay_addr,
+            udp_addr,
             password,
         }) => {
-            frp_sh::commands::run_serve(addr, relay_addr, password).await?;
+            frp_sh::commands::run_serve(addr, relay_addr, udp_addr, password).await?;
         }
         Some(Commands::Config) => {
             frp_sh::commands::run_config(config).await?;

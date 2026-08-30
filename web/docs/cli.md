@@ -62,7 +62,7 @@ frp-sh --verbose lan join lan-a3f9c2
 在公网 VPS 上运行，提供房间注册、UDP 公网探测与 TCP 中继转发。
 
 ```bash
-frp-sh serve [--addr <地址>] [--relay-addr <地址>]
+frp-sh serve [--addr <地址>] [--relay-addr <地址>] [--udp-addr <地址>] [--password <口令>]
 ```
 
 `Ctrl-C` 优雅退出。
@@ -94,6 +94,36 @@ frp-sh serve --addr 127.0.0.1:8080        # 仅本机可用（调试用）
 
 ```bash
 frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:9001
+```
+
+### `--udp-addr <地址>`
+
+**作用**：独立的 UDP 公网探测监听地址（可选）。
+
+- **默认值**：与 `--addr` 同端口（客户端配置里的 `signaling_udp` 需与此对应）
+- 仅当云防火墙**无法在同端口同时放行 TCP 与 UDP** 时使用
+- 使用后客户端须在配置中设置 `signaling_udp`（`frp-sh config` 向导第 3 步）
+
+**示例**：
+
+```bash
+frp-sh serve --addr 0.0.0.0:8080 --udp-addr 0.0.0.0:8082
+# 客户端 config: signaling_udp = "服务器IP:8082"
+```
+
+### `--password <口令>`
+
+**作用**：服务器密码（可选）。设置后：
+
+- **请求认证**：所有信令请求校验 `X-Frp-Sh-Token`，缺失/错误 → 401 拒绝
+- **中继认证 + 加密**：中继连接需携带密码，通道用 ChaCha20-Poly1305 流加密
+- 客户端必须在配置中设置同一 `password`（`frp-sh config` 向导第 4 步）
+- 不设置时行为与旧版完全一致（兼容无密码客户端）
+
+**示例**：
+
+```bash
+frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password 你的密码
 ```
 
 ---

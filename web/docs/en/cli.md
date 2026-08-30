@@ -67,7 +67,7 @@ Run it on a public VPS to provide room registration, UDP public-address probing,
 and TCP relay forwarding.
 
 ```bash
-frp-sh serve [--addr <addr>] [--relay-addr <addr>]
+frp-sh serve [--addr <addr>] [--relay-addr <addr>] [--udp-addr <addr>] [--password <passphrase>]
 ```
 
 `Ctrl-C` shuts down gracefully.
@@ -101,6 +101,38 @@ punching fails).
 
 ```bash
 frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:9001
+```
+
+### `--udp-addr <addr>`
+
+**Purpose**: separate UDP probe listen address (optional).
+
+- **Default**: same port as `--addr` (clients' `signaling_udp` must match)
+- Only needed when your cloud firewall cannot open TCP and UDP on the same port
+- When used, clients must set `signaling_udp` in config (wizard step 3)
+
+**Example**:
+
+```bash
+frp-sh serve --addr 0.0.0.0:8080 --udp-addr 0.0.0.0:8082
+# client config: signaling_udp = "SERVER_IP:8082"
+```
+
+### `--password <passphrase>`
+
+**Purpose**: server password (optional). When set:
+
+- **Request auth**: every signaling request is checked (`X-Frp-Sh-Token`);
+  missing/wrong → 401
+- **Relay auth + encryption**: relay connections must carry the password and the
+  channel is encrypted with ChaCha20-Poly1305
+- Clients must set the same `password` in config (wizard step 4)
+- Without it, behavior is identical to older versions (old clients keep working)
+
+**Example**:
+
+```bash
+frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password YOUR_PASSWORD
 ```
 
 ---

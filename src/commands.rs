@@ -314,20 +314,23 @@ async fn run_data_plane(
 // ---------- serve ----------
 
 /// `frp-sh serve`：同时提供 HTTP REST、UDP 公网探测与 TCP 中继。
+///
+/// `udp_addr`：可选独立 UDP 探测端口（云防火墙无法同端口开 TCP+UDP 时使用）。
 pub async fn run_serve(
     http_addr: String,
     relay_addr: String,
+    udp_addr: Option<String>,
     password: Option<String>,
 ) -> anyhow::Result<()> {
     let http_listener = TcpListener::bind(&http_addr).await?;
     let http_sock: SocketAddr = http_listener.local_addr()?;
-    let udp = UdpSocket::bind(http_sock).await?;
+    let udp = UdpSocket::bind(udp_addr.as_deref().unwrap_or(&http_addr)).await?;
     let relay_listener = TcpListener::bind(&relay_addr).await?;
     let relay_sock: SocketAddr = relay_listener.local_addr()?;
 
     println!("frp-sh signaling server");
     println!("  HTTP REST : {http_sock}");
-    println!("  UDP echo  : {http_sock}");
+    println!("  UDP echo  : {}", udp.local_addr()?);
     println!("  TCP relay : {relay_sock}");
     match &password {
         Some(_) => println!("  Auth       : enabled (--password) — clients must set the same password; relay traffic encrypted"),
@@ -1158,14 +1161,22 @@ pub async fn guest_session(
             }
         }
 
-        let outcome =
-            match guest_punch_phase(&engine, &host_addrs, &token, force_relay, spread).await {
-                Ok(o) => o,
-                Err(e) => {
-                    log::warn!("punch phase error: {e}");
-                    continue;
-                }
-            };
+        let outcome = match guest_punch_phase(
+            &engine,
+            &signaling,
+            room_id,
+            &token,
+            force_relay,
+            spread,
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("punch phase error: {e}");
+                continue;
+            }
+        };
         let run_result = match outcome {
             PunchOutcome::Direct { peer, first } => {
                 state.peer_addr = Some(peer);
@@ -1224,7 +1235,7 @@ pub async fn guest_session(
                     .await
                 } else {
                     // 中继连接后再做一次直连复查（应对"房主已打通、访客 ACK 丢失"的不对称场景）
-                    match final_punch_check(&engine, &host_addrs, &token, spread).await {
+                    match final_punch_check(&engine, &signaling, room_id, &token, spread).await {
                         Ok(PunchOutcome::Direct { peer, first }) => {
                             announce_direct(peer);
                             drop(stream);
@@ -1289,9 +1300,13 @@ async fn retry_get_room_info(
 }
 
 /// 访客打洞阶段：向房主候选地址（公网 + 局域网）持续发送 PUNCH 并等待 ACK / 数据帧。
+///
+/// 周期刷新房间获取房主最新地址——房主重连/刷新后地址会变，若一直用
+/// 初始拿到（刷新前）的旧地址会打到死端口（e2e 偶发超时的根因）。
 async fn guest_punch_phase(
     engine: &PunchEngine,
-    host_addrs: &[SocketAddr],
+    signaling: &SignalingClient,
+    room_id: &str,
     token: &str,
     force_relay: bool,
     spread: u32,
@@ -1301,11 +1316,21 @@ async fn guest_punch_phase(
     }
     let my_local = engine.local_addr().ok();
     let my_port = my_local.map(|a| a.port());
-    let targets = punch_targets_multi(host_addrs, spread, my_local);
     let deadline = Instant::now() + PUNCH_WINDOW;
     let mut last_punch = Instant::now() - PUNCH_INTERVAL;
+    let mut last_refresh = Instant::now() - POLL_INTERVAL;
+    let mut targets: Vec<SocketAddr> = Vec::new();
     loop {
         let now = Instant::now();
+        // 周期刷新房主地址（公网 + 局域网），避免打到旧地址
+        if now.duration_since(last_refresh) >= POLL_INTERVAL {
+            last_refresh = now;
+            if let Ok(info) = signaling.get_room(room_id).await {
+                let mut addrs = vec![info.host_addr];
+                addrs.extend(info.host_lan.iter().copied());
+                targets = punch_targets_multi(&addrs, spread, my_local);
+            }
+        }
         if now < deadline && now.duration_since(last_punch) >= PUNCH_INTERVAL {
             for target in &targets {
                 let _ = engine.send_punch(*target, token).await;
@@ -1352,13 +1377,22 @@ async fn guest_punch_phase(
 /// 中继连接后的最终直连复查（约 400ms）。
 async fn final_punch_check(
     engine: &PunchEngine,
-    host_addrs: &[SocketAddr],
+    signaling: &SignalingClient,
+    room_id: &str,
     token: &str,
     spread: u32,
 ) -> Result<PunchOutcome> {
     let my_local = engine.local_addr().ok();
     let my_port = my_local.map(|a| a.port());
-    let targets = punch_targets_multi(host_addrs, spread, my_local);
+    // 复查前刷新一次房主地址（重连后可能已变化）
+    let targets = match signaling.get_room(room_id).await {
+        Ok(info) => {
+            let mut addrs = vec![info.host_addr];
+            addrs.extend(info.host_lan.iter().copied());
+            punch_targets_multi(&addrs, spread, my_local)
+        }
+        Err(_) => Vec::new(),
+    };
     for _ in 0..3 {
         for target in &targets {
             let _ = engine.send_punch(*target, token).await;

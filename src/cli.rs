@@ -32,6 +32,10 @@ pub enum Commands {
         /// TCP relay listen address
         #[arg(long, default_value = "0.0.0.0:8081")]
         relay_addr: String,
+        /// Separate UDP probe listen address (optional; only needed when your
+        /// cloud firewall can't open TCP+UDP on the same port)
+        #[arg(long)]
+        udp_addr: Option<String>,
         /// Server password (optional): clients must configure the same password;
         /// enables request authentication and relay traffic encryption
         #[arg(long)]
