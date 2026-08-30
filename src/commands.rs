@@ -22,6 +22,8 @@ use tokio::net::{TcpListener, UdpSocket};
 
 /// 打洞窗口时长（超时后转入中继）
 pub const PUNCH_WINDOW: Duration = Duration::from_secs(3);
+/// 打洞阶段总时长上限：地址频繁变化时防止窗口被无限延长
+const MAX_PUNCH_PHASE: Duration = Duration::from_secs(12);
 /// 打洞发包间隔
 const PUNCH_INTERVAL: Duration = Duration::from_millis(60);
 /// 房主轮询房间间隔
@@ -879,15 +881,26 @@ async fn host_punch_phase(
     let mut last_punch = Instant::now() - PUNCH_INTERVAL;
     let my_local = engine.local_addr().ok();
     let my_port = my_local.map(|a| a.port());
+    // 打洞阶段开始时间（首个访客出现时）——防止地址频繁变化导致窗口无限延长
+    let mut first_guest: Option<Instant> = None;
     loop {
         let now = Instant::now();
-        // 1) 轮询房间，等待访客注册
-        if guest_addrs.is_empty() && now.duration_since(last_poll) >= POLL_INTERVAL {
+        // 1) 持续轮询房间获取访客最新地址：重连场景下访客重注册后地址会变，
+        //    一直用旧地址会打到死端口；发现新地址时重开打洞窗口
+        if now.duration_since(last_poll) >= POLL_INTERVAL {
             last_poll = now;
             if let Ok(info) = signaling.get_room(room_id).await {
+                let mut addrs = Vec::new();
                 if let Some(g) = info.guest_addr {
-                    guest_addrs.push(g);
-                    guest_addrs.extend(info.guest_lan);
+                    addrs.push(g);
+                    addrs.extend(info.guest_lan);
+                }
+                if !addrs.is_empty() && addrs != guest_addrs {
+                    if !guest_addrs.is_empty() {
+                        log::info!("guest address changed to {addrs:?}, restarting punch window");
+                    }
+                    guest_addrs = addrs;
+                    deadline = Some(now + PUNCH_WINDOW);
                 }
             }
         }
@@ -899,6 +912,9 @@ async fn host_punch_phase(
             continue;
         }
         if !guest_addrs.is_empty() {
+            if first_guest.is_none() {
+                first_guest = Some(now);
+            }
             if deadline.is_none() {
                 log::info!("guest {guest_addrs:?} registered, punching ...");
                 deadline = Some(now + PUNCH_WINDOW);
@@ -912,9 +928,12 @@ async fn host_punch_phase(
                 }
             }
         }
-        // 3) 接收数据报
+        // 3) 接收数据报（每次最多 100ms：频繁轮询房间以尽快发现访客地址变化；
+        //    重连场景下旧访客地址已死，持续打洞会产生 ICMP 毒化，需及时切换目标）
         let recv_timeout = match deadline {
-            Some(d) => d.saturating_duration_since(now),
+            Some(d) => d
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(100)),
             None => POLL_INTERVAL,
         };
         if let Some((bytes, src)) = engine.recv(recv_timeout).await? {
@@ -944,9 +963,12 @@ async fn host_punch_phase(
                 }
             }
         }
-        // 4) 超时判定
+        // 4) 超时判定：窗口到期，或总打洞时间超过上限（地址频繁变化时兜底）
         if let Some(d) = deadline {
-            if Instant::now() >= d {
+            let total = first_guest
+                .map(|f| Instant::now().duration_since(f))
+                .unwrap_or_default();
+            if Instant::now() >= d || total >= MAX_PUNCH_PHASE {
                 return Ok(PunchOutcome::TimedOut);
             }
         }
@@ -1316,19 +1338,28 @@ async fn guest_punch_phase(
     }
     let my_local = engine.local_addr().ok();
     let my_port = my_local.map(|a| a.port());
-    let deadline = Instant::now() + PUNCH_WINDOW;
+    let mut deadline = Instant::now() + PUNCH_WINDOW;
+    let phase_start = Instant::now();
     let mut last_punch = Instant::now() - PUNCH_INTERVAL;
     let mut last_refresh = Instant::now() - POLL_INTERVAL;
     let mut targets: Vec<SocketAddr> = Vec::new();
+    let mut last_targets: Vec<SocketAddr> = Vec::new();
     loop {
         let now = Instant::now();
-        // 周期刷新房主地址（公网 + 局域网），避免打到旧地址
+        // 周期刷新房主地址（公网 + 局域网），避免打到旧地址；
+        // 房主重连后地址变化 → 重开打洞窗口，确保能打到新地址
         if now.duration_since(last_refresh) >= POLL_INTERVAL {
             last_refresh = now;
             if let Ok(info) = signaling.get_room(room_id).await {
                 let mut addrs = vec![info.host_addr];
                 addrs.extend(info.host_lan.iter().copied());
-                targets = punch_targets_multi(&addrs, spread, my_local);
+                let t = punch_targets_multi(&addrs, spread, my_local);
+                if !last_targets.is_empty() && t != last_targets {
+                    log::info!("host address changed, restarting punch window");
+                    deadline = now + PUNCH_WINDOW;
+                }
+                last_targets = t.clone();
+                targets = t;
             }
         }
         if now < deadline && now.duration_since(last_punch) >= PUNCH_INTERVAL {
@@ -1368,7 +1399,10 @@ async fn guest_punch_phase(
                 }
             }
         }
-        if Instant::now() >= deadline {
+        // 超时判定：窗口到期，或总打洞时间超过上限（地址频繁变化时兜底）
+        if Instant::now() >= deadline
+            || Instant::now().duration_since(phase_start) >= MAX_PUNCH_PHASE
+        {
             return Ok(PunchOutcome::TimedOut);
         }
     }

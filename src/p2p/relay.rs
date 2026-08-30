@@ -27,6 +27,32 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncReadWr
 
 pub type RelayStream = Box<dyn AsyncReadWrite>;
 
+/// 对 TCP 连接启用短周期保活：空闲约 5s 开始探测，约 15s 内感知死对端。
+///
+/// 中继路径没有应用层心跳，若对端断网/切换网络后保持空闲，裸 TCP 默认
+/// 数小时都不会报错，导致隧道静默挂死、无法触发自动重连。此处用 socket2
+/// 收紧 TCP keepalive（Linux 额外限制 3 次探测），让断线快速暴露。
+pub fn enable_keepalive(stream: TcpStream) -> std::io::Result<TcpStream> {
+    let std = stream.into_std()?;
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        use socket2::{SockRef, TcpKeepalive};
+        let sock = SockRef::from(&std);
+        sock.set_keepalive(true)?;
+        let ka = TcpKeepalive::new()
+            .with_time(Duration::from_secs(5))
+            .with_interval(Duration::from_secs(3));
+        #[cfg(target_os = "linux")]
+        let ka = ka.with_retries(3);
+        sock.set_tcp_keepalive(&ka)?;
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = &std;
+    }
+    TcpStream::from_std(std)
+}
+
 /// 连接信令服务器中继端点，完成 `HELLO <room_id> <ROLE> [token]` 握手。
 ///
 /// - `token`：服务器密码（服务器设置密码时必须提供，作为认证与加密密钥）
@@ -45,6 +71,8 @@ pub async fn connect(
         .await
         .map_err(|_| FrpError::Relay(format!("connect {relay_addr} timed out")))?
         .map_err(FrpError::Io)?;
+    // 断网/切换网络后快速感知死连接，触发上层自动重连
+    let stream = enable_keepalive(stream).map_err(FrpError::Io)?;
     stream.set_nodelay(true).map_err(FrpError::Io)?;
 
     let hello = match token {

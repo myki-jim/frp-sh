@@ -1,6 +1,6 @@
 [package]
 name = "frp-sh"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2021"
 description = "Social P2P tunnel: room-based UDP hole punching with relay fallback"
 license = "MIT"
@@ -26,6 +26,7 @@ tun = { version = "0.8", features = ["async"] }
 uuid = { version = "1", features = ["v4"] }
 if-addrs = "0.13"
 colored = "2"
+socket2 = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_System_Threading", "Win32_Foundation"] }

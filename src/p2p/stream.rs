@@ -39,6 +39,10 @@ const MAX_PLAINTEXT: usize = MAX_PAYLOAD - 16;
 const WINDOW: usize = 32;
 const RETRANSMIT_MS: u64 = 150;
 const KEEPALIVE_MS: u64 = 1000;
+/// 心跳存活超时：超过该时长未收到对端任何帧（数据/ACK/FIN）即判定连接已死，
+/// 主动报错让上层触发自动重连——对端切换网络/掉线导致路径失效时快速恢复，
+/// 而不是无限重传挂死。可用环境变量 `FRPSH_LIVENESS_MS` 覆盖（毫秒），默认 10 秒。
+const LIVENESS_TIMEOUT_MS: u64 = 10_000;
 const OUT_CAP: usize = 256 * 1024;
 const RX_CAP: usize = 1024 * 1024;
 const CLOSE_TIMEOUT_MS: u64 = 5000;
@@ -115,6 +119,8 @@ struct Shared {
     fin_acked: bool,
     write_closed: bool,
     last_rx: Instant,
+    /// 存活超时（默认 10s；`FRPSH_LIVENESS_MS` 可覆盖，测试可缩短）
+    liveness: Duration,
     err: Option<String>,
     read_waker: Option<Waker>,
     write_waker: Option<Waker>,
@@ -155,6 +161,11 @@ impl UdpStream {
         first: Option<(Vec<u8>, SocketAddr)>,
         key: Option<[u8; 32]>,
     ) -> Self {
+        let liveness = std::env::var("FRPSH_LIVENESS_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_millis(LIVENESS_TIMEOUT_MS));
         let cipher = key.map(|k| ChaCha20Poly1305::new(Key::from_slice(&k)));
         let shared = Arc::new(Mutex::new(Shared {
             peer,
@@ -170,6 +181,7 @@ impl UdpStream {
             fin_acked: false,
             write_closed: false,
             last_rx: Instant::now(),
+            liveness,
             err: None,
             read_waker: None,
             write_waker: None,
@@ -206,6 +218,12 @@ impl UdpStream {
     #[cfg(test)]
     pub fn set_loss_rate(&self, rate: f64) {
         self.shared.lock().unwrap().loss_rate = rate;
+    }
+
+    /// 测试用：缩短存活超时，快速验证断线检测。
+    #[cfg(test)]
+    pub fn set_liveness(&self, timeout: Duration) {
+        self.shared.lock().unwrap().liveness = timeout;
     }
 }
 
@@ -446,6 +464,27 @@ async fn on_timer(socket: &UdpSocket, shared: &Arc<Mutex<Shared>>, last_tx: &mut
         }
     }
 
+    // 存活超时：对端长时间无任何帧（数据/ACK/FIN）→ 判定连接已死，主动报错，
+    // 让上层的自动重连循环接手（对端切换网络/掉线后不再无限重传挂死）
+    {
+        let g = shared.lock().unwrap();
+        if g.err.is_none() {
+            let idle = now.duration_since(g.last_rx);
+            if idle > g.liveness {
+                let secs = idle.as_secs();
+                drop(g);
+                log::warn!("no heartbeat from peer for {secs}s; declaring connection lost");
+                fail(
+                    shared,
+                    format!(
+                        "connection lost: no heartbeat from peer for {secs}s (network switched?)"
+                    ),
+                );
+                return;
+            }
+        }
+    }
+
     // 重传所有未确认帧
     let frames: Vec<Vec<u8>> = {
         let g = shared.lock().unwrap();
@@ -658,6 +697,23 @@ mod tests {
         b.read_to_end(&mut got).await.unwrap();
         writer.await.unwrap();
         assert_eq!(got, payload);
+    }
+
+    #[tokio::test]
+    async fn liveness_timeout_detects_dead_peer() {
+        let (mut a, b) = pair().await;
+        // 关闭 b：a 将永远收不到任何帧，存活超时后应报错（触发上层自动重连）
+        drop(b);
+        a.set_liveness(Duration::from_millis(400));
+        let start = Instant::now();
+        let mut buf = [0u8; 16];
+        let r = a.read(&mut buf).await;
+        assert!(r.is_err(), "expected liveness error, got {r:?}");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(350),
+            "failed too early: {elapsed:?}"
+        );
     }
 
     #[tokio::test]

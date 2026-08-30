@@ -126,7 +126,7 @@ async fn run_session(
             force_relay,
             key_h,
             max_conns,
-            2,       // spread
+            0,       // spread: 并行测试时禁用端口散布，避免 PUNCH 打到其他测试的 socket
             None,    // tun
             Some(1), // 测试：单轮即返回
             false,   // expose_lan
@@ -145,7 +145,7 @@ async fn run_session(
             force_relay,
             key,
             max_conns,
-            2,
+            0, // spread: 同 host，避免并行测试互相干扰
             None,
             Some(1), // 测试：单轮即返回
             None,    // requested_ip

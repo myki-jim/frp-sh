@@ -321,6 +321,14 @@ pub async fn run_relay(
 ) -> anyhow::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
+        // 短周期 TCP 保活：对端断网/切换网络后约 15s 内感知，关闭连接并让对端重连
+        let stream = match crate::p2p::relay::enable_keepalive(stream) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("relay keepalive setup failed, dropping connection: {e}");
+                continue;
+            }
+        };
         let state = state.clone();
         let password = password.clone();
         tokio::spawn(async move {
