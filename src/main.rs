@@ -1,4 +1,5 @@
 use clap::Parser;
+use colored::Colorize;
 use frp_sh::cli::{self, Commands, DevCmd, GameCmd, LanCmd};
 use frp_sh::config::Config;
 
@@ -29,11 +30,20 @@ async fn real_main() -> anyhow::Result<()> {
         command, config, ..
     } = cli;
 
-    // 版本横幅：每次运行显示当前版本与线协议版本
+    // 版本横幅：ASCII 字符画 logo + 版本/线协议
     println!(
-        "frp-sh v{} (protocol {})",
+        "{}",
+        "\n  _____ _ ____   ____  _   _\n\
+         \x20|  ___| |  _ \\ / ___|| | | |\n\
+         \x20| |_  | | |_) | \\__ \\| |_| |\n\
+         \x20|  _| | |  _ <  ___) |  _  |\n\
+         \x20|_|   |_|_| \\_\\____/|_| |_|"
+            .green()
+    );
+    println!(
+        "  frp-sh v{} ({})\n",
         frp_sh::version::VERSION,
-        frp_sh::version::PROTOCOL_VERSION
+        format!("protocol v{}", frp_sh::version::PROTOCOL_VERSION).dimmed()
     );
 
     // lan 组网需要管理员/root（创建虚拟网卡、设 IP、加路由）。
