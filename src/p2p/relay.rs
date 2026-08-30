@@ -27,11 +27,12 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncReadWr
 
 pub type RelayStream = Box<dyn AsyncReadWrite>;
 
-/// 对 TCP 连接启用短周期保活：空闲约 5s 开始探测，约 15s 内感知死对端。
+/// 对 TCP 连接启用短周期保活：空闲约 5s 开始探测，Linux/Windows 约 30s、
+/// macOS 约 30s 内感知死对端（默认系统参数下为 2 小时以上）。
 ///
 /// 中继路径没有应用层心跳，若对端断网/切换网络后保持空闲，裸 TCP 默认
 /// 数小时都不会报错，导致隧道静默挂死、无法触发自动重连。此处用 socket2
-/// 收紧 TCP keepalive（Linux 额外限制 3 次探测），让断线快速暴露。
+/// 收紧 TCP keepalive，让断线快速暴露。
 pub fn enable_keepalive(stream: TcpStream) -> std::io::Result<TcpStream> {
     let std = stream.into_std()?;
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -42,8 +43,6 @@ pub fn enable_keepalive(stream: TcpStream) -> std::io::Result<TcpStream> {
         let ka = TcpKeepalive::new()
             .with_time(Duration::from_secs(5))
             .with_interval(Duration::from_secs(3));
-        #[cfg(target_os = "linux")]
-        let ka = ka.with_retries(3);
         sock.set_tcp_keepalive(&ka)?;
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
