@@ -75,6 +75,24 @@ pub struct RefreshRoomRequest {
     pub host_subnets: Vec<String>,
 }
 
+/// 房间内一个访客的完整信息（网格模式多访客；旧客户端忽略该字段）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuestInfo {
+    /// 访客设备 UUID（匿名访客为地址字符串）
+    pub uuid: String,
+    /// 访客公网 UDP 地址
+    pub addr: SocketAddr,
+    /// 访客局域网打洞地址（同局域网直连）
+    #[serde(default)]
+    pub lan: Vec<SocketAddr>,
+    /// 分配给该访客的虚拟 IP（房主 IP 池 / UUID 派生）
+    #[serde(default)]
+    pub vnet_ip: Option<String>,
+    /// 访客暴露的局域网子网 CIDR（`--expose-lan`）
+    #[serde(default)]
+    pub subnets: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomInfo {
     pub room_id: String,
@@ -97,6 +115,9 @@ pub struct RoomInfo {
     /// 访客暴露的局域网子网 CIDR（`--expose-lan`）
     #[serde(default)]
     pub guest_subnets: Vec<String>,
+    /// 全部访客（网格模式多访客）
+    #[serde(default)]
+    pub guests: Vec<GuestInfo>,
     /// 房主程序版本（`major.minor.patch`）
     #[serde(default)]
     pub host_version: String,

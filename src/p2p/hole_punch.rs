@@ -104,6 +104,17 @@ impl PunchEngine {
     ) -> stream::UdpStream {
         stream::UdpStream::new(self.socket, peer, first, key)
     }
+
+    /// 将 socket 转为网格模式（host 侧多访客：同一 socket 承载多个对端流）。
+    /// 必须在公网地址探测（`learn_public_addr`）之后调用——探测需要直接收包。
+    pub fn into_mesh(
+        self,
+    ) -> (
+        stream::UdpMesh,
+        tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, std::net::SocketAddr)>,
+    ) {
+        stream::UdpMesh::new(self.socket)
+    }
 }
 
 /// 打洞目标集合：对端通告地址 ± spread 个端口（轻量端口预测）。

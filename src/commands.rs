@@ -14,9 +14,11 @@ use crate::tunnel;
 use crate::utils;
 use colored::Colorize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
 
@@ -78,10 +80,10 @@ enum ForwardMode {
     Guest { listen: SocketAddr, max_conns: u64 },
 }
 
-/// 重连退避：2s, 4s, 8s, ... 上限 15s。
+/// 重连退避：1s, 2s, 4s, 8s, ... 上限 8s（首轮 1s，恢复速度优先）。
 fn reconnect_delay(attempt: u64) -> u64 {
-    let exp = 1u64 << attempt.min(4);
-    exp.min(15)
+    let exp = 1u64 << (attempt.min(4) - 1);
+    exp.min(8)
 }
 
 // ---------- 输出着色 ----------
@@ -741,6 +743,21 @@ pub async fn host_session(
     let key_bytes = derive_key(key.as_deref());
     let mut attempt: u64 = 0;
 
+    // lan 模式（虚拟网卡）→ 网格会话：多访客全互联
+    if let Some(t) = &tun {
+        return host_mesh_session(
+            cfg,
+            room_id,
+            force_relay,
+            key,
+            spread,
+            Some(t.clone()),
+            expose_lan,
+            max_rounds,
+        )
+        .await;
+    }
+
     loop {
         attempt += 1;
         if attempt > 1 {
@@ -828,6 +845,7 @@ pub async fn host_session(
                     RelayRole::Host,
                     token_opt.as_deref(),
                     auth,
+                    None, // 单对端（game/dev）：单槽位配对
                 )
                 .await
                 {
@@ -1227,12 +1245,19 @@ pub async fn guest_session(
                 };
                 // 服务器启用密码时：中继带 token 认证 + 流量加密
                 let (auth, token_opt) = relay_auth_info(&signaling, cfg).await;
+                // lan 模式（网格）中继携带本机 UUID，与房主为该访客建的中继连接按 UUID 配对
+                let relay_uuid = if tun.is_some() {
+                    cfg.uuid.clone()
+                } else {
+                    None
+                };
                 let stream = match relay::connect(
                     relay_addr,
                     room_id,
                     RelayRole::Guest,
                     token_opt.as_deref(),
                     auth,
+                    relay_uuid.as_deref(),
                 )
                 .await
                 {
@@ -1452,4 +1477,482 @@ async fn final_punch_check(
         }
     }
     Ok(PunchOutcome::TimedOut)
+}
+
+// ---------- 网格模式（lan：多访客全互联，host 为枢纽） ----------
+
+/// 访客打洞候选地址（公网 + 局域网）。
+fn mesh_peer_addrs(info: &crate::signaling::GuestInfo) -> Vec<SocketAddr> {
+    let mut addrs = vec![info.addr];
+    addrs.extend(info.lan.iter().copied());
+    addrs
+}
+
+/// 访客链路的路由表（虚拟 IP /32 + 暴露的局域网子网）。
+fn mesh_routes_for(info: &crate::signaling::GuestInfo) -> Vec<(u32, u8)> {
+    let mut routes = Vec::new();
+    if let Some(ip) = &info.vnet_ip {
+        if let Ok(a) = ip.parse::<std::net::Ipv4Addr>() {
+            routes.push((u32::from(a), 32));
+        }
+    }
+    for cidr in &info.subnets {
+        if let Some((net, pfx)) = utils::parse_cidr(cidr) {
+            routes.push((net, pfx));
+        }
+    }
+    routes
+}
+
+/// 建链中的访客（host 侧）。
+struct PendingHost {
+    info: crate::signaling::GuestInfo,
+    /// 是否已尝试中继（直连超时后）
+    relay_attempted: bool,
+    /// 上次尝试中继的时间（失败后 10s 重试）
+    relay_at: Option<Instant>,
+    /// 直连打洞窗口截止
+    deadline: Option<Instant>,
+}
+
+/// host 侧网格会话（`lan create`）：虚拟网卡一次创建，重连只重建对端链路；
+/// 到每个访客建立直连隧道（打洞失败转中继，按 UUID 配对），
+/// 访客之间的流量由本机数据平面按目标 IP 转发（host 为枢纽，全互联）。
+#[allow(clippy::too_many_arguments)]
+pub async fn host_mesh_session(
+    cfg: &Config,
+    room_id: &str,
+    force_relay: bool,
+    key: Option<String>,
+    spread: u32,
+    tun: Option<TunOpts>,
+    expose_lan: bool,
+    max_guests: Option<u64>,
+) -> anyhow::Result<()> {
+    let signaling =
+        SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
+    let key_bytes = derive_key(key.as_deref());
+    let (auth, relay_token) = relay_auth_info(&signaling, cfg).await;
+    let relay_addr: SocketAddr = cfg
+        .relay_addr
+        .parse()
+        .map_err(|e| anyhow::anyhow!("bad relay addr {}: {e}", cfg.relay_addr))?;
+
+    // 网格数据平面：TUN 一次创建，重连只重建对端链路（测试可传 None 跳过 TUN）
+    let (plane, mut dead_rx) = crate::p2p::tun::MeshPlane::new();
+    let (dispatch_tx, dispatch_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut real_name = "frp0".to_string();
+    if let Some(t) = &tun {
+        let dev = crate::p2p::tun::create(&crate::p2p::tun::TunConfig {
+            name: "frp0".into(),
+            ip: t.ip.clone(),
+            netmask: t.netmask.clone(),
+            mtu: t.mtu,
+        })?;
+        real_name = crate::p2p::tun::device_name(&dev).unwrap_or_else(|| "frp0".to_string());
+        println!(
+            ">>> virtual NIC mode: IP {} / {} (MTU {}, device {real_name})",
+            t.ip, t.netmask, t.mtu
+        );
+        match crate::p2p::tun::allow_firewall(&real_name) {
+            Ok(()) => {
+                println!("    firewall opened for {real_name} (peer can ping/access this host)")
+            }
+            Err(e) => {
+                println!("    firewall rule failed (peer may not ping/access this host): {e}")
+            }
+        }
+        if let Some(cidr) = utils::cidr_from_ip_netmask(&t.ip, &t.netmask) {
+            match crate::p2p::tun::add_subnet_route(&cidr, &real_name) {
+                Ok(()) => println!("    subnet route {cidr} → {real_name} added"),
+                Err(e) => println!("    subnet route add failed: {e}"),
+            }
+        }
+        println!(
+            "    peer can now access this virtual subnet (e.g. ping {})",
+            t.ip
+        );
+        tokio::spawn(crate::p2p::tun::run_mesh_plane(
+            dev,
+            plane.clone(),
+            dispatch_rx,
+        ));
+    }
+
+    let mut attempt: u64 = 0;
+    loop {
+        attempt += 1;
+        if attempt > 1 {
+            let wait = reconnect_delay(attempt);
+            println!(
+                "\n>>> {} ...",
+                warn(format!(
+                    "connection lost, reconnecting in {wait} seconds (Ctrl-C to exit)"
+                ))
+            );
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+        }
+        let engine = PunchEngine::bind().await?;
+        let token = utils::rand_token();
+        let my_ext = signaling
+            .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
+            .await?;
+        log::info!("public address: {my_ext}");
+        let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
+        let lan_subnets = if expose_lan {
+            utils::lan_subnet_cidrs()
+        } else {
+            Vec::new()
+        };
+        if let Err(e) = signaling
+            .refresh_room(room_id, my_ext, lan_addrs, lan_subnets)
+            .await
+        {
+            return Err(e.into()); // 房间失效（过期/被删）
+        }
+        let mesh_port = engine.local_addr()?.port();
+        let (mesh, punch_rx) = engine.into_mesh();
+        let r = mesh_host_loop(
+            &signaling,
+            &mesh,
+            punch_rx,
+            &plane,
+            &dispatch_tx,
+            &mut dead_rx,
+            room_id,
+            &token,
+            force_relay,
+            spread,
+            key_bytes,
+            relay_addr,
+            auth,
+            relay_token.as_deref(),
+            tun.as_ref(),
+            &real_name,
+            max_guests,
+            cfg.signaling_udp_addr()?,
+            my_ext,
+            mesh_port,
+        )
+        .await;
+        // 测试用完成条件：达到目标访客数后 mesh_host_loop 正常返回 → 整个会话结束
+        if r.is_ok() && max_guests.is_some() {
+            return Ok(());
+        }
+        r?;
+        // 循环 → 重连（重建 socket 与对端链路；TUN 数据平面常驻）
+    }
+}
+
+/// host 网格主循环：轮询访客 → 打洞/中继建链 → 维护数据平面路由。
+#[allow(clippy::too_many_arguments)]
+async fn mesh_host_loop(
+    signaling: &SignalingClient,
+    mesh: &crate::p2p::stream::UdpMesh,
+    mut punch_rx: tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>,
+    plane: &Arc<crate::p2p::tun::MeshPlane>,
+    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<(String, Vec<u8>)>,
+    dead_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    room_id: &str,
+    token: &str,
+    force_relay: bool,
+    spread: u32,
+    key_bytes: Option<[u8; 32]>,
+    relay_addr: SocketAddr,
+    auth: bool,
+    relay_token: Option<&str>,
+    tun: Option<&TunOpts>,
+    real_name: &str,
+    max_guests: Option<u64>,
+    udp_probe: SocketAddr,
+    mut current_ext: SocketAddr,
+    mesh_local_port: u16,
+) -> anyhow::Result<()> {
+    let mut pending: HashMap<String, PendingHost> = HashMap::new();
+    let mut established: HashMap<String, String> = HashMap::new();
+    let mut last_guests: HashMap<String, crate::signaling::GuestInfo> = HashMap::new();
+    let (relay_tx, mut relay_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(String, Result<crate::p2p::relay::RelayStream>)>();
+    // 网格轮询更快（250ms）：访客加入/地址变化尽快感知，缩小与首轮打洞的竞态窗口
+    const MESH_POLL: Duration = Duration::from_millis(100);
+    let mut last_poll = Instant::now() - MESH_POLL;
+    let mut last_punch = Instant::now() - PUNCH_INTERVAL;
+    // 定期重学公网地址：host 切换网络后房间地址刷新，访客可打洞到新地址恢复直连
+    const EXT_REFRESH: Duration = Duration::from_secs(60);
+    let mut last_ext_refresh = Instant::now();
+    let mut probe_token: Option<String> = None;
+    let mut probed_ext: Option<SocketAddr> = None;
+
+    loop {
+        let now = Instant::now();
+        // 1) 轮询房间，同步访客列表（新访客进入打洞；地址变化在下轮打洞生效）
+        if now.duration_since(last_poll) >= MESH_POLL {
+            last_poll = now;
+            if let Ok(info) = signaling.get_room(room_id).await {
+                last_guests = info
+                    .guests
+                    .iter()
+                    .map(|g| (g.uuid.clone(), g.clone()))
+                    .collect();
+                for g in info.guests {
+                    if established.contains_key(&g.uuid) {
+                        continue;
+                    }
+                    match pending.get_mut(&g.uuid) {
+                        Some(p) => p.info = g,
+                        None => {
+                            log::info!(
+                                "guest {} ({:?}) joined, punching ...",
+                                g.uuid,
+                                mesh_peer_addrs(&g)
+                            );
+                            pending.insert(
+                                g.uuid.clone(),
+                                PendingHost {
+                                    info: g,
+                                    relay_attempted: false,
+                                    relay_at: None,
+                                    deadline: Some(now + PUNCH_WINDOW),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // 2) 打洞（force_relay 跳过）
+        if !force_relay && now.duration_since(last_punch) >= PUNCH_INTERVAL {
+            last_punch = now;
+            for p in pending.values() {
+                let targets = punch_targets_multi(&mesh_peer_addrs(&p.info), spread, None);
+                for a in targets {
+                    let _ = mesh.send(format!("PUNCH {token}").as_bytes(), a).await;
+                }
+            }
+        }
+        // 3) 打洞事件：PUNCH → 回 ACK 并建立；ACK(我方 token) → 建立。
+        //    事件可能先于轮询到达（首轮竞态）→ 找不到时现场查一次房间。
+        while let Ok((bytes, src)) = punch_rx.try_recv() {
+            let signal = if let Some(t) = parse_punch(&bytes) {
+                let _ = mesh.send(format!("ACK {t}").as_bytes(), src).await;
+                true
+            } else if let Some(t) = parse_ack(&bytes) {
+                t == token
+            } else {
+                // 公网地址探测回复：`ADDR <token> ip:port`
+                let text = String::from_utf8_lossy(&bytes);
+                if let (Some(pt), Some(rest)) = (&probe_token, text.strip_prefix("ADDR ")) {
+                    let mut parts = rest.split_whitespace();
+                    if parts.next() == Some(pt.as_str()) {
+                        if let (Ok(ip), Ok(port)) = (
+                            parts.next().unwrap_or("").parse::<std::net::IpAddr>(),
+                            parts.next().unwrap_or("").parse::<u16>(),
+                        ) {
+                            probed_ext = Some(SocketAddr::new(ip, port));
+                        }
+                    }
+                }
+                false
+            };
+            if !signal {
+                continue;
+            }
+            // 定位访客：pending → 房间快照 → 现场查询（补上"事件先于轮询"的窗口）
+            let mut uuid = pending
+                .iter()
+                .find(|(_, p)| mesh_peer_addrs(&p.info).contains(&src))
+                .map(|(u, _)| u.clone())
+                .or_else(|| {
+                    last_guests
+                        .iter()
+                        .find(|(_, g)| mesh_peer_addrs(g).contains(&src))
+                        .map(|(u, _)| u.clone())
+                });
+            if uuid.is_none() {
+                if let Ok(info) = signaling.get_room(room_id).await {
+                    last_guests = info
+                        .guests
+                        .iter()
+                        .map(|g| (g.uuid.clone(), g.clone()))
+                        .collect();
+                    uuid = info
+                        .guests
+                        .iter()
+                        .find(|g| mesh_peer_addrs(g).contains(&src))
+                        .map(|g| g.uuid.clone());
+                }
+            }
+            let Some(uuid) = uuid else { continue };
+            if established.contains_key(&uuid) {
+                continue;
+            }
+            let info = pending
+                .remove(&uuid)
+                .map(|p| p.info)
+                .or_else(|| last_guests.get(&uuid).cloned());
+            if let Some(info) = info {
+                log::info!("peer {uuid} signaled via {src}, establishing direct link");
+                mesh_establish_link(
+                    mesh,
+                    plane,
+                    dispatch_tx,
+                    &uuid,
+                    src,
+                    key_bytes,
+                    &info,
+                    &mut established,
+                    tun,
+                    real_name,
+                );
+            }
+        }
+        // 4) 直连超时（或强制中继）→ 打开中继连接（按 UUID 配对）
+        for (uuid, p) in pending.iter_mut() {
+            if p.relay_attempted {
+                continue;
+            }
+            let due = force_relay || p.deadline.map(|d| now >= d).unwrap_or(false);
+            let retry_ok = p
+                .relay_at
+                .map(|t| now.duration_since(t) >= Duration::from_secs(30))
+                .unwrap_or(true);
+            if due && retry_ok {
+                p.relay_attempted = true;
+                p.relay_at = Some(now);
+                let uuid_c = uuid.clone();
+                let room_c = room_id.to_string();
+                let tx = relay_tx.clone();
+                let addr = relay_addr;
+                let tok = relay_token.map(str::to_string);
+                tokio::spawn(async move {
+                    let r = relay::connect(
+                        addr,
+                        &room_c,
+                        RelayRole::Host,
+                        tok.as_deref(),
+                        auth,
+                        Some(&uuid_c),
+                    )
+                    .await;
+                    let _ = tx.send((uuid_c, r));
+                });
+            }
+        }
+        // 5) 中继结果 → 注册链路
+        while let Ok((uuid, res)) = relay_rx.try_recv() {
+            match res {
+                Ok(stream) => {
+                    if let Some(p) = pending.remove(&uuid) {
+                        log::info!("relay link with {uuid} established");
+                        // 若已有链路（如直连刚建立）→ 替换
+                        if established.contains_key(&uuid) {
+                            plane.unregister(&uuid);
+                        }
+                        plane.register(
+                            &uuid,
+                            mesh_routes_for(&p.info),
+                            stream,
+                            dispatch_tx.clone(),
+                        );
+                        established.insert(uuid, "relay".into());
+                    } else {
+                        drop(stream); // 已直连 → 丢弃多余中继
+                    }
+                }
+                Err(e) => {
+                    log::warn!("relay connect to {uuid} failed: {e}");
+                    if let Some(p) = pending.get_mut(&uuid) {
+                        p.relay_attempted = false; // 稍后重试
+                    }
+                }
+            }
+        }
+        // 6) 对端断线 → 重新入打洞队列
+        while let Ok(uuid) = dead_rx.try_recv() {
+            if established.remove(&uuid).is_some() {
+                log::warn!("peer {uuid} link lost, re-punching ...");
+                if let Some(info) = last_guests.get(&uuid) {
+                    pending.insert(
+                        uuid,
+                        PendingHost {
+                            info: info.clone(),
+                            relay_attempted: false,
+                            relay_at: None,
+                            deadline: Some(now + PUNCH_WINDOW),
+                        },
+                    );
+                }
+            }
+        }
+        // 7) 路由器死亡（socket 错误）→ 触发外层重连
+        if punch_rx.is_closed() {
+            anyhow::bail!("mesh socket closed");
+        }
+        // 8) 定期重学公网地址：地址变化 → 刷新房间（host 切换网络后访客能重新打洞直连）
+        if now.duration_since(last_ext_refresh) >= EXT_REFRESH {
+            last_ext_refresh = now;
+            probe_token = Some(utils::rand_token());
+            let pt = probe_token.clone().unwrap();
+            let _ = mesh.send(format!("ECHO {pt}").as_bytes(), udp_probe).await;
+        }
+        if let Some(ext) = probed_ext.take() {
+            if ext != current_ext {
+                current_ext = ext;
+                let lan_addrs = utils::lan_socket_addrs(mesh_local_port);
+                let lan_subnets = if tun.is_some() {
+                    utils::lan_subnet_cidrs()
+                } else {
+                    Vec::new()
+                };
+                log::info!("host public address changed to {ext}, refreshing room ...");
+                let _ = signaling
+                    .refresh_room(room_id, ext, lan_addrs, lan_subnets)
+                    .await;
+            }
+        }
+        // 测试用完成条件：达到目标访客数且无在建链路 → 结束
+        if let Some(n) = max_guests {
+            if established.len() as u64 >= n && pending.is_empty() {
+                return Ok(());
+            }
+        }
+        // 节流，避免空转
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// 建立直连链路：注册网格流 + 数据平面路由 + 访客局域网内核路由。
+#[allow(clippy::too_many_arguments)]
+fn mesh_establish_link(
+    mesh: &crate::p2p::stream::UdpMesh,
+    plane: &Arc<crate::p2p::tun::MeshPlane>,
+    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<(String, Vec<u8>)>,
+    uuid: &str,
+    peer: SocketAddr,
+    key_bytes: Option<[u8; 32]>,
+    info: &crate::signaling::GuestInfo,
+    established: &mut HashMap<String, String>,
+    tun: Option<&TunOpts>,
+    real_name: &str,
+) {
+    // 访客 --expose-lan 通告的局域网子网 → 经虚拟网卡路由（本机访问访客局域网）
+    if let Some(t) = tun {
+        for cidr in &info.subnets {
+            match crate::p2p::tun::add_route(cidr, real_name, &t.ip) {
+                Ok(()) => println!("    route {cidr} → {real_name} added (access guest LAN)"),
+                Err(e) => println!("    route {cidr} add failed: {e}"),
+            }
+        }
+    }
+    if established.contains_key(uuid) {
+        plane.unregister(uuid); // 替换旧链路（如中继 → 直连）
+    }
+    let stream = mesh.add_peer(peer, key_bytes);
+    plane.register(
+        uuid,
+        mesh_routes_for(info),
+        Box::new(stream),
+        dispatch_tx.clone(),
+    );
+    established.insert(uuid.to_string(), "direct".into());
 }

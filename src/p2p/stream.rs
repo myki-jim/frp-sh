@@ -17,7 +17,7 @@
 use bytes::BytesMut;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -41,8 +41,9 @@ const RETRANSMIT_MS: u64 = 150;
 const KEEPALIVE_MS: u64 = 1000;
 /// 心跳存活超时：超过该时长未收到对端任何帧（数据/ACK/FIN）即判定连接已死，
 /// 主动报错让上层触发自动重连——对端切换网络/掉线导致路径失效时快速恢复，
-/// 而不是无限重传挂死。可用环境变量 `FRPSH_LIVENESS_MS` 覆盖（毫秒），默认 10 秒。
-const LIVENESS_TIMEOUT_MS: u64 = 10_000;
+/// 而不是无限重传挂死。可用环境变量 `FRPSH_LIVENESS_MS` 覆盖（毫秒），
+/// 默认 3 秒（keepalive 每 1s 一次，连续 3 次未收到即视为断线）。
+const LIVENESS_TIMEOUT_MS: u64 = 3_000;
 const OUT_CAP: usize = 256 * 1024;
 const RX_CAP: usize = 1024 * 1024;
 const CLOSE_TIMEOUT_MS: u64 = 5000;
@@ -153,6 +154,38 @@ pub struct UdpStream {
     idle_close: Arc<Notify>,
 }
 
+/// 构造一个对端的流状态（UdpStream 与 UdpMesh 共用）。
+fn make_shared(peer: SocketAddr, key: Option<[u8; 32]>) -> Shared {
+    let liveness = std::env::var("FRPSH_LIVENESS_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(LIVENESS_TIMEOUT_MS));
+    let cipher = key.map(|k| ChaCha20Poly1305::new(Key::from_slice(&k)));
+    Shared {
+        peer,
+        rx_buf: VecDeque::new(),
+        rx_closed: false,
+        next_expected: 1,
+        out_queue: VecDeque::new(),
+        out_queue_len: 0,
+        unacked: VecDeque::new(),
+        next_seq: 1,
+        fin_sent: false,
+        fin_seq: 0,
+        fin_acked: false,
+        write_closed: false,
+        last_rx: Instant::now(),
+        liveness,
+        err: None,
+        read_waker: None,
+        write_waker: None,
+        cipher,
+        #[cfg(test)]
+        loss_rate: 0.0,
+    }
+}
+
 impl UdpStream {
     /// `key`：32 字节共享密钥；为 `Some` 时所有数据帧负载用 ChaCha20-Poly1305 加密。
     pub fn new(
@@ -161,34 +194,7 @@ impl UdpStream {
         first: Option<(Vec<u8>, SocketAddr)>,
         key: Option<[u8; 32]>,
     ) -> Self {
-        let liveness = std::env::var("FRPSH_LIVENESS_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_millis)
-            .unwrap_or(Duration::from_millis(LIVENESS_TIMEOUT_MS));
-        let cipher = key.map(|k| ChaCha20Poly1305::new(Key::from_slice(&k)));
-        let shared = Arc::new(Mutex::new(Shared {
-            peer,
-            rx_buf: VecDeque::new(),
-            rx_closed: false,
-            next_expected: 1,
-            out_queue: VecDeque::new(),
-            out_queue_len: 0,
-            unacked: VecDeque::new(),
-            next_seq: 1,
-            fin_sent: false,
-            fin_seq: 0,
-            fin_acked: false,
-            write_closed: false,
-            last_rx: Instant::now(),
-            liveness,
-            err: None,
-            read_waker: None,
-            write_waker: None,
-            cipher,
-            #[cfg(test)]
-            loss_rate: 0.0,
-        }));
+        let shared = Arc::new(Mutex::new(make_shared(peer, key)));
         let out_notify = Arc::new(Notify::new());
         let idle_close = Arc::new(Notify::new());
         // JoinHandle 直接丢弃：任务以 detached 方式运行，由 idle_close 通知退出
@@ -231,6 +237,149 @@ impl Drop for UdpStream {
     fn drop(&mut self) {
         // 句柄被丢弃 → 通知后台任务关闭 socket
         self.idle_close.notify_one();
+    }
+}
+
+/// 网格对端注册表：来源地址 → (流状态, 关闭通知)。
+type PeerRegistry = Arc<std::sync::Mutex<HashMap<SocketAddr, (Arc<Mutex<Shared>>, Arc<Notify>)>>>;
+
+/// 共享 socket 的多对端网格流：一个 UDP socket 承载多个对端流（host 侧网格模式）。
+///
+/// 路由器任务统一收包：
+/// - FRS1 数据帧 → 按来源地址路由到对应对端流（未注册对端的数据帧丢弃，发送方会重传）；
+/// - 其他文本数据报（PUNCH/ACK/探测回复）→ 进入事件通道，交由上层打洞编排处理。
+///
+/// 每个对端流有独立的定时任务（flush/重传/keepalive/存活检测），发送共用同一 socket。
+pub struct UdpMesh {
+    socket: Arc<UdpSocket>,
+    peers: PeerRegistry,
+}
+
+impl UdpMesh {
+    /// 接管一个已绑定的 UDP socket 并启动路由器；返回打洞事件接收端。
+    pub fn new(
+        socket: UdpSocket,
+    ) -> (
+        Self,
+        tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>,
+    ) {
+        let socket = Arc::new(socket);
+        let peers = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let (punch_tx, punch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let s = socket.clone();
+        let p = peers.clone();
+        tokio::spawn(async move {
+            mesh_router(s, p, punch_tx).await;
+        });
+        (Self { socket, peers }, punch_rx)
+    }
+
+    /// 供打洞阶段使用的数据报发送（PUNCH/ACK）。
+    pub async fn send(&self, data: &[u8], target: SocketAddr) -> io::Result<usize> {
+        self.socket.send_to(data, target).await
+    }
+
+    /// 注册一个对端流（直连打洞成功后调用）。同一地址重复注册时先关闭旧流。
+    pub fn add_peer(&self, peer: SocketAddr, key: Option<[u8; 32]>) -> UdpStream {
+        let shared = Arc::new(Mutex::new(make_shared(peer, key)));
+        let out_notify = Arc::new(Notify::new());
+        let idle_close = Arc::new(Notify::new());
+        if let Some((_, old_close)) = self
+            .peers
+            .lock()
+            .unwrap()
+            .insert(peer, (shared.clone(), idle_close.clone()))
+        {
+            old_close.notify_one();
+        }
+        let s = self.socket.clone();
+        let sh = shared.clone();
+        let on = out_notify.clone();
+        let ic = idle_close.clone();
+        tokio::spawn(async move {
+            mesh_peer_timer(s, sh, on, ic).await;
+        });
+        UdpStream {
+            shared,
+            out_notify,
+            idle_close,
+        }
+    }
+
+    /// 移除一个对端流（停止其定时任务）。
+    pub fn remove_peer(&self, peer: SocketAddr) {
+        if let Some((_, ic)) = self.peers.lock().unwrap().remove(&peer) {
+            ic.notify_one();
+        }
+    }
+}
+
+/// 路由器：收包 → FRS1 按来源路由 / 其他文本进事件通道。
+async fn mesh_router(
+    socket: Arc<UdpSocket>,
+    peers: PeerRegistry,
+    punch_tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>,
+) {
+    let mut buf = [0u8; 2048];
+    loop {
+        match socket.recv_from(&mut buf).await {
+            Ok((len, src)) => {
+                let data = buf[..len].to_vec();
+                if is_data_frame(&data) {
+                    let entry = peers.lock().unwrap().get(&src).cloned();
+                    if let Some((shared, _)) = entry {
+                        handle_incoming(&socket, &shared, &data, Some(src)).await;
+                    }
+                    // 未注册对端的数据帧：可能打洞刚完成、首帧先于注册到达——发送方会重传
+                } else {
+                    log::debug!("mesh router: non-data datagram {len}B from {src}");
+                    let _ = punch_tx.send((data, src));
+                }
+            }
+            Err(e)
+                if e.kind() == io::ErrorKind::ConnectionReset
+                    || e.kind() == io::ErrorKind::ConnectionRefused =>
+            {
+                continue; // Windows ICMP 毒化，忽略
+            }
+            Err(e) => {
+                log::warn!("mesh router socket error: {e}");
+                break;
+            }
+        }
+    }
+}
+
+/// 网格对端的定时任务：flush / 重传 / keepalive / 存活检测（与单对端 run() 的定时部分一致）。
+async fn mesh_peer_timer(
+    socket: Arc<UdpSocket>,
+    shared: Arc<Mutex<Shared>>,
+    out_notify: Arc<Notify>,
+    idle_close: Arc<Notify>,
+) {
+    let mut last_tx = Instant::now();
+    let mut retransmit = tokio::time::interval(Duration::from_millis(RETRANSMIT_MS));
+    retransmit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let done = {
+            let g = shared.lock().unwrap();
+            g.err.is_some() || (g.fin_acked && g.rx_closed)
+        };
+        if done {
+            break;
+        }
+        tokio::select! {
+            _ = out_notify.notified() => {
+                flush_out(&socket, &shared).await;
+            }
+            _ = retransmit.tick() => {
+                flush_out(&socket, &shared).await;
+                on_timer(&socket, &shared, &mut last_tx).await;
+            }
+            _ = idle_close.notified() => {
+                break;
+            }
+        }
     }
 }
 

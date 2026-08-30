@@ -55,9 +55,14 @@ pub struct Room {
     pub host_version: String,
     /// 已分配：visitor UUID -> 虚拟 IP（重连复用）
     pub ip_assignments: HashMap<String, String>,
+    /// 全部访客（网格模式多访客）：uuid -> 访客信息
+    pub guests: HashMap<String, super::GuestInfo>,
     /// 中继等待槽位（配对完成前持有连接）
     pub relay_host: Option<TcpStream>,
     pub relay_guest: Option<TcpStream>,
+    /// 网格模式中继：uuid -> 等待配对的对端连接（HOST/GUEST 各一张表）
+    pub relay_hosts: HashMap<String, TcpStream>,
+    pub relay_guests: HashMap<String, TcpStream>,
     /// 配对完成通知
     pub pair_notify: Arc<Notify>,
 }
@@ -159,8 +164,11 @@ async fn create_room(
             guest_ips: req.guest_ips,
             host_version: req.version,
             ip_assignments: HashMap::new(),
+            guests: HashMap::new(),
             relay_host: None,
             relay_guest: None,
+            relay_hosts: HashMap::new(),
+            relay_guests: HashMap::new(),
             pair_notify: Arc::new(Notify::new()),
         },
     );
@@ -181,9 +189,6 @@ async fn join_room(
         map.remove(&room_id);
         return Err(not_found(&room_id));
     }
-    room.guest_addr = Some(req.addr);
-    room.guest_lan = req.addr_lan;
-    room.guest_subnets = req.guest_subnets;
     // 虚拟 IP 分配：访客显式指定 > UUID 复用 > 按序取池中未分配的
     let assigned_ip = if room.guest_ips.is_empty() {
         req.requested_ip.or_else(|| {
@@ -219,6 +224,25 @@ async fn join_room(
             None
         }
     };
+    // 网格模式：按 UUID 登记访客（重连复用同一条目，地址更新）
+    let guest_uuid = req
+        .visitor_id
+        .clone()
+        .unwrap_or_else(|| format!("anon-{}", req.addr));
+    room.guests.insert(
+        guest_uuid.clone(),
+        super::GuestInfo {
+            uuid: guest_uuid,
+            addr: req.addr,
+            lan: req.addr_lan.clone(),
+            vnet_ip: assigned_ip.clone(),
+            subnets: req.guest_subnets.clone(),
+        },
+    );
+    // 兼容旧客户端：guest_addr 保持"最近加入者"视图
+    room.guest_addr = Some(req.addr);
+    room.guest_lan = req.addr_lan;
+    room.guest_subnets = req.guest_subnets;
     Ok(Json(JoinRoomResponse {
         room_id,
         host_addr: room.host_addr,
@@ -247,6 +271,7 @@ async fn get_room(
         host_subnets: room.host_subnets.clone(),
         guest_lan: room.guest_lan.clone(),
         guest_subnets: room.guest_subnets.clone(),
+        guests: room.guests.values().cloned().collect(),
         host_version: room.host_version.clone(),
     }))
 }
@@ -358,7 +383,7 @@ async fn handle_relay_conn(
     state: SharedState,
     password: Option<String>,
 ) -> anyhow::Result<()> {
-    let (room_id, role, mut stream, token) = read_hello(stream).await?;
+    let (room_id, role, mut stream, token, peer_uuid) = read_hello(stream).await?;
 
     // 服务器设置了密码 → 校验客户端携带的 token，并启用中继流加密
     if let Some(pw) = &password {
@@ -378,8 +403,15 @@ async fn handle_relay_conn(
         return Ok(());
     }
 
-    // 对方已在等待 → 立即配对并转发（服务器有密码时两侧均加密）
-    let other = if role == "HOST" {
+    // 对方已在等待 → 立即配对并转发（服务器有密码时两侧均加密）。
+    // 网格模式（携带 uuid）按 uuid 配对；旧协议用单槽位。
+    let other = if let Some(u) = &peer_uuid {
+        if role == "HOST" {
+            room.relay_guests.remove(u)
+        } else {
+            room.relay_hosts.remove(u)
+        }
+    } else if role == "HOST" {
         room.relay_guest.take()
     } else {
         room.relay_host.take()
@@ -399,8 +431,15 @@ async fn handle_relay_conn(
         return Ok(());
     }
 
-    // 尚未配对：占住槽位，回复 WAIT，等待对端
-    let already = if role == "HOST" {
+    // 尚未配对：占住槽位（uuid 键控或单槽），回复 WAIT，等待对端
+    let already = if let Some(u) = &peer_uuid {
+        let slot = if role == "HOST" {
+            &room.relay_hosts
+        } else {
+            &room.relay_guests
+        };
+        slot.contains_key(u)
+    } else if role == "HOST" {
         room.relay_host.is_some()
     } else {
         room.relay_guest.is_some()
@@ -411,12 +450,21 @@ async fn handle_relay_conn(
     }
     let _ = stream.write_all(b"WAIT\r\n").await;
     {
-        let slot = if role == "HOST" {
-            &mut room.relay_host
+        if let Some(u) = &peer_uuid {
+            let slot = if role == "HOST" {
+                &mut room.relay_hosts
+            } else {
+                &mut room.relay_guests
+            };
+            slot.insert(u.clone(), stream);
         } else {
-            &mut room.relay_guest
-        };
-        *slot = Some(stream);
+            let slot = if role == "HOST" {
+                &mut room.relay_host
+            } else {
+                &mut room.relay_guest
+            };
+            *slot = Some(stream);
+        }
     }
     let notify = room.pair_notify.clone();
     drop(map);
@@ -425,12 +473,22 @@ async fn handle_relay_conn(
         _ = tokio::time::sleep(RELAY_PAIR_TIMEOUT) => {
             let mut map = state.lock().await;
             if let Some(room) = map.get_mut(&room_id) {
-                let slot = if role == "HOST" {
-                    &mut room.relay_host
+                let slot_err = if let Some(u) = &peer_uuid {
+                    let slot = if role == "HOST" {
+                        &mut room.relay_hosts
+                    } else {
+                        &mut room.relay_guests
+                    };
+                    slot.remove(u)
                 } else {
-                    &mut room.relay_guest
+                    let slot = if role == "HOST" {
+                        &mut room.relay_host
+                    } else {
+                        &mut room.relay_guest
+                    };
+                    slot.take()
                 };
-                if let Some(mut s) = slot.take() {
+                if let Some(mut s) = slot_err {
                     let _ = s.write_all(b"ERROR NO_PEER\r\n").await;
                 }
             }
@@ -441,7 +499,9 @@ async fn handle_relay_conn(
             let consumed = map
                 .get(&room_id)
                 .map(|r| {
-                    if role == "HOST" {
+                    if peer_uuid.is_some() {
+                        true // uuid 槽位不参与 notify 配对，直接视为已消费
+                    } else if role == "HOST" {
                         r.relay_host.is_none()
                     } else {
                         r.relay_guest.is_none()
@@ -458,13 +518,14 @@ async fn handle_relay_conn(
     }
 }
 
-/// 读取 `HELLO <room_id> <HOST|GUEST> [token]\r\n` 行。
+/// 读取 `HELLO <room_id> <HOST|GUEST> [token] [uuid]\r\n` 行。
 ///
-/// token 为可选第 4 字段（服务器设置密码时客户端携带）。
+/// token 为可选第 4 字段（服务器设置密码时客户端携带）；
+/// uuid 为可选第 5 字段（网格模式多访客时用于配对到指定对端）。
 /// 逐字节读取，避免 BufReader 缓冲残留吞掉对端随后发来的数据（如 CNEW）。
 async fn read_hello(
     stream: TcpStream,
-) -> anyhow::Result<(String, String, TcpStream, Option<String>)> {
+) -> anyhow::Result<(String, String, TcpStream, Option<String>, Option<String>)> {
     stream.set_nodelay(true)?;
     let (mut rd, mut wr) = stream.into_split();
     let mut line = Vec::with_capacity(64);
@@ -483,7 +544,7 @@ async fn read_hello(
     }
     let text = String::from_utf8_lossy(&line);
     let parts: Vec<&str> = text.split_whitespace().collect();
-    if parts.len() < 3 || parts.len() > 4 || parts[0] != "HELLO" {
+    if parts.len() < 3 || parts.len() > 5 || parts[0] != "HELLO" {
         let _ = wr.write_all(b"ERROR BAD_HELLO\r\n").await;
         return Err(anyhow::anyhow!("relay: bad hello line"));
     }
@@ -492,7 +553,9 @@ async fn read_hello(
         let _ = wr.write_all(b"ERROR BAD_ROLE\r\n").await;
         return Err(anyhow::anyhow!("relay: bad role {role}"));
     }
+    // 字段顺序：HELLO <room> <ROLE> [token] [uuid]
     let token = parts.get(3).map(|s| s.to_string());
+    let uuid = parts.get(4).map(|s| s.to_string());
     let stream = rd.reunite(wr)?;
-    Ok((room_id, role, stream, token))
+    Ok((room_id, role, stream, token, uuid))
 }

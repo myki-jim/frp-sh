@@ -142,6 +142,12 @@ frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password YOUR_PASSW
 Mesh mode (Tailscale-like), virtual NIC enabled by default. Run it on the host
 machine to create a room and wait for guests.
 
+**Multi-guest full mesh**: one room supports 1 host + any number of guests online
+at the same time. Every guest gets a direct tunnel to the host (relay fallback
+when punching fails); the host acts as a hub forwarding traffic between guests —
+all members' virtual IPs (10.66.0.x) can reach each other (e.g. `ping 10.66.0.2`
+reaches any guest's whole machine).
+
 ```bash
 frp-sh lan create [options]
 ```

@@ -52,10 +52,12 @@ pub fn enable_keepalive(stream: TcpStream) -> std::io::Result<TcpStream> {
     TcpStream::from_std(std)
 }
 
-/// 连接信令服务器中继端点，完成 `HELLO <room_id> <ROLE> [token]` 握手。
+/// 连接信令服务器中继端点，完成 `HELLO <room_id> <ROLE> [token] [uuid]` 握手。
 ///
 /// - `token`：服务器密码（服务器设置密码时必须提供，作为认证与加密密钥）
 /// - `encrypted`：是否启用中继流加密（由服务器 `/version` 的 auth 标志决定）
+/// - `peer_uuid`：网格模式对端 UUID（房主为中继特定访客单独建连时携带；
+///   旧协议传 `None` 走单槽位配对）
 ///
 /// 服务器立即回复 `WAIT`（等待对端）或 `OK`（已配对）；
 /// 配对完成后服务器负责双向拷贝，本函数返回的流可直接读写。
@@ -65,6 +67,7 @@ pub async fn connect(
     role: RelayRole,
     token: Option<&str>,
     encrypted: bool,
+    peer_uuid: Option<&str>,
 ) -> Result<RelayStream> {
     let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(relay_addr))
         .await
@@ -74,8 +77,12 @@ pub async fn connect(
     let stream = enable_keepalive(stream).map_err(FrpError::Io)?;
     stream.set_nodelay(true).map_err(FrpError::Io)?;
 
-    let hello = match token {
-        Some(t) if !t.is_empty() => format!("HELLO {room_id} {} {t}\r\n", role.as_str()),
+    let hello = match (token, peer_uuid) {
+        (Some(t), Some(u)) if !t.is_empty() => {
+            format!("HELLO {room_id} {} {t} {u}\r\n", role.as_str())
+        }
+        (_, Some(u)) => format!("HELLO {room_id} {} {u}\r\n", role.as_str()),
+        (Some(t), _) if !t.is_empty() => format!("HELLO {room_id} {} {t}\r\n", role.as_str()),
         _ => format!("HELLO {room_id} {}\r\n", role.as_str()),
     };
     let (mut rd, mut wr) = stream.into_split();

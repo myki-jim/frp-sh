@@ -2,7 +2,7 @@
 
 use frp_sh::commands;
 use frp_sh::config::Config;
-use frp_sh::p2p::hole_punch::PunchEngine;
+use frp_sh::p2p::hole_punch::{parse_ack, parse_punch, PunchEngine};
 use frp_sh::signaling::{server, SignalingClient};
 use frp_sh::utils;
 use std::net::SocketAddr;
@@ -218,6 +218,158 @@ async fn e2e_relay_fallback() {
     let (host, guest) = run_session(srv.cfg, room_id, true, None, 1).await;
     assert!(host.is_ok(), "host session failed: {host:?}");
     assert!(guest.is_ok(), "guest session failed: {guest:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_mesh_multi_guest_links() {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+        .try_init();
+    let srv = start_server().await;
+    let room_id = create_room(&srv.cfg).await;
+    let cfg_h = srv.cfg.clone();
+    let room_h = room_id.clone();
+    // host 网格会话（测试模式：无 TUN），目标 2 个访客建链后返回
+    let host = tokio::spawn(async move {
+        commands::host_mesh_session(&cfg_h, &room_h, false, None, 0, None, false, Some(2)).await
+    });
+
+    // 两个模拟访客：加入房间并打洞，验证 host 与每个访客建立链路
+    let mut guests = Vec::new();
+    for i in 0..2 {
+        let cfg_g = srv.cfg.clone();
+        let room_g = room_id.clone();
+        guests.push(tokio::spawn(async move {
+            let client = SignalingClient::new_with_password(
+                &cfg_g.signaling_addr,
+                cfg_g.password.as_deref(),
+            );
+            let engine = PunchEngine::bind().await.unwrap();
+            let token = utils::rand_token();
+            let my_ext = client
+                .learn_public_addr(engine.socket(), cfg_g.signaling_udp_addr().unwrap(), &token)
+                .await
+                .unwrap();
+            let lan = utils::lan_socket_addrs(engine.local_addr().unwrap().port());
+            client
+                .join_room(
+                    &room_g,
+                    my_ext,
+                    lan,
+                    Some(format!("mesh-guest-{i}")),
+                    None,
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            // 打洞：PUNCH 房主并等待 ACK；同时应答房主的 PUNCH。
+            // 与真实访客一致：每轮刷新房主地址（房间创建后房主会话会重新绑定 socket 并刷新地址）
+            let mut info = client.get_room(&room_g).await.unwrap();
+            let mut ok = false;
+            for _ in 0..80 {
+                let _ = engine.send_punch(info.host_addr, &token).await;
+                if let Ok(Some((b, _))) = engine.recv(Duration::from_millis(120)).await {
+                    if let Some(t) = parse_ack(&b) {
+                        if t == token {
+                            ok = true;
+                            break;
+                        }
+                    }
+                    if let Some(t) = parse_punch(&b) {
+                        let _ = engine.send_ack(info.host_addr, &t).await;
+                    }
+                }
+                if let Ok(i) = client.get_room(&room_g).await {
+                    info = i;
+                }
+            }
+            // 保持 socket 存活一小段时间，让 host 完成建链
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            ok
+        }));
+    }
+    for g in guests {
+        let r = tokio::time::timeout(Duration::from_secs(60), g)
+            .await
+            .expect("guest punch timeout")
+            .unwrap();
+        assert!(r, "guest failed to establish direct link with host");
+    }
+    let host_res = tokio::time::timeout(Duration::from_secs(60), host)
+        .await
+        .expect("host mesh session timeout")
+        .unwrap();
+    assert!(host_res.is_ok(), "host mesh session failed: {host_res:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_mesh_relay_pairing() {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+        .try_init();
+    let srv = start_server().await;
+    let room_id = create_room(&srv.cfg).await;
+    let cfg_h = srv.cfg.clone();
+    let room_h = room_id.clone();
+    // host 网格会话：强制中继，验证按 UUID 配对
+    let host = tokio::spawn(async move {
+        commands::host_mesh_session(&cfg_h, &room_h, true, None, 0, None, false, Some(1)).await
+    });
+    // 模拟访客：先加入房间（host 据此知道要为它建中继），再带 UUID 连中继
+    let cfg_g = srv.cfg.clone();
+    let room_g = room_id.clone();
+    let guest_uuid = "mesh-relay-guest".to_string();
+    let guest = tokio::spawn(async move {
+        let client =
+            SignalingClient::new_with_password(&cfg_g.signaling_addr, cfg_g.password.as_deref());
+        let engine = PunchEngine::bind().await.unwrap();
+        let token = utils::rand_token();
+        let my_ext = client
+            .learn_public_addr(engine.socket(), cfg_g.signaling_udp_addr().unwrap(), &token)
+            .await
+            .unwrap();
+        client
+            .join_room(
+                &room_g,
+                my_ext,
+                Vec::new(),
+                Some(guest_uuid.clone()),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let relay_addr: SocketAddr = cfg_g.relay_addr.parse().unwrap();
+        let stream = frp_sh::p2p::relay::connect(
+            relay_addr,
+            &room_g,
+            frp_sh::p2p::relay::RelayRole::Guest,
+            None,
+            false,
+            Some(&guest_uuid),
+        )
+        .await;
+        match stream {
+            Ok(mut s) => {
+                // 配对成功后双向拷贝生效：写入的数据应到达房主侧
+                let _ = s.write_all(b"mesh-relay-ok").await;
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                true
+            }
+            Err(_) => false,
+        }
+    });
+    let g = tokio::time::timeout(Duration::from_secs(30), guest)
+        .await
+        .expect("guest relay timeout")
+        .unwrap();
+    assert!(g, "guest relay connect failed");
+    let host_res = tokio::time::timeout(Duration::from_secs(60), host)
+        .await
+        .expect("host mesh session timeout")
+        .unwrap();
+    assert!(
+        host_res.is_ok(),
+        "host mesh relay session failed: {host_res:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

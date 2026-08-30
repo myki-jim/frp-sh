@@ -29,9 +29,12 @@ The current version focuses on "simple, robust, good enough". Planned capabiliti
 -  ChaCha20-Poly1305 end-to-end encryption (`--key`)
 -  Sequential multi-connection reuse (`--max-conns`)
 -  TCP relay fallback (pairing + bidirectional copy + late-direct re-check)
--  Auto-reconnect with heartbeat liveness (stream-level 10s no-frame detection;
-  exponential backoff + public-address refresh + punch window reopened on address
-  change; short TCP keepalive on the relay path)
+-  Auto-reconnect with heartbeat liveness (stream-level 3s no-frame detection,
+  tunable via `FRPSH_LIVENESS_MS`; exponential backoff + public-address refresh
+  + punch window reopened on address change; short TCP keepalive on the relay path)
+-  Multi-guest mesh (`lan`: 1 host + N guests fully interconnected; the host acts
+  as a hub forwarding by destination IP; per-guest direct-first / relay-fallback
+  links with UUID-keyed relay pairing)
 -  Same-LAN auto-direct (advertises LAN addresses, dual-path punching)
 -  Mesh mode (`lan` series: virtual-NIC whole-machine mesh, 10.66.0.0/24; guest can reach the host's LAN)
 -  Per-device unique ID (UUID) + stable derived virtual IP + host IP pool (`--guest-ips`)
