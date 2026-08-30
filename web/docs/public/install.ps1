@@ -34,11 +34,12 @@ function Step { Write-Host "`n$($C.Bold)$args$($C.Reset)"; Write-Host "$($C.Dim)
 
 # ---- banner ----
 Write-Host "$($C.Green)"
-Write-Host '  _____ _ ____   ____  _   _  '
-Write-Host ' |  ___| |  _ \ / ___|| | | | '
-Write-Host ' | |_  | | |_) | \__ \| |_| | '
-Write-Host ' |  _| | |  _ <  ___) |  _  | '
-Write-Host ' |_|   |_|_| \_\____/|_| |_|  '
+Write-Host ' ______ _____  _____   _____ _    _ '
+Write-Host '|  ____|  __ \|  __ \ / ____| |  | |'
+Write-Host '| |__  | |__) | |__) | (___ | |__| |'
+Write-Host '|  __| |  _  /|  ___/ \___ \|  __  |'
+Write-Host '| |    | | \ \| |     ____) | |  | |'
+Write-Host '|_|    |_|  \_\_|    |_____/|_|  |_|'
 Write-Host "$($C.Reset)"
 
 $repo = if ($env:FRPSH_REPO) { $env:FRPSH_REPO } else { 'myki-jim/frp-sh' }
