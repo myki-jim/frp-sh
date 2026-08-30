@@ -10,11 +10,11 @@ use std::path::PathBuf;
     about = "Social P2P tunnel: room-based UDP hole punching with relay fallback"
 )]
 pub struct Cli {
-    /// 配置文件路径（TOML，见 config/default.toml）
+    /// Path to the config file (TOML, see config/default.toml)
     #[arg(short, long, global = true)]
     pub config: Option<PathBuf>,
 
-    /// 详细日志
+    /// Verbose logging
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
@@ -24,166 +24,166 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// 启动信令服务器（独立部署；HTTP + UDP 公网探测同端口）
+    /// Start the signaling server (standalone deployment; HTTP + UDP public probing share the same port)
     Serve {
-        /// HTTP 监听地址
+        /// HTTP listen address
         #[arg(short, long, default_value = "0.0.0.0:8080")]
         addr: String,
-        /// TCP 中继监听地址
+        /// TCP relay listen address
         #[arg(long, default_value = "0.0.0.0:8081")]
         relay_addr: String,
     },
-    /// 交互式配置信令服务器（首次运行向导）
+    /// Configure the signaling server interactively (first-run wizard)
     Config,
-    /// 游戏联机：应用层端口转发（如 Minecraft），纯转发不组网
+    /// game multiplayer: application-layer port forwarding (e.g. Minecraft), pure forwarding without meshing
     Game {
         #[command(subcommand)]
         cmd: GameCmd,
     },
-    /// 开发调试：应用层端口转发（任意 TCP 服务）
+    /// development: application-layer port forwarding (any TCP service)
     Dev {
         #[command(subcommand)]
         cmd: DevCmd,
     },
-    /// 组网（类 Tailscale）：虚拟网卡整机入网，可访问对方整个局域网
+    /// mesh (Tailscale-like): virtual NIC puts the whole machine on the network, can reach the peer's entire LAN
     Lan {
         #[command(subcommand)]
         cmd: LanCmd,
     },
 }
 
-/// 端口转发模式的公共参数（game / dev 共用）。
+/// Common parameters for port-forwarding modes (shared by game / dev).
 #[derive(clap::Args, Debug)]
 pub struct ForwardCreateArgs {
-    /// 房间前缀（game 系列默认 game；dev 系列默认 dev）
+    /// Room prefix (defaults: "game" for the game family, "dev" for the dev family)
     #[arg(short, long)]
     pub prefix: Option<String>,
-    /// 房间有效时长（秒），默认 12 小时
+    /// Room lifetime in seconds (default 12 hours)
     #[arg(short, long, default_value_t = 12 * 3600)]
     pub ttl: u64,
-    /// 本机服务地址（隧道打通后向其转发流量）
+    /// Local service address (traffic is forwarded to it once the tunnel is up)
     #[arg(long, default_value = "127.0.0.1:25565")]
     pub service: String,
-    /// 跳过打洞，直接使用中继
+    /// Skip hole punching and use the relay directly
     #[arg(long)]
     pub relay: bool,
-    /// 共享口令：双方使用相同口令即启用端到端加密（ChaCha20-Poly1305）
+    /// Shared passphrase: using the same passphrase on both sides enables end-to-end encryption (ChaCha20-Poly1305)
     #[arg(long)]
     pub key: Option<String>,
-    /// 最多接受的连接数（0 = 无限，默认无限）
+    /// Maximum accepted connections (0 = unlimited, default unlimited)
     #[arg(long, default_value_t = 0)]
     pub max_conns: u64,
-    /// 打洞端口散布范围（轻量端口预测，默认 ±2）
+    /// Hole-punching port spread range (lightweight port prediction, default ±2)
     #[arg(long, default_value_t = 2)]
     pub spread: u32,
 }
 
 #[derive(clap::Args, Debug)]
 pub struct ForwardJoinArgs {
-    /// 房间号，如 game-a3f9c2
+    /// Room ID, e.g. game-a3f9c2
     pub room_id: String,
-    /// 强制使用中继模式
+    /// Force relay mode
     #[arg(short, long)]
     pub relay: bool,
-    /// 本地监听地址（玩家/程序连接此端口）
+    /// Local listen address (players/programs connect to this port)
     #[arg(long, default_value = "127.0.0.1:25565")]
     pub listen: String,
-    /// 共享口令：与房主一致即启用端到端加密
+    /// Shared passphrase: must match the host to enable end-to-end encryption
     #[arg(long)]
     pub key: Option<String>,
-    /// 最多建立的连接数（0 = 无限，默认无限）
+    /// Maximum connections to establish (0 = unlimited, default unlimited)
     #[arg(long, default_value_t = 0)]
     pub max_conns: u64,
-    /// 打洞端口散布范围（默认 ±2）
+    /// Hole-punching port spread range (default ±2)
     #[arg(long, default_value_t = 2)]
     pub spread: u32,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum GameCmd {
-    /// 创建房间（房主）
+    /// Create a room (host)
     Create(ForwardCreateArgs),
-    /// 加入房间（访客）
+    /// Join a room (guest)
     Join(ForwardJoinArgs),
 }
 
 #[derive(Subcommand, Debug)]
 pub enum DevCmd {
-    /// 创建房间（房主）
+    /// Create a room (host)
     Create(ForwardCreateArgs),
-    /// 加入房间（访客）
+    /// Join a room (guest)
     Join(ForwardJoinArgs),
 }
 
-/// 组网模式公共参数（lan）。
+/// Common parameters for mesh mode (lan).
 #[derive(clap::Args, Debug)]
 pub struct LanCreateArgs {
-    /// 房间前缀（默认 lan）
+    /// Room prefix (default "lan")
     #[arg(short, long)]
     pub prefix: Option<String>,
-    /// 房间有效时长（秒），默认 12 小时
+    /// Room lifetime in seconds (default 12 hours)
     #[arg(short, long, default_value_t = 12 * 3600)]
     pub ttl: u64,
-    /// 跳过打洞，直接使用中继
+    /// Skip hole punching and use the relay directly
     #[arg(long)]
     pub relay: bool,
-    /// 共享口令：双方使用相同口令即启用端到端加密
+    /// Shared passphrase: using the same passphrase on both sides enables end-to-end encryption
     #[arg(long)]
     pub key: Option<String>,
-    /// 打洞端口散布范围（默认 ±2）
+    /// Hole-punching port spread range (default ±2)
     #[arg(long, default_value_t = 2)]
     pub spread: u32,
-    /// 虚拟网卡 IP（默认房主 10.66.0.1）
+    /// Virtual NIC IP (default: host 10.66.0.1)
     #[arg(long)]
     pub ip: Option<String>,
-    /// 虚拟网卡子网掩码
+    /// Virtual NIC netmask
     #[arg(long, default_value = "255.255.255.0")]
     pub netmask: String,
-    /// 虚拟网卡 MTU
+    /// Virtual NIC MTU
     #[arg(long, default_value_t = 1400)]
     pub mtu: u16,
-    /// 预留的访客虚拟 IP 池（逗号分隔，如 10.66.0.2,10.66.0.3）；
-    /// 访客未指定 --ip 时按加入顺序分配，同一设备重连复用同一 IP
+    /// Reserved guest virtual IP pool (comma-separated, e.g. 10.66.0.2,10.66.0.3);
+    /// guests without --ip are assigned in join order, and reconnecting devices reuse the same IP
     #[arg(long, value_delimiter = ',')]
     pub guest_ips: Vec<String>,
-    /// 将本机局域网接入隧道（对端可访问你的局域网设备）。
-    /// 默认关闭：只互访虚拟网段，不暴露本地网络
+    /// Expose your LAN into the tunnel (the peer can reach your LAN devices).
+    /// Off by default: only the virtual subnet is shared, your local network stays hidden
     #[arg(long)]
     pub expose_lan: bool,
 }
 
 #[derive(clap::Args, Debug)]
 pub struct LanJoinArgs {
-    /// 房间号，如 lan-a3f9c2
+    /// Room ID, e.g. lan-a3f9c2
     pub room_id: String,
-    /// 强制使用中继模式
+    /// Force relay mode
     #[arg(short, long)]
     pub relay: bool,
-    /// 共享口令：与房主一致即启用端到端加密
+    /// Shared passphrase: must match the host to enable end-to-end encryption
     #[arg(long)]
     pub key: Option<String>,
-    /// 打洞端口散布范围（默认 ±2）
+    /// Hole-punching port spread range (default ±2)
     #[arg(long, default_value_t = 2)]
     pub spread: u32,
-    /// 虚拟网卡 IP（默认由设备 ID 稳定派生，如 10.66.0.42）
+    /// Virtual NIC IP (default: derived stably from the device ID, e.g. 10.66.0.42)
     #[arg(long)]
     pub ip: Option<String>,
-    /// 虚拟网卡子网掩码
+    /// Virtual NIC netmask
     #[arg(long, default_value = "255.255.255.0")]
     pub netmask: String,
-    /// 虚拟网卡 MTU
+    /// Virtual NIC MTU
     #[arg(long, default_value_t = 1400)]
     pub mtu: u16,
-    /// 将本机局域网接入隧道（对端可访问你的局域网设备）。
-    /// 默认关闭：只互访虚拟网段，不暴露本地网络
+    /// Expose your LAN into the tunnel (the peer can reach your LAN devices).
+    /// Off by default: only the virtual subnet is shared, your local network stays hidden
     #[arg(long)]
     pub expose_lan: bool,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum LanCmd {
-    /// 创建房间（房主）
+    /// Create a room (host)
     Create(LanCreateArgs),
-    /// 加入房间（访客）
+    /// Join a room (guest)
     Join(LanJoinArgs),
 }

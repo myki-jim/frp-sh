@@ -28,6 +28,9 @@ pub struct CreateRoomRequest {
     /// 同一设备（UUID）重连复用同一 IP
     #[serde(default)]
     pub guest_ips: Vec<String>,
+    /// 房主程序版本（`major.minor.patch`，用于访客端兼容性提示）
+    #[serde(default)]
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,4 +97,7 @@ pub struct RoomInfo {
     /// 访客暴露的局域网子网 CIDR（`--expose-lan`）
     #[serde(default)]
     pub guest_subnets: Vec<String>,
+    /// 房主程序版本（`major.minor.patch`）
+    #[serde(default)]
+    pub host_version: String,
 }

@@ -12,6 +12,7 @@ use crate::signaling::server;
 use crate::signaling::SignalingClient;
 use crate::tunnel;
 use crate::utils;
+use colored::Colorize;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::net::SocketAddr;
@@ -81,6 +82,28 @@ fn reconnect_delay(attempt: u64) -> u64 {
     exp.min(15)
 }
 
+// ---------- 输出着色 ----------
+
+/// 成功信息（绿色）。
+fn ok(msg: impl AsRef<str>) -> String {
+    msg.as_ref().green().to_string()
+}
+
+/// 警告信息（黄色）。
+fn warn(msg: impl AsRef<str>) -> String {
+    msg.as_ref().yellow().to_string()
+}
+
+/// 错误信息（红色）。
+fn err(msg: impl AsRef<str>) -> String {
+    msg.as_ref().red().to_string()
+}
+
+/// 次要信息（暗色）。
+fn dim(msg: impl AsRef<str>) -> String {
+    msg.as_ref().dimmed().to_string()
+}
+
 // ---------- 权限处理：lan 组网需要管理员/root ----------
 
 /// 该命令是否需要管理员/root 权限（Windows：UAC 提权；macOS/Linux：sudo）。
@@ -119,7 +142,7 @@ pub fn handle_elevation(_command: &Option<crate::cli::Commands>) -> anyhow::Resu
     #[cfg(not(target_os = "windows"))]
     {
         println!(
-            "\nlan 组网模式需要 root 权限（创建虚拟网卡）。\n请用 sudo 运行，例如：\n  sudo frp-sh lan create\n"
+            "\nLAN mesh mode requires root privileges (to create a virtual NIC).\nPlease run with sudo, e.g.:\n  sudo frp-sh lan create\n"
         );
         Ok(false)
     }
@@ -162,10 +185,10 @@ fn relaunch_elevated() -> anyhow::Result<bool> {
     si.lpDirectory = dir.as_ptr();
     si.nShow = 1; // SW_SHOWNORMAL
 
-    println!("需要管理员权限，正在请求 UAC 提权（请在弹出的窗口点击“是”）...");
+    println!("Administrator privileges required, requesting UAC elevation (click \"Yes\" in the popup) ...");
     let launched = unsafe { ShellExecuteExW(&mut si) };
     if launched == 0 || si.hProcess.is_null() {
-        eprintln!("提权失败：可能取消了 UAC 提示。请右键“以管理员身份运行”后重试。");
+        eprintln!("elevation failed: possibly dismissed the UAC prompt. Please right-click \"Run as administrator\" and retry.");
         return Ok(false);
     }
     unsafe {
@@ -181,9 +204,9 @@ fn relaunch_elevated() -> anyhow::Result<bool> {
 /// 打印直连建立信息，并区分本地局域网直连（同 WiFi/网线）与公网打洞直连。
 fn announce_direct(peer: SocketAddr) {
     if utils::is_local_ip(peer.ip()) {
-        println!(">>> 本地局域网直连 (LAN direct) with {peer}");
+        println!(">>> {} with {peer}", ok("LAN direct"));
     } else {
-        println!(">>> P2P direct link established with {peer}");
+        println!(">>> {} with {peer}", ok("P2P direct link established"));
     }
 }
 
@@ -211,22 +234,29 @@ async fn run_data_plane(
         // 实际设备名（macOS 为系统分配的 utunN；Linux 为自定义名；Windows 为 wintun 适配器名）
         let real_name = crate::p2p::tun::device_name(&dev).unwrap_or_else(|| dev_name.to_string());
         println!(
-            ">>> 虚拟网卡模式: IP {} / {} (MTU {}, 设备 {real_name})",
+            ">>> virtual NIC mode: IP {} / {} (MTU {}, device {real_name})",
             o.ip, o.netmask, o.mtu
         );
         // Windows：放行虚拟网卡入站流量（否则对端 ping / 访问本机被防火墙拦截）
         match crate::p2p::tun::allow_firewall(&real_name) {
-            Ok(()) => println!("    防火墙已放行 {real_name}（对端可 ping/访问本机）"),
-            Err(e) => println!("    防火墙规则添加失败（对端可能无法 ping/访问本机）: {e}"),
+            Ok(()) => {
+                println!("    firewall opened for {real_name} (peer can ping/access this host)")
+            }
+            Err(e) => {
+                println!("    firewall rule failed (peer may not ping/access this host): {e}")
+            }
         }
         // macOS：utun 点对点，需显式添加虚拟网段路由，否则对端回包路由失败（ping 不通）
         if let Some(cidr) = utils::cidr_from_ip_netmask(&o.ip, &o.netmask) {
             match crate::p2p::tun::add_subnet_route(&cidr, &real_name) {
-                Ok(()) => println!("    虚拟网段路由 {cidr} → {real_name} 已添加"),
-                Err(e) => println!("    虚拟网段路由添加失败: {e}"),
+                Ok(()) => println!("    subnet route {cidr} → {real_name} added"),
+                Err(e) => println!("    subnet route add failed: {e}"),
             }
         }
-        println!("    对端现可访问本虚拟网段（如 ping {}）", o.ip);
+        println!(
+            "    peer can now access this virtual subnet (e.g. ping {})",
+            o.ip
+        );
         match mode {
             ForwardMode::Host { .. } => {
                 // 房主：允许内核转发；若访客 --expose-lan，为其局域网子网加路由
@@ -235,16 +265,19 @@ async fn run_data_plane(
                     for cidr in guest_subnets {
                         match crate::p2p::tun::add_route(cidr, &real_name, &o.ip) {
                             Ok(()) => {
-                                println!("    路由 {cidr} → {real_name} 已添加（访问访客局域网）")
+                                println!("    route {cidr} → {real_name} added (access guest LAN)")
                             }
-                            Err(e) => println!("    路由 {cidr} 添加失败: {e}"),
+                            Err(e) => println!("    route {cidr} add failed: {e}"),
                         }
                     }
                     if fwd {
-                        println!("    IPv4 转发已开启 → 可访问访客局域网");
+                        println!(
+                            "    {}",
+                            ok("IPv4 forwarding enabled → guest LAN reachable")
+                        );
                     } else {
                         println!(
-                            "    提示: 开启 IPv4 转发后访客局域网才可达\n      Linux: sysctl -w net.ipv4.ip_forward=1"
+                            "    hint: enable IPv4 forwarding to reach the guest LAN\n      Linux: sysctl -w net.ipv4.ip_forward=1"
                         );
                     }
                 }
@@ -254,13 +287,13 @@ async fn run_data_plane(
                 for cidr in &o.lan_routes {
                     match crate::p2p::tun::add_route(cidr, &real_name, &o.ip) {
                         Ok(()) => {
-                            println!("    路由 {cidr} → {real_name} 已添加（访问房主局域网）")
+                            println!("    route {cidr} → {real_name} added (access host LAN)")
                         }
-                        Err(e) => println!("    路由 {cidr} 添加失败: {e}"),
+                        Err(e) => println!("    route {cidr} add failed: {e}"),
                     }
                 }
                 if !o.lan_routes.is_empty() {
-                    println!("    现在可访问房主局域网（如 ping 房主局域网内设备）");
+                    println!("    host LAN is now reachable (e.g. ping a device in the host LAN)");
                 }
             }
         }
@@ -332,8 +365,9 @@ fn normalize_signaling(input: &str) -> anyhow::Result<String> {
     } else {
         format!("http://{s}")
     };
-    reqwest::Url::parse(&with_scheme)
-        .map_err(|e| anyhow::anyhow!("地址格式不正确（示例：101.43.41.195:8080）：{e}"))?;
+    reqwest::Url::parse(&with_scheme).map_err(|e| {
+        anyhow::anyhow!("invalid address format (example: 101.43.41.195:8080): {e}")
+    })?;
     Ok(with_scheme)
 }
 
@@ -343,12 +377,12 @@ fn normalize_signaling(input: &str) -> anyhow::Result<String> {
 pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     let mut out = std::io::stdout();
 
-    println!("\n  frp-sh 配置向导");
+    println!("\n  frp-sh configuration wizard");
     println!("  ==================");
-    println!("  请填写信令服务器信息（直接回车使用默认值）:\n");
+    println!("  Enter signaling server info (press Enter for defaults):\n");
 
     // 1. 信令服务器地址
-    print!("  1. 信令服务器地址 (HTTP) [默认 http://127.0.0.1:8080]\n  > ");
+    print!("  1. Signaling server address (HTTP) [default http://127.0.0.1:8080]\n  > ");
     out.flush()?;
     let signaling_input = read_line();
     let signaling_addr = normalize_signaling(&signaling_input)?;
@@ -359,7 +393,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         .unwrap_or("127.0.0.1")
         .to_string();
     let default_relay = format!("{host}:8081");
-    print!("  2. 中继服务器地址 (TCP) [默认 {default_relay}]\n  > ");
+    print!("  2. Relay server address (TCP) [default {default_relay}]\n  > ");
     out.flush()?;
     let relay_input = read_line();
     let relay_addr = if relay_input.trim().is_empty() {
@@ -369,12 +403,12 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     };
 
     // 3. UDP 探测独立端口（可选）
-    print!("  3. UDP 探测使用独立端口？(y/N) ");
+    print!("  3. Use a separate port for UDP probing? (y/N) ");
     out.flush()?;
     let udp_input = read_line();
     let want_udp = matches!(udp_input.trim().to_lowercase().as_str(), "y" | "yes");
     let signaling_udp = if want_udp {
-        print!("     独立 UDP 探测地址 (如 {host}:8082):\n  > ");
+        print!("     Separate UDP probe address (e.g. {host}:8082):\n  > ");
         out.flush()?;
         let udp_addr = read_line().trim().to_string();
         if udp_addr.is_empty() {
@@ -396,19 +430,20 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     // 保存
     let path = match save_path {
         Some(p) => p,
-        None => Config::default_path()
-            .ok_or_else(|| anyhow::anyhow!("无法确定默认配置目录（未设置 APPDATA/HOME）"))?,
+        None => Config::default_path().ok_or_else(|| {
+            anyhow::anyhow!("cannot determine default config directory (APPDATA/HOME not set)")
+        })?,
     };
     cfg.save(&path)?;
-    println!("\n  已保存配置: {}", path.display());
-    println!("    信令服务器: {}", cfg.signaling_addr);
-    println!("    中继服务器: {}", cfg.relay_addr);
+    println!("\n  {}: {}", ok("config saved"), path.display());
+    println!("    signaling server: {}", cfg.signaling_addr);
+    println!("    relay server: {}", cfg.relay_addr);
     if let Some(u) = &cfg.signaling_udp {
-        println!("    UDP 探测   : {u}");
+        println!("    UDP probe   : {u}");
     }
 
     // 软连通性检查（不阻塞）
-    println!("\n  正在检查服务器连通性 ...");
+    println!("\n  checking server connectivity ...");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()?;
@@ -418,38 +453,96 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         .await
     {
         Ok(r) if r.status().is_success() => {
-            println!("  [OK] 信令服务器可达");
+            println!("  {} signaling server reachable", ok("[OK]"));
         }
-        Ok(_) => println!("  [WARN] 服务器返回了异常状态"),
+        Ok(_) => println!("  {} server returned an abnormal status", warn("[WARN]")),
         Err(_) => println!(
-            "  [WARN] 无法连接信令服务器（请检查地址与防火墙，可稍后运行 frp-sh config 重试）"
+            "  {} cannot reach the signaling server (check the address and firewall; run frp-sh config again later)",
+            warn("[WARN]")
         ),
     }
 
-    println!("\n  下一步:");
-    println!("    frp-sh game create             # 房主：创建房间");
-    println!("    frp-sh game join game-xxxxxx   # 访客：加入房间");
-    println!("  重新配置: frp-sh config\n");
+    println!("\n  next steps:");
+    println!("    frp-sh game create             # host: create a room");
+    println!("    frp-sh game join game-xxxxxx   # guest: join a room");
+    println!("  re-configure: frp-sh config\n");
     Ok(())
 }
 
-/// 版本冲突控制：校验与信令服务器的线协议版本一致。
+/// 版本冲突控制：校验与信令服务器的线协议版本一致，并显示服务器版本。
 ///
-/// - 服务器有 `/version` 且协议不一致 → 拒绝运行（提示升级）
+/// - 服务器协议不一致 → 红色错误，拒绝运行
+/// - 服务器版本与本地不同但协议兼容 → 黄色提示
+/// - 连接不上服务器 → 红色错误
 /// - 旧服务器无 `/version`（404）→ 视为协议 1，向后兼容
 async fn check_server_protocol(signaling: &SignalingClient) -> anyhow::Result<()> {
-    let Some((server_ver, server_proto)) = signaling.get_version().await? else {
-        return Ok(()); // 旧服务器（无 /version），协议 1 兼容
-    };
-    if server_proto != crate::version::PROTOCOL_VERSION {
-        anyhow::bail!(
-            "与信令服务器版本冲突：服务器 {server_ver} (protocol v{server_proto})，\
-             本机 v{} (protocol v{})。请升级 frp-sh 或服务器后重试。",
-            crate::version::VERSION,
-            crate::version::PROTOCOL_VERSION
-        );
+    match signaling.get_version().await {
+        Ok(Some((server_ver, server_proto))) => {
+            if server_proto != crate::version::PROTOCOL_VERSION {
+                return Err(anyhow::anyhow!(
+                    "{} {}",
+                    err("[error]"),
+                    err(format!(
+                        "version conflict: server v{server_ver} (protocol v{server_proto}), \
+                         local v{} (protocol v{}). Please upgrade frp-sh or the server.",
+                        crate::version::VERSION,
+                        crate::version::PROTOCOL_VERSION
+                    ))
+                ));
+            }
+            if server_ver != crate::version::VERSION {
+                println!(
+                    "  {} server v{server_ver} differs from local v{} ({} compatible)",
+                    warn("[warn]"),
+                    crate::version::VERSION,
+                    dim("protocol")
+                );
+            } else {
+                println!(
+                    "  Server version: v{server_ver} ({})",
+                    dim(format!("protocol v{server_proto}"))
+                );
+            }
+        }
+        Ok(None) => {
+            println!(
+                "  Server version: {} ({})",
+                dim("legacy"),
+                dim("protocol v1 assumed")
+            );
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "{} {}",
+                err("[error]"),
+                err(format!("cannot reach signaling server: {e}"))
+            ));
+        }
     }
     Ok(())
+}
+
+/// 显示房主版本（访客加入后），版本不同但兼容标黄，可能冲突标红。
+fn show_host_version(host_version: &str) {
+    if host_version.is_empty() {
+        return;
+    }
+    let local = crate::version::VERSION;
+    if host_version == local {
+        println!("  Host version  : v{host_version}");
+    } else if crate::version::is_breaking_gap(local, host_version) {
+        println!(
+            "  {} host v{host_version} vs local v{local} ({})",
+            warn("[warn]"),
+            err("possible conflict, please align versions")
+        );
+    } else {
+        println!(
+            "  {} host v{host_version} vs local v{local} ({})",
+            warn("[warn]"),
+            dim("compatible")
+        );
+    }
 }
 
 // ---------- game create ----------
@@ -498,10 +591,11 @@ pub async fn run_create(
             lan_addrs.clone(),
             lan_subnets.clone(),
             guest_ips.clone(),
+            crate::version::VERSION.to_string(),
         )
         .await?;
     let room_id = resp.room_id.clone();
-    println!("\n  Room created : {room_id}");
+    println!("\n  {} : {room_id}", ok("Room created"));
     println!("  Signaling    : {}", cfg.signaling_addr);
     if let Some(u) = &cfg.uuid {
         println!("  Your ID      : {u}");
@@ -511,17 +605,20 @@ pub async fn run_create(
         println!("  LAN addrs    : {}", lan_list.join(", "));
     }
     if let Some(t) = &tun {
-        println!("  Vnet IP      : {}（对端可 ping/直连此 IP）", t.ip);
+        println!(
+            "  Vnet IP      : {} (peer can ping/connect directly to this IP)",
+            t.ip
+        );
         println!("  Mode         : LAN mesh (virtual NIC)");
         if !lan_subnets.is_empty() {
             println!(
-                "  LAN subnets  : {}（--expose-lan：访客可访问）",
+                "  LAN subnets  : {} (--expose-lan: accessible by guest)",
                 lan_subnets.join(", ")
             );
         }
         if !guest_ips.is_empty() {
             println!(
-                "  Guest IPs    : {}（按加入顺序分配）",
+                "  Guest IPs    : {} (assigned in join order)",
                 guest_ips.join(", ")
             );
         }
@@ -585,7 +682,12 @@ pub async fn host_session(
         attempt += 1;
         if attempt > 1 {
             let wait = reconnect_delay(attempt);
-            println!("\n>>> 连接已断开，{wait} 秒后自动重连（Ctrl-C 退出）...");
+            println!(
+                "\n>>> {} ...",
+                warn(format!(
+                    "connection lost, reconnecting in {wait} seconds (Ctrl-C to exit)"
+                ))
+            );
             tokio::time::sleep(Duration::from_secs(wait)).await;
         }
         // 每次（重）连接绑定新 socket 并刷新公网地址（NAT 映射可能已过期）
@@ -615,7 +717,7 @@ pub async fn host_session(
             {
                 Ok(o) => o,
                 Err(e) => {
-                    log::warn!("打洞阶段异常: {e}");
+                    log::warn!("punch phase error: {e}");
                     continue;
                 }
             };
@@ -644,7 +746,10 @@ pub async fn host_session(
             }
             PunchOutcome::TimedOut => {
                 state.relay_mode = true;
-                println!(">>> UDP hole punching failed, falling back to relay ...");
+                println!(
+                    ">>> {} ...",
+                    warn("UDP hole punching failed, falling back to relay")
+                );
                 let relay_addr = match cfg.relay_addr.parse() {
                     Ok(a) => a,
                     Err(e) => {
@@ -655,11 +760,11 @@ pub async fn host_session(
                 let stream = match relay::connect(relay_addr, room_id, RelayRole::Host).await {
                     Ok(s) => s,
                     Err(e) => {
-                        log::warn!("中继连接失败: {e}");
+                        log::warn!("relay connect failed: {e}");
                         continue;
                     }
                 };
-                println!(">>> relay connected, waiting for guest ...");
+                println!(">>> {} ...", warn("relay connected, waiting for guest"));
                 run_data_plane(
                     stream,
                     tun.as_ref(),
@@ -673,9 +778,9 @@ pub async fn host_session(
             }
         };
         if let Err(e) = run_result {
-            log::warn!("会话异常结束: {e}");
+            log::warn!("session ended abnormally: {e}");
         } else {
-            println!(">>> 会话结束，准备重连 ...");
+            println!(">>> session ended, preparing to reconnect ...");
         }
         if let Some(n) = max_rounds {
             if attempt >= n {
@@ -806,7 +911,7 @@ pub async fn run_join(
     }
     if let Some(t) = &tun {
         println!(
-            "  Vnet IP      : {}（组网虚拟 IP，朋友可直连你的整机）",
+            "  Vnet IP      : {} (mesh virtual IP, friends can connect directly to your whole machine)",
             t.ip
         );
     }
@@ -865,7 +970,12 @@ pub async fn guest_session(
         attempt += 1;
         if !first {
             let wait = reconnect_delay(attempt);
-            println!("\n>>> 连接已断开，{wait} 秒后自动重连（Ctrl-C 退出）...");
+            println!(
+                "\n>>> {} ...",
+                warn(format!(
+                    "connection lost, reconnecting in {wait} seconds (Ctrl-C to exit)"
+                ))
+            );
             tokio::time::sleep(Duration::from_secs(wait)).await;
         }
         first = false;
@@ -879,7 +989,7 @@ pub async fn guest_session(
                 return Err(FrpError::RoomNotFound(room_id.to_string()).into());
             }
             Err(e) => {
-                log::warn!("查询房间失败: {e}");
+                log::warn!("failed to query room: {e}");
                 continue;
             }
         };
@@ -906,7 +1016,11 @@ pub async fn guest_session(
                 .cloned()
                 .collect();
             if !skipped.is_empty() {
-                println!("  跳过与本地同网段的房主子网: {}", skipped.join(", "));
+                println!(
+                    "  {}: {}",
+                    warn("skipping host subnets overlapping local subnets"),
+                    skipped.join(", ")
+                );
             }
         }
 
@@ -918,7 +1032,7 @@ pub async fn guest_session(
         {
             Ok(a) => a,
             Err(e) => {
-                log::warn!("公网地址探测失败: {e}");
+                log::warn!("public address probe failed: {e}");
                 continue;
             }
         };
@@ -941,15 +1055,16 @@ pub async fn guest_session(
             .await
         {
             Ok(join) => {
-                println!("\n  Joined room : {}", join.room_id);
+                println!("\n  Joined room : {}", ok(&join.room_id));
                 println!("  Host address: {}", join.host_addr);
                 if let Some(ip) = &host_tun_ip {
                     println!("  Host vnet IP: {ip}");
                 }
+                show_host_version(&info.host_version);
                 // 服务器从房主预留 IP 池分配虚拟 IP（访客未指定 --ip 时）
                 if let (Some(t), Some(ip)) = (tun.as_mut(), &join.assigned_ip) {
                     if t.ip != *ip {
-                        println!("  Assigned IP  : {ip}（房主分配）");
+                        println!("  Assigned IP  : {ip} (host-assigned)");
                         t.ip = ip.clone();
                     }
                 }
@@ -968,7 +1083,7 @@ pub async fn guest_session(
                 println!("  Punching through NAT ...\n");
             }
             Err(e) => {
-                log::warn!("登记房间失败: {e}");
+                log::warn!("failed to join room: {e}");
                 continue;
             }
         }
@@ -977,7 +1092,7 @@ pub async fn guest_session(
             match guest_punch_phase(&engine, &host_addrs, &token, force_relay, spread).await {
                 Ok(o) => o,
                 Err(e) => {
-                    log::warn!("打洞阶段异常: {e}");
+                    log::warn!("punch phase error: {e}");
                     continue;
                 }
             };
@@ -999,7 +1114,7 @@ pub async fn guest_session(
             }
             PunchOutcome::TimedOut => {
                 state.relay_mode = true;
-                println!(">>> UDP hole punching failed, trying relay ...");
+                println!(">>> {} ...", warn("UDP hole punching failed, trying relay"));
                 let relay_addr = match cfg.relay_addr.parse() {
                     Ok(a) => a,
                     Err(e) => {
@@ -1010,13 +1125,13 @@ pub async fn guest_session(
                 let stream = match relay::connect(relay_addr, room_id, RelayRole::Guest).await {
                     Ok(s) => s,
                     Err(e) => {
-                        log::warn!("中继连接失败: {e}");
+                        log::warn!("relay connect failed: {e}");
                         continue;
                     }
                 };
                 if force_relay {
                     // 强制中继：不再尝试任何打洞
-                    println!(">>> relay connected, waiting for host ...");
+                    println!(">>> {} ...", warn("relay connected, waiting for host"));
                     run_data_plane(
                         stream,
                         tun.as_ref(),
@@ -1046,7 +1161,7 @@ pub async fn guest_session(
                             .await
                         }
                         _ => {
-                            println!(">>> relay connected, waiting for host ...");
+                            println!(">>> {} ...", warn("relay connected, waiting for host"));
                             run_data_plane(
                                 stream,
                                 tun.as_ref(),
@@ -1063,9 +1178,9 @@ pub async fn guest_session(
             }
         };
         if let Err(e) = run_result {
-            log::warn!("会话异常结束: {e}");
+            log::warn!("session ended abnormally: {e}");
         } else {
-            println!(">>> 会话结束，准备重连 ...");
+            println!(">>> session ended, preparing to reconnect ...");
         }
         if let Some(n) = max_rounds {
             if attempt >= n {

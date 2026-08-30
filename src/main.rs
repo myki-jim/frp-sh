@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
         let handle = rt.spawn(async { real_main().await });
         handle
             .await
-            .map_err(|e| anyhow::anyhow!("任务异常终止: {e}"))?
+            .map_err(|e| anyhow::anyhow!("task terminated abnormally: {e}"))?
     })
 }
 
@@ -202,30 +202,32 @@ async fn real_main() -> anyhow::Result<()> {
         None => {
             // 首次运行：无子命令 → 配置向导；已有配置 → 显示概要
             if !Config::default_exists() {
-                println!("欢迎使用 frp-sh！首次运行需要先配置信令服务器。\n");
+                println!(
+                    "Welcome to frp-sh! The first run requires configuring the signaling server.\n"
+                );
                 frp_sh::commands::run_config(config).await?;
             } else {
                 let cfg = Config::load_auto(config.as_deref())?;
-                println!("frp-sh - 社交化 P2P 组网工具\n");
-                println!("  当前配置:");
-                println!("    信令服务器: {}", cfg.signaling_addr);
-                println!("    中继服务器: {}", cfg.relay_addr);
+                println!("frp-sh - social P2P mesh tool\n");
+                println!("  Current config:");
+                println!("    Signaling server: {}", cfg.signaling_addr);
+                println!("    Relay server: {}", cfg.relay_addr);
                 if let Some(u) = &cfg.signaling_udp {
-                    println!("    UDP 探测   : {u}");
+                    println!("    UDP probe   : {u}");
                 }
                 if let Some(id) = &cfg.uuid {
-                    println!("    你的 ID    : {id}");
+                    println!("    Your ID    : {id}");
                 }
-                println!("\n  常用命令:");
-                println!("    frp-sh lan create              # 组网：创建房间（虚拟网卡整机入网）");
+                println!("\n  Common commands:");
+                println!("    frp-sh lan create              # mesh: create a room (virtual NIC puts the whole machine on the mesh)");
                 println!(
-                    "    frp-sh lan join lan-xxxxxx    # 组网：加入房间（可访问对方整个局域网）"
+                    "    frp-sh lan join lan-xxxxxx    # mesh: join a room (reach the peer's whole LAN)"
                 );
-                println!("    frp-sh dev create              # 开发：应用层端口转发");
-                println!("    frp-sh game create             # 游戏：纯端口转发（默认 25565）");
-                println!("    frp-sh serve                   # 启动信令服务器");
-                println!("    frp-sh config                  # 重新配置");
-                println!("    frp-sh --help                  # 查看全部命令\n");
+                println!("    frp-sh dev create              # development: application-layer port forwarding");
+                println!("    frp-sh game create             # game: pure port forwarding (default 25565)");
+                println!("    frp-sh serve                   # start the signaling server");
+                println!("    frp-sh config                  # reconfigure");
+                println!("    frp-sh --help                  # show all commands\n");
             }
         }
     }
@@ -236,8 +238,8 @@ async fn real_main() -> anyhow::Result<()> {
 fn check_config_hint(config: &Option<std::path::PathBuf>) {
     if config.is_none() && !Config::default_exists() {
         println!(
-            "提示：尚未配置信令服务器，正在使用内置默认 127.0.0.1:8080。\n\
-             运行 `frp-sh config` 可交互式配置你的服务器。\n"
+            "Note: no signaling server configured; using the built-in default 127.0.0.1:8080.\n\
+             Run `frp-sh config` to configure your server interactively.\n"
         );
     }
 }

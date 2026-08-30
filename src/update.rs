@@ -119,18 +119,18 @@ pub async fn maybe_check_update(interactive: bool) -> anyhow::Result<()> {
     let breaking = crate::version::is_breaking_gap(current, &latest);
 
     println!(
-        "\n  [更新] 发现新版本 v{latest}（当前 v{current}）{}",
+        "\n  [Update] New version v{latest} available (current v{current}){}",
         if breaking {
-            "——版本差异较大，可能存在不兼容，建议立即更新"
+            " — big version gap, possible incompatibility; upgrading now is recommended"
         } else {
             ""
         }
     );
     if !interactive {
-        println!("  服务器请择机更新：curl -fsSL https://frp.sh/install.sh | sh（或安装脚本）\n");
+        println!("  On the server, update when convenient: curl -fsSL https://frp.sh/install.sh | sh (or the install script)\n");
         return Ok(());
     }
-    print!("  是否现在更新？[Y/n] ");
+    print!("  Update now? [Y/n] ");
     std::io::stdout().flush().ok();
     let answer = read_stdin_line();
     let yes = answer.trim().is_empty()
@@ -138,9 +138,9 @@ pub async fn maybe_check_update(interactive: bool) -> anyhow::Result<()> {
         || answer.trim().eq_ignore_ascii_case("yes");
     if !yes {
         if breaking {
-            println!("  [警告] 版本差异较大仍选择跳过；如遇异常请更新到 v{latest}。\n");
+            println!("  [Warning] Skipping despite the big version gap; if you hit issues, upgrade to v{latest}.\n");
         } else {
-            println!("  已跳过本次更新（下次启动再提示）。\n");
+            println!("  Update skipped (will prompt again on next start).\n");
         }
         return Ok(());
     }
@@ -161,16 +161,16 @@ async fn install_latest(latest: &str) -> anyhow::Result<()> {
         let url = "https://frp.sh/downloads/frp-sh-windows-x86_64.exe";
         let exe = std::env::current_exe()?;
         let tmp = std::env::temp_dir().join(format!("frp-sh-{latest}.exe"));
-        println!("  正在下载 v{latest} ...");
+        println!("  Downloading v{latest} ...");
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
             .build()?;
         let bytes = client.get(url).send().await?.bytes().await?;
         if bytes.len() < 1_000_000 {
-            anyhow::bail!("下载异常（文件过小），请手动运行: irm https://frp.sh/install.ps1 | iex");
+            anyhow::bail!("download error (file too small); run manually: irm https://frp.sh/install.ps1 | iex");
         }
         std::fs::write(&tmp, &bytes)?;
-        println!("  下载完成（{} 字节）。", bytes.len());
+        println!("  Download complete ({} bytes).", bytes.len());
         // 本进程退出后延迟替换（运行中的 exe 被锁定）
         let cmd = format!(
             "timeout /t 2 /nobreak >nul & move /y \"{}\" \"{}\"",
@@ -188,14 +188,14 @@ async fn install_latest(latest: &str) -> anyhow::Result<()> {
         }
         #[cfg(not(target_os = "windows"))]
         let _ = cmd;
-        println!("  更新完成，重启 frp-sh 后生效。\n");
+        println!("  Update complete; takes effect after restarting frp-sh.\n");
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = latest;
         println!(
-            "  请运行以下命令更新（当前进程退出后执行）：\n    curl -fsSL https://frp.sh/install.sh | sh\n"
+            "  To update, run the following command (after this process exits):\n    curl -fsSL https://frp.sh/install.sh | sh\n"
         );
         Ok(())
     }

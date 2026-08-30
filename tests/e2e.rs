@@ -59,7 +59,16 @@ async fn create_room(cfg: &Config) -> String {
         .unwrap();
     let lan = utils::lan_socket_addrs(engine.local_addr().unwrap().port());
     let resp = client
-        .create_room("test", 120, my_ext, None, lan, Vec::new(), Vec::new())
+        .create_room(
+            "test",
+            120,
+            my_ext,
+            None,
+            lan,
+            Vec::new(),
+            Vec::new(),
+            "0.0.0".into(),
+        )
         .await
         .unwrap();
     resp.room_id
@@ -220,7 +229,16 @@ async fn room_lifecycle_api() {
         .unwrap();
 
     let created = client
-        .create_room("api", 60, my_ext, None, Vec::new(), Vec::new(), Vec::new())
+        .create_room(
+            "api",
+            60,
+            my_ext,
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "0.0.0".into(),
+        )
         .await
         .unwrap();
     let info = client.get_room(&created.room_id).await.unwrap();
@@ -264,6 +282,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Vec::new(),
             Vec::new(),
             vec!["10.66.0.2".into(), "10.66.0.3".into(), "10.66.0.4".into()],
+            "0.0.0".into(),
         )
         .await
         .unwrap();
@@ -311,7 +330,16 @@ async fn guest_ip_pool_assigns_stable_ips() {
 
     // 未启用 IP 池时 assigned_ip 为 None
     let created2 = client
-        .create_room("ip2", 60, my_ext, None, Vec::new(), Vec::new(), Vec::new())
+        .create_room(
+            "ip2",
+            60,
+            my_ext,
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "0.0.0".into(),
+        )
         .await
         .unwrap();
     let j4 = client

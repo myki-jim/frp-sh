@@ -39,6 +39,8 @@ pub struct Room {
     pub guest_subnets: Vec<String>,
     /// 房主预留的访客虚拟 IP 池（`--guest-ips`）
     pub guest_ips: Vec<String>,
+    /// 房主程序版本（`major.minor.patch`）
+    pub host_version: String,
     /// 已分配：visitor UUID -> 虚拟 IP（重连复用）
     pub ip_assignments: HashMap<String, String>,
     /// 中继等待槽位（配对完成前持有连接）
@@ -104,6 +106,7 @@ async fn create_room(
             guest_lan: Vec::new(),
             guest_subnets: Vec::new(),
             guest_ips: req.guest_ips,
+            host_version: req.version,
             ip_assignments: HashMap::new(),
             relay_host: None,
             relay_guest: None,
@@ -193,6 +196,7 @@ async fn get_room(
         host_subnets: room.host_subnets.clone(),
         guest_lan: room.guest_lan.clone(),
         guest_subnets: room.guest_subnets.clone(),
+        host_version: room.host_version.clone(),
     }))
 }
 

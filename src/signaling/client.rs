@@ -30,7 +30,8 @@ impl SignalingClient {
     /// `tun_ip` 为虚拟网卡模式时通告的虚拟 IP（可选）；
     /// `host_lan` 为本机局域网打洞地址（同局域网直连）；
     /// `host_subnets` 为本机局域网子网 CIDR（--tun 时访客据此访问房主局域网）；
-    /// `guest_ips` 为房主预留的访客虚拟 IP 池（`--guest-ips`）。
+    /// `guest_ips` 为房主预留的访客虚拟 IP 池（`--guest-ips`）；
+    /// `version` 为本机程序版本（访客端兼容性提示用）。
     #[allow(clippy::too_many_arguments)]
     pub async fn create_room(
         &self,
@@ -41,6 +42,7 @@ impl SignalingClient {
         host_lan: Vec<SocketAddr>,
         host_subnets: Vec<String>,
         guest_ips: Vec<String>,
+        version: String,
     ) -> Result<CreateRoomResponse> {
         let resp = self
             .http
@@ -53,6 +55,7 @@ impl SignalingClient {
                 host_lan,
                 host_subnets,
                 guest_ips,
+                version,
             })
             .send()
             .await

@@ -55,11 +55,11 @@ pub fn create(cfg: &TunConfig) -> Result<tun::AsyncDevice> {
     }
     tun::create_as_async(&c).map_err(|e| {
         let hint = if cfg!(target_os = "windows") {
-            "；Windows 需要 wintun.dll 放在可执行文件旁（或用 WINTUN_DLL 环境变量指定），且需管理员权限"
+            "; Windows requires wintun.dll next to the executable (or set via the WINTUN_DLL env var), and administrator privileges"
         } else {
             ""
         };
-        FrpError::Tun(format!("创建 TUN 设备失败{hint}: {e}"))
+        FrpError::Tun(format!("Failed to create TUN device{hint}: {e}"))
     })
 }
 
@@ -157,7 +157,7 @@ where
                         }
                         Ok(None) => break,
                         Err(_) => {
-                            return Err(FrpError::Protocol("隧道帧超限".into()));
+                            return Err(FrpError::Protocol("tunnel frame exceeds the limit".into()));
                         }
                     }
                 }
@@ -234,7 +234,7 @@ pub fn add_route(cidr: &str, dev_name: &str, gateway: &str) -> Result<()> {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         Err(FrpError::Tun(format!(
-            "当前平台不支持自动添加路由，请手动执行: ip route add {cidr} dev {dev_name}"
+            "auto route addition is not supported on this platform; run manually: ip route add {cidr} dev {dev_name}"
         )))
     }
 }
@@ -244,12 +244,16 @@ fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
     let out = std::process::Command::new(program)
         .args(args)
         .output()
-        .map_err(|e| FrpError::Tun(format!("{program} 执行失败（需要 root/管理员权限）: {e}")))?;
+        .map_err(|e| {
+            FrpError::Tun(format!(
+                "{program} failed (requires root/administrator privileges): {e}"
+            ))
+        })?;
     if out.status.success() {
         Ok(())
     } else {
         Err(FrpError::Tun(format!(
-            "{program} 返回错误: {}",
+            "{program} returned an error: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )))
     }
