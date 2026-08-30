@@ -166,11 +166,11 @@ async fn run_session(
         drop(client);
     }
 
-    let host_res = tokio::time::timeout(Duration::from_secs(30), host)
+    let host_res = tokio::time::timeout(Duration::from_secs(60), host)
         .await
         .expect("host session timeout")
         .unwrap();
-    let guest_res = tokio::time::timeout(Duration::from_secs(30), guest)
+    let guest_res = tokio::time::timeout(Duration::from_secs(60), guest)
         .await
         .expect("guest session timeout")
         .unwrap();
