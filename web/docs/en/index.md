@@ -31,6 +31,15 @@ features:
     details: ~5 MB pure-Rust binary, no frp / libp2p / webrtc dependencies
 ---
 
+::: warning Development stage (0.x)
+
+frp-sh is currently in **development** (`v0.1.x`): **features and the protocol may
+change before 1.0**, and backward compatibility is not promised. Versions ship
+fast — keep up with updates, and if you deploy in production watch update notices
+and big-gap warnings. See the [versioning policy](./versioning).
+
+:::
+
 ## Install
 
 One-line install / update (same link for both — re-run to update; the script detects your OS and architecture and downloads the latest release from GitHub):
