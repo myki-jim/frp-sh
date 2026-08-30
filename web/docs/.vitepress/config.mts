@@ -26,6 +26,7 @@ const zhSidebar = [
   { text: '原理与开发', items: [
     { text: '网络原理', link: '/architecture' },
     { text: '协议规范', link: '/protocol' },
+    { text: '版本策略', link: '/versioning' },
     { text: '开发与测试', link: '/develop' },
     { text: '路线图', link: '/roadmap' },
   ]},
@@ -56,6 +57,7 @@ const enSidebar = [
   { text: 'Internals', items: [
     { text: 'Architecture', link: '/en/architecture' },
     { text: 'Protocol Spec', link: '/en/protocol' },
+    { text: 'Versioning', link: '/en/versioning' },
     { text: 'Development & Testing', link: '/en/develop' },
     { text: 'Roadmap', link: '/en/roadmap' },
   ]},
