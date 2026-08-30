@@ -9,21 +9,42 @@ use reqwest::StatusCode;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+/// 请求认证头（与服务器 `--password` 对应）。
+const AUTH_HEADER: &str = "X-Frp-Sh-Token";
+
 #[derive(Debug, Clone)]
 pub struct SignalingClient {
     base_url: String,
     http: reqwest::Client,
+    password: Option<String>,
 }
 
 impl SignalingClient {
+    /// 不带密码的客户端。
     pub fn new(base_url: &str) -> Self {
+        Self::new_with_password(base_url, None)
+    }
+
+    /// 带服务器密码的客户端：所有请求携带 `X-Frp-Sh-Token`。
+    pub fn new_with_password(base_url: &str, password: Option<&str>) -> Self {
+        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
+        if let Some(pw) = password {
+            let mut headers = reqwest::header::HeaderMap::new();
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(pw) {
+                headers.insert(AUTH_HEADER, v);
+            }
+            builder = builder.default_headers(headers);
+        }
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-                .expect("build reqwest client"),
+            http: builder.build().expect("build reqwest client"),
+            password: password.map(str::to_string),
         }
+    }
+
+    /// 服务器是否要求密码（客户端配置了密码即随请求携带；服务器未设密码时无害）。
+    pub fn has_password(&self) -> bool {
+        self.password.is_some()
     }
 
     /// 注册房间。`addr` 是本机通过 UDP 探测得到的公网地址；
@@ -60,6 +81,9 @@ impl SignalingClient {
             .send()
             .await
             .map_err(|e| FrpError::Signaling(format!("create room: {e}")))?;
+        if resp.status() == StatusCode::UNAUTHORIZED {
+            return Err(Self::auth_err());
+        }
         if !resp.status().is_success() {
             return Err(FrpError::Signaling(format!(
                 "create room: HTTP {}",
@@ -69,6 +93,13 @@ impl SignalingClient {
         resp.json()
             .await
             .map_err(|e| FrpError::Signaling(format!("bad create response: {e}")))
+    }
+
+    /// 服务器需要密码但未提供/错误时的友好错误。
+    fn auth_err() -> FrpError {
+        FrpError::Signaling(
+            "server requires a password (HTTP 401): configure 'password' in config (run `frp-sh config`)".into(),
+        )
     }
 
     /// 访客登记加入房间，返回房主公网地址与分配的虚拟 IP。
@@ -101,6 +132,7 @@ impl SignalingClient {
             .await
             .map_err(|e| FrpError::Signaling(format!("join room: {e}")))?;
         match resp.status() {
+            StatusCode::UNAUTHORIZED => Err(Self::auth_err()),
             StatusCode::NOT_FOUND => Err(FrpError::RoomNotFound(room_id.to_string())),
             s if !s.is_success() => Err(FrpError::Signaling(format!("join room: HTTP {s}"))),
             _ => resp
@@ -119,6 +151,7 @@ impl SignalingClient {
             .await
             .map_err(|e| FrpError::Signaling(format!("get room: {e}")))?;
         match resp.status() {
+            StatusCode::UNAUTHORIZED => Err(Self::auth_err()),
             StatusCode::NOT_FOUND => Err(FrpError::RoomNotFound(room_id.to_string())),
             s if !s.is_success() => Err(FrpError::Signaling(format!("get room: HTTP {s}"))),
             _ => resp
@@ -172,10 +205,10 @@ impl SignalingClient {
         }
     }
 
-    /// 查询服务器版本与线协议版本。
+    /// 查询服务器版本、线协议版本与是否启用密码认证。
     ///
-    /// 旧服务器没有 `/version` 端点（404）时返回 `None`（按协议 1 兼容）。
-    pub async fn get_version(&self) -> Result<Option<(String, u32)>> {
+    /// 旧服务器没有 `/version` 端点（404）时返回 `None`（按协议 1、无认证兼容）。
+    pub async fn get_version(&self) -> Result<Option<(String, u32, bool)>> {
         let resp = self
             .http
             .get(format!("{}/version", self.base_url))
@@ -192,7 +225,8 @@ impl SignalingClient {
                     .map_err(|e| FrpError::Signaling(format!("bad version response: {e}")))?;
                 let ver = v.get("version").and_then(|x| x.as_str()).unwrap_or("");
                 let proto = v.get("protocol").and_then(|x| x.as_u64()).unwrap_or(0);
-                Ok(Some((ver.to_string(), proto as u32)))
+                let auth = v.get("auth").and_then(|x| x.as_bool()).unwrap_or(false);
+                Ok(Some((ver.to_string(), proto as u32, auth)))
             }
         }
     }

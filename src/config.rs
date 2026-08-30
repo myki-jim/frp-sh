@@ -28,6 +28,10 @@ pub struct Config {
     /// 设备身份 UUID（首次运行生成，用于派生稳定虚拟网卡 IP 等）。
     #[serde(default)]
     pub uuid: Option<String>,
+    /// 可选：信令服务器密码（服务器 `serve --password` 设置后必须填写；
+    /// 用于请求认证与中继流量加密）。
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 impl Default for Config {
@@ -37,6 +41,7 @@ impl Default for Config {
             relay_addr: default_relay(),
             signaling_udp: None,
             uuid: None,
+            password: None,
         }
     }
 }
@@ -206,6 +211,7 @@ mod tests {
             relay_addr: "1.2.3.4:9001".into(),
             signaling_udp: Some("1.2.3.4:9002".into()),
             uuid: Some("123e4567-e89b-12d3-a456-426614174000".into()),
+            password: Some("secret".into()),
         };
         cfg.save(&path).unwrap();
         let loaded = Config::load(Some(&path)).unwrap();

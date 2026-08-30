@@ -63,8 +63,12 @@ async fn real_main() -> anyhow::Result<()> {
     frp_sh::update::maybe_check_update(interactive).await?;
 
     match command {
-        Some(Commands::Serve { addr, relay_addr }) => {
-            frp_sh::commands::run_serve(addr, relay_addr).await?;
+        Some(Commands::Serve {
+            addr,
+            relay_addr,
+            password,
+        }) => {
+            frp_sh::commands::run_serve(addr, relay_addr, password).await?;
         }
         Some(Commands::Config) => {
             frp_sh::commands::run_config(config).await?;

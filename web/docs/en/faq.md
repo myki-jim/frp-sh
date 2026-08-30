@@ -75,10 +75,33 @@ The read buffer caps at 1 MB; beyond that frames are dropped and recovered by re
 
 ### Is relay mode safe?
 
-Relay traffic is **plaintext** (it passes through your signaling server). For confidentiality:
+Two layers:
 
-- Prefer direct punching + `--key`
-- Or wrap the path to the server yourself (e.g., WireGuard)
+- **Server password** (`serve --password`): the relay channel is encrypted with a
+  ChaCha20-Poly1305 **stream cipher** keyed by the password — third parties
+  (ISP/middleboxes) can't see the content (the server holds the password and can
+  decrypt to forward)
+- **`--key` end-to-end**: P2P direct traffic is encrypted with a key derived from
+  `--key` — **the server cannot decrypt it either** (even if the password leaks)
+
+Combo: use `--key` for end-to-end secrecy; a server password at least keeps relay
+traffic off the wire in plaintext.
+
+### Can the signaling server require a password (stop strangers creating rooms)?
+
+Yes. Start the server with `--password`:
+
+```bash
+frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password YOUR_PASSWORD
+```
+
+Clients must then set the same password in their config (`frp-sh config` wizard
+step 4, or add `password = "..."` to `config.toml`):
+
+- **Request auth**: every signaling request is checked; missing/wrong → 401
+- **Relay auth + encryption**: relay connections must carry the password, and the
+  channel is encrypted
+- Servers without a password behave exactly as before (old clients keep working)
 
 ### Can room codes be guessed?
 

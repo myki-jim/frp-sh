@@ -21,21 +21,38 @@ impl RelayRole {
     }
 }
 
-/// 连接信令服务器中继端点，完成 `HELLO <room_id> <ROLE>` 握手。
+/// 中继连接：服务器设置了密码时为加密流，否则为裸 TCP。
+pub trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
+
+pub type RelayStream = Box<dyn AsyncReadWrite>;
+
+/// 连接信令服务器中继端点，完成 `HELLO <room_id> <ROLE> [token]` 握手。
+///
+/// - `token`：服务器密码（服务器设置密码时必须提供，作为认证与加密密钥）
+/// - `encrypted`：是否启用中继流加密（由服务器 `/version` 的 auth 标志决定）
 ///
 /// 服务器立即回复 `WAIT`（等待对端）或 `OK`（已配对）；
-/// 配对完成后服务器负责双向拷贝，本函数返回的 [`TcpStream`] 可直接读写。
-pub async fn connect(relay_addr: SocketAddr, room_id: &str, role: RelayRole) -> Result<TcpStream> {
+/// 配对完成后服务器负责双向拷贝，本函数返回的流可直接读写。
+pub async fn connect(
+    relay_addr: SocketAddr,
+    room_id: &str,
+    role: RelayRole,
+    token: Option<&str>,
+    encrypted: bool,
+) -> Result<RelayStream> {
     let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(relay_addr))
         .await
         .map_err(|_| FrpError::Relay(format!("connect {relay_addr} timed out")))?
         .map_err(FrpError::Io)?;
     stream.set_nodelay(true).map_err(FrpError::Io)?;
 
+    let hello = match token {
+        Some(t) if !t.is_empty() => format!("HELLO {room_id} {} {t}\r\n", role.as_str()),
+        _ => format!("HELLO {room_id} {}\r\n", role.as_str()),
+    };
     let (mut rd, mut wr) = stream.into_split();
-    wr.write_all(format!("HELLO {room_id} {}\r\n", role.as_str()).as_bytes())
-        .await
-        .map_err(FrpError::Io)?;
+    wr.write_all(hello.as_bytes()).await.map_err(FrpError::Io)?;
 
     // 逐字节读取服务器回复行，避免缓冲残留吞掉对端随后发来的数据（如 CNEW）
     let mut line = Vec::with_capacity(16);
@@ -69,5 +86,17 @@ pub async fn connect(relay_addr: SocketAddr, room_id: &str, role: RelayRole) -> 
     let stream = rd
         .reunite(wr)
         .map_err(|_| FrpError::Relay("stream reunite failed".into()))?;
-    Ok(stream)
+    if encrypted {
+        let key = match token {
+            Some(t) => crate::p2p::enc::key_from_password(t),
+            None => {
+                return Err(FrpError::Relay(
+                    "server requires encrypted relay but no password configured".into(),
+                ))
+            }
+        };
+        Ok(Box::new(crate::p2p::enc::EncStream::new(stream, &key)))
+    } else {
+        Ok(Box::new(stream))
+    }
 }

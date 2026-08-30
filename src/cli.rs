@@ -32,6 +32,10 @@ pub enum Commands {
         /// TCP relay listen address
         #[arg(long, default_value = "0.0.0.0:8081")]
         relay_addr: String,
+        /// Server password (optional): clients must configure the same password;
+        /// enables request authentication and relay traffic encryption
+        #[arg(long)]
+        password: Option<String>,
     },
     /// Configure the signaling server interactively (first-run wizard)
     Config,

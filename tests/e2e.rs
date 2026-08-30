@@ -15,9 +15,14 @@ struct TestServer {
 }
 
 async fn start_server() -> TestServer {
+    start_server_with_password(None).await
+}
+
+/// 启动带密码（认证 + 中继加密）的信令服务器。
+async fn start_server_with_password(password: Option<&str>) -> TestServer {
     // 偶发端口冲突（强杀进程的端口未完全释放）时重试
     for _ in 0..10 {
-        if let Some(s) = try_start_server().await {
+        if let Some(s) = try_start_server(password).await {
             return s;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -25,7 +30,7 @@ async fn start_server() -> TestServer {
     panic!("cannot start test signaling server (port conflicts)");
 }
 
-async fn try_start_server() -> Option<TestServer> {
+async fn try_start_server(password: Option<&str>) -> Option<TestServer> {
     let http_listener = TcpListener::bind("127.0.0.1:0").await.ok()?;
     let http_port = http_listener.local_addr().unwrap().port();
     // UDP 探测用独立端口（避免 Windows 上"同端口 TCP 刚释放"的绑定冲突，
@@ -35,22 +40,24 @@ async fn try_start_server() -> Option<TestServer> {
     let relay_listener = TcpListener::bind("127.0.0.1:0").await.ok()?;
     let relay_port = relay_listener.local_addr().unwrap().port();
     let state = server::new_state();
-    tokio::spawn(server::run_http(http_listener, state.clone()));
+    let pw = password.map(str::to_string);
+    tokio::spawn(server::run_http(http_listener, state.clone(), pw.clone()));
     tokio::spawn(server::run_udp_echo(udp));
-    tokio::spawn(server::run_relay(relay_listener, state));
+    tokio::spawn(server::run_relay(relay_listener, state, pw.clone()));
     Some(TestServer {
         cfg: Config {
             signaling_addr: format!("http://127.0.0.1:{http_port}"),
             relay_addr: format!("127.0.0.1:{relay_port}"),
             signaling_udp: Some(format!("127.0.0.1:{udp_port}")),
             uuid: None,
+            password: pw,
         },
     })
 }
 
 /// 创建房间并返回 room_id。
 async fn create_room(cfg: &Config) -> String {
-    let client = SignalingClient::new(&cfg.signaling_addr);
+    let client = SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
     let engine = PunchEngine::bind().await.unwrap();
     let token = utils::rand_token();
     let my_ext = client
@@ -216,7 +223,8 @@ async fn e2e_relay_fallback() {
 #[tokio::test(flavor = "multi_thread")]
 async fn room_lifecycle_api() {
     let srv = start_server().await;
-    let client = SignalingClient::new(&srv.cfg.signaling_addr);
+    let client =
+        SignalingClient::new_with_password(&srv.cfg.signaling_addr, srv.cfg.password.as_deref());
     let engine = PunchEngine::bind().await.unwrap();
     let token = utils::rand_token();
     let my_ext = client
@@ -261,7 +269,8 @@ async fn room_lifecycle_api() {
 #[tokio::test(flavor = "multi_thread")]
 async fn guest_ip_pool_assigns_stable_ips() {
     let srv = start_server().await;
-    let client = SignalingClient::new(&srv.cfg.signaling_addr);
+    let client =
+        SignalingClient::new_with_password(&srv.cfg.signaling_addr, srv.cfg.password.as_deref());
     let engine = PunchEngine::bind().await.unwrap();
     let token = utils::rand_token();
     let my_ext = client
@@ -354,4 +363,48 @@ async fn guest_ip_pool_assigns_stable_ips() {
         .await
         .unwrap();
     assert!(j4.assigned_ip.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_relay_with_server_password_encrypted() {
+    // 服务器设密码：请求认证 + 中继流量加密（force_relay 走中继）
+    let srv = start_server_with_password(Some("test-secret-pw")).await;
+    let room_id = create_room(&srv.cfg).await;
+    let (host, guest) = run_session(srv.cfg, room_id, true, None, 1).await;
+    assert!(host.is_ok(), "encrypted relay host failed: {host:?}");
+    assert!(guest.is_ok(), "encrypted relay guest failed: {guest:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn server_auth_rejects_wrong_password() {
+    let srv = start_server_with_password(Some("correct-pw")).await;
+    // 未配置密码的客户端访问 → 401
+    let bad = SignalingClient::new(&srv.cfg.signaling_addr);
+    let engine = PunchEngine::bind().await.unwrap();
+    let token = utils::rand_token();
+    let my_ext = bad
+        .learn_public_addr(
+            engine.socket(),
+            srv.cfg.signaling_udp_addr().unwrap(),
+            &token,
+        )
+        .await
+        .unwrap();
+    let err = bad
+        .create_room(
+            "auth",
+            60,
+            my_ext,
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "0.0.0".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("password"),
+        "expected password error, got: {err}"
+    );
 }

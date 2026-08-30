@@ -5,8 +5,10 @@ use super::{
     RoomInfo,
 };
 use crate::utils;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use std::collections::HashMap;
@@ -19,6 +21,16 @@ use tokio::sync::{Mutex, Notify};
 
 /// 房间注册表：room_id -> Room
 pub type SharedState = Arc<Mutex<HashMap<String, Room>>>;
+
+/// 请求认证头（客户端携带服务器密码）。
+pub const AUTH_HEADER: &str = "X-Frp-Sh-Token";
+
+/// 服务器应用状态：房间注册表 + 可选密码（按实例传递，避免全局污染）。
+#[derive(Clone)]
+pub struct AppState {
+    pub rooms: SharedState,
+    pub password: Option<String>,
+}
 
 #[derive(Debug)]
 pub struct Room {
@@ -62,7 +74,15 @@ pub fn new_state() -> SharedState {
 
 // ---------- HTTP REST ----------
 
-pub async fn run_http(listener: TcpListener, state: SharedState) -> anyhow::Result<()> {
+pub async fn run_http(
+    listener: TcpListener,
+    state: SharedState,
+    password: Option<String>,
+) -> anyhow::Result<()> {
+    let app_state = AppState {
+        rooms: state,
+        password: password.clone(),
+    };
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/version", get(version_info))
@@ -70,26 +90,57 @@ pub async fn run_http(listener: TcpListener, state: SharedState) -> anyhow::Resu
         .route("/room/{id}/join", post(join_room))
         .route("/room/{id}/refresh", post(refresh_room))
         .route("/room/{id}", get(get_room).delete(delete_room))
-        .with_state(state);
+        .with_state(app_state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            app_state,
+            auth_middleware,
+        ));
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-/// 返回服务器版本与线协议版本（客户端据此做版本冲突检查）。
-async fn version_info() -> Json<serde_json::Value> {
+/// 请求认证：服务器设置了密码时校验 `X-Frp-Sh-Token`（/version 与 /health 免认证）。
+async fn auth_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, String)> {
+    let path = req.uri().path().to_string();
+    if path == "/version" || path == "/health" {
+        return Ok(next.run(req).await);
+    }
+    if let Some(pw) = &state.password {
+        let token = req
+            .headers()
+            .get(AUTH_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if token != pw {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "unauthorized: invalid or missing server password (set password in config)".into(),
+            ));
+        }
+    }
+    Ok(next.run(req).await)
+}
+
+/// 返回服务器版本、线协议版本与是否启用密码认证。
+async fn version_info(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "version": crate::version::VERSION,
         "protocol": crate::version::PROTOCOL_VERSION,
+        "auth": state.password.is_some(),
     }))
 }
 
 async fn create_room(
-    State(state): State<SharedState>,
+    State(state): State<AppState>,
     Json(req): Json<CreateRoomRequest>,
 ) -> Result<Json<CreateRoomResponse>, (StatusCode, String)> {
     let now = utils::now_unix();
     let room_id = utils::new_room_id(&req.prefix);
-    let mut map = state.lock().await;
+    let mut map = state.rooms.lock().await;
     // 惰性清理过期房间
     map.retain(|_, r| !r.expired());
     map.insert(
@@ -120,11 +171,11 @@ async fn create_room(
 }
 
 async fn join_room(
-    State(state): State<SharedState>,
+    State(state): State<AppState>,
     Path(room_id): Path<String>,
     Json(req): Json<JoinRoomRequest>,
 ) -> Result<Json<JoinRoomResponse>, (StatusCode, String)> {
-    let mut map = state.lock().await;
+    let mut map = state.rooms.lock().await;
     let room = map.get_mut(&room_id).ok_or_else(|| not_found(&room_id))?;
     if room.expired() {
         map.remove(&room_id);
@@ -176,10 +227,10 @@ async fn join_room(
 }
 
 async fn get_room(
-    State(state): State<SharedState>,
+    State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> Result<Json<RoomInfo>, (StatusCode, String)> {
-    let mut map = state.lock().await;
+    let mut map = state.rooms.lock().await;
     let room = map.get_mut(&room_id).ok_or_else(|| not_found(&room_id))?;
     if room.expired() {
         map.remove(&room_id);
@@ -202,11 +253,11 @@ async fn get_room(
 
 /// 房主重连时刷新自己的公网地址与局域网信息（NAT 映射可能已过期）。
 async fn refresh_room(
-    State(state): State<SharedState>,
+    State(state): State<AppState>,
     Path(room_id): Path<String>,
     Json(req): Json<RefreshRoomRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let mut map = state.lock().await;
+    let mut map = state.rooms.lock().await;
     let room = map.get_mut(&room_id).ok_or_else(|| not_found(&room_id))?;
     if room.expired() {
         map.remove(&room_id);
@@ -218,8 +269,8 @@ async fn refresh_room(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_room(State(state): State<SharedState>, Path(room_id): Path<String>) -> StatusCode {
-    let mut map = state.lock().await;
+async fn delete_room(State(state): State<AppState>, Path(room_id): Path<String>) -> StatusCode {
+    let mut map = state.rooms.lock().await;
     if map.remove(&room_id).is_some() {
         StatusCode::NO_CONTENT
     } else {
@@ -263,20 +314,52 @@ fn fmt_ip(addr: SocketAddr) -> String {
 /// 等待配对的最长时间
 const RELAY_PAIR_TIMEOUT: Duration = Duration::from_secs(600);
 
-pub async fn run_relay(listener: TcpListener, state: SharedState) -> anyhow::Result<()> {
+pub async fn run_relay(
+    listener: TcpListener,
+    state: SharedState,
+    password: Option<String>,
+) -> anyhow::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let state = state.clone();
+        let password = password.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_relay_conn(stream, state).await {
+            if let Err(e) = handle_relay_conn(stream, state, password).await {
                 log::debug!("relay connection ended: {e}");
             }
         });
     }
 }
 
-async fn handle_relay_conn(stream: TcpStream, state: SharedState) -> anyhow::Result<()> {
-    let (room_id, role, mut stream) = read_hello(stream).await?;
+/// 将中继连接按需包装为加密流（服务器设置了密码时）。
+fn maybe_encrypt<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
+    stream: S,
+    password: Option<&str>,
+) -> Box<dyn crate::p2p::relay::AsyncReadWrite> {
+    match password {
+        Some(pw) => {
+            let key = crate::p2p::enc::key_from_password(pw);
+            Box::new(crate::p2p::enc::EncStream::new(stream, &key))
+        }
+        None => Box::new(stream),
+    }
+}
+
+async fn handle_relay_conn(
+    stream: TcpStream,
+    state: SharedState,
+    password: Option<String>,
+) -> anyhow::Result<()> {
+    let (room_id, role, mut stream, token) = read_hello(stream).await?;
+
+    // 服务器设置了密码 → 校验客户端携带的 token，并启用中继流加密
+    if let Some(pw) = &password {
+        let ok = token.as_deref() == Some(pw.as_str());
+        if !ok {
+            let _ = stream.write_all(b"ERROR AUTH_FAILED\r\n").await;
+            return Ok(());
+        }
+    }
 
     let mut map = state.lock().await;
     let room = map
@@ -287,19 +370,23 @@ async fn handle_relay_conn(stream: TcpStream, state: SharedState) -> anyhow::Res
         return Ok(());
     }
 
-    // 对方已在等待 → 立即配对并转发
+    // 对方已在等待 → 立即配对并转发（服务器有密码时两侧均加密）
     let other = if role == "HOST" {
         room.relay_guest.take()
     } else {
         room.relay_host.take()
     };
-    if let Some(mut other) = other {
+    if let Some(other) = other {
         let notify = room.pair_notify.clone();
         let _ = stream.write_all(b"OK\r\n").await;
         drop(map);
         notify.notify_waiters();
+        let pw = password.clone();
         tokio::spawn(async move {
-            let _ = tokio::io::copy_bidirectional(&mut stream, &mut other).await;
+            let pw_opt = pw.as_deref();
+            let mut a = maybe_encrypt(stream, pw_opt);
+            let mut b = maybe_encrypt(other, pw_opt);
+            let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
         });
         return Ok(());
     }
@@ -363,10 +450,13 @@ async fn handle_relay_conn(stream: TcpStream, state: SharedState) -> anyhow::Res
     }
 }
 
-/// 读取 `HELLO <room_id> <HOST|GUEST>\r\n` 行。
+/// 读取 `HELLO <room_id> <HOST|GUEST> [token]\r\n` 行。
 ///
+/// token 为可选第 4 字段（服务器设置密码时客户端携带）。
 /// 逐字节读取，避免 BufReader 缓冲残留吞掉对端随后发来的数据（如 CNEW）。
-async fn read_hello(stream: TcpStream) -> anyhow::Result<(String, String, TcpStream)> {
+async fn read_hello(
+    stream: TcpStream,
+) -> anyhow::Result<(String, String, TcpStream, Option<String>)> {
     stream.set_nodelay(true)?;
     let (mut rd, mut wr) = stream.into_split();
     let mut line = Vec::with_capacity(64);
@@ -385,7 +475,7 @@ async fn read_hello(stream: TcpStream) -> anyhow::Result<(String, String, TcpStr
     }
     let text = String::from_utf8_lossy(&line);
     let parts: Vec<&str> = text.split_whitespace().collect();
-    if parts.len() != 3 || parts[0] != "HELLO" {
+    if parts.len() < 3 || parts.len() > 4 || parts[0] != "HELLO" {
         let _ = wr.write_all(b"ERROR BAD_HELLO\r\n").await;
         return Err(anyhow::anyhow!("relay: bad hello line"));
     }
@@ -394,6 +484,7 @@ async fn read_hello(stream: TcpStream) -> anyhow::Result<(String, String, TcpStr
         let _ = wr.write_all(b"ERROR BAD_ROLE\r\n").await;
         return Err(anyhow::anyhow!("relay: bad role {role}"));
     }
+    let token = parts.get(3).map(|s| s.to_string());
     let stream = rd.reunite(wr)?;
-    Ok((room_id, role, stream))
+    Ok((room_id, role, stream, token))
 }

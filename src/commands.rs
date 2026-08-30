@@ -314,7 +314,11 @@ async fn run_data_plane(
 // ---------- serve ----------
 
 /// `frp-sh serve`：同时提供 HTTP REST、UDP 公网探测与 TCP 中继。
-pub async fn run_serve(http_addr: String, relay_addr: String) -> anyhow::Result<()> {
+pub async fn run_serve(
+    http_addr: String,
+    relay_addr: String,
+    password: Option<String>,
+) -> anyhow::Result<()> {
     let http_listener = TcpListener::bind(&http_addr).await?;
     let http_sock: SocketAddr = http_listener.local_addr()?;
     let udp = UdpSocket::bind(http_sock).await?;
@@ -325,12 +329,20 @@ pub async fn run_serve(http_addr: String, relay_addr: String) -> anyhow::Result<
     println!("  HTTP REST : {http_sock}");
     println!("  UDP echo  : {http_sock}");
     println!("  TCP relay : {relay_sock}");
+    match &password {
+        Some(_) => println!("  Auth       : enabled (--password) — clients must set the same password; relay traffic encrypted"),
+        None => println!("  Auth       : disabled (no password)"),
+    }
     println!("  (Ctrl-C to stop)");
 
     let state = server::new_state();
-    let http_task = tokio::spawn(server::run_http(http_listener, state.clone()));
+    let http_task = tokio::spawn(server::run_http(
+        http_listener,
+        state.clone(),
+        password.clone(),
+    ));
     let udp_task = tokio::spawn(server::run_udp_echo(udp));
-    let relay_task = tokio::spawn(server::run_relay(relay_listener, state));
+    let relay_task = tokio::spawn(server::run_relay(relay_listener, state, password));
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => { println!("\nshutting down ..."); }
@@ -420,11 +432,22 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         None
     };
 
+    // 4. 服务器密码（可选）
+    print!("  4. Server password (optional, if the server runs with --password):\n  > ");
+    out.flush()?;
+    let pw_input = read_line();
+    let password = if pw_input.trim().is_empty() {
+        None
+    } else {
+        Some(pw_input.trim().to_string())
+    };
+
     let cfg = Config {
         signaling_addr,
         relay_addr,
         signaling_udp,
         uuid: None, // 设备 UUID 存于独立 identity 文件
+        password,
     };
 
     // 保存
@@ -440,6 +463,9 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     println!("    relay server: {}", cfg.relay_addr);
     if let Some(u) = &cfg.signaling_udp {
         println!("    UDP probe   : {u}");
+    }
+    if cfg.password.is_some() {
+        println!("    password    : configured (requests authenticated, relay encrypted)");
     }
 
     // 软连通性检查（不阻塞）
@@ -477,7 +503,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
 /// - 旧服务器无 `/version`（404）→ 视为协议 1，向后兼容
 async fn check_server_protocol(signaling: &SignalingClient) -> anyhow::Result<()> {
     match signaling.get_version().await {
-        Ok(Some((server_ver, server_proto))) => {
+        Ok(Some((server_ver, server_proto, auth))) => {
             if server_proto != crate::version::PROTOCOL_VERSION {
                 return Err(anyhow::anyhow!(
                     "{} {}",
@@ -502,6 +528,23 @@ async fn check_server_protocol(signaling: &SignalingClient) -> anyhow::Result<()
                     "  Server version: v{server_ver} ({})",
                     dim(format!("protocol v{server_proto}"))
                 );
+            }
+            if auth {
+                if signaling.has_password() {
+                    println!(
+                        "  {} server requires a password — {}",
+                        ok("[OK]"),
+                        dim("authenticated")
+                    );
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "{} {}",
+                        err("[error]"),
+                        err(
+                            "server requires a password (configure 'password' in config, or run `frp-sh config`)"
+                        )
+                    ));
+                }
             }
         }
         Ok(None) => {
@@ -547,6 +590,19 @@ fn show_host_version(host_version: &str) {
 
 // ---------- game create ----------
 
+/// 中继连接的认证信息：服务器是否启用密码（决定加密）+ 本机配置的密码 token。
+async fn relay_auth_info(signaling: &SignalingClient, cfg: &Config) -> (bool, Option<String>) {
+    let auth = signaling
+        .get_version()
+        .await
+        .ok()
+        .flatten()
+        .map(|(_, _, a)| a)
+        .unwrap_or(false);
+    let token = cfg.password.clone();
+    (auth, token)
+}
+
 /// `game create`：注册房间，进入房主会话；返回房间号。
 ///
 /// - `guest_ips`：房主预留的访客虚拟 IP 池（lan 系列 `--guest-ips`；转发系列为空）
@@ -565,7 +621,8 @@ pub async fn run_create(
     guest_ips: Vec<String>,
     expose_lan: bool,
 ) -> anyhow::Result<String> {
-    let signaling = SignalingClient::new(&cfg.signaling_addr);
+    let signaling =
+        SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
     // 版本冲突控制：与信令服务器的线协议必须一致（不一致拒绝运行）
     check_server_protocol(&signaling).await?;
     let engine = PunchEngine::bind().await?;
@@ -670,7 +727,8 @@ pub async fn host_session(
     max_rounds: Option<u64>,
     expose_lan: bool,
 ) -> anyhow::Result<()> {
-    let signaling = SignalingClient::new(&cfg.signaling_addr);
+    let signaling =
+        SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
     let service_addr: SocketAddr = service
         .parse()
         .map_err(|e| FrpError::Config(format!("bad service addr {service}: {e}")))?;
@@ -757,7 +815,17 @@ pub async fn host_session(
                         continue;
                     }
                 };
-                let stream = match relay::connect(relay_addr, room_id, RelayRole::Host).await {
+                // 服务器启用密码时：中继带 token 认证 + 流量加密
+                let (auth, token_opt) = relay_auth_info(&signaling, cfg).await;
+                let stream = match relay::connect(
+                    relay_addr,
+                    room_id,
+                    RelayRole::Host,
+                    token_opt.as_deref(),
+                    auth,
+                )
+                .await
+                {
                     Ok(s) => s,
                     Err(e) => {
                         log::warn!("relay connect failed: {e}");
@@ -900,7 +968,8 @@ pub async fn run_join(
     requested_ip: Option<String>,
     expose_lan: bool,
 ) -> anyhow::Result<()> {
-    let signaling = SignalingClient::new(&cfg.signaling_addr);
+    let signaling =
+        SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
     // 版本冲突控制：与信令服务器的线协议必须一致（不一致拒绝运行）
     check_server_protocol(&signaling).await?;
     if !utils::validate_room_id(&room_id) {
@@ -957,7 +1026,8 @@ pub async fn guest_session(
     requested_ip: Option<String>,
     expose_lan: bool,
 ) -> anyhow::Result<()> {
-    let signaling = SignalingClient::new(&cfg.signaling_addr);
+    let signaling =
+        SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
     let listen_addr: SocketAddr = listen
         .parse()
         .map_err(|e| FrpError::Config(format!("bad listen addr {listen}: {e}")))?;
@@ -1122,7 +1192,17 @@ pub async fn guest_session(
                         continue;
                     }
                 };
-                let stream = match relay::connect(relay_addr, room_id, RelayRole::Guest).await {
+                // 服务器启用密码时：中继带 token 认证 + 流量加密
+                let (auth, token_opt) = relay_auth_info(&signaling, cfg).await;
+                let stream = match relay::connect(
+                    relay_addr,
+                    room_id,
+                    RelayRole::Guest,
+                    token_opt.as_deref(),
+                    auth,
+                )
+                .await
+                {
                     Ok(s) => s,
                     Err(e) => {
                         log::warn!("relay connect failed: {e}");
