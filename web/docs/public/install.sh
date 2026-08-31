@@ -62,18 +62,42 @@ printf "  ${BOLD}frp-sh installer${RST} ${DIM}(${os}/${uname_m})${RST}\n"
 
 # ---- download ----
 step "Downloading ${asset}"
+# Snap 版 curl 的沙箱会隔离 /tmp：脚本在宿主 /tmp 建的临时文件它写不进，
+# 静默留下 0 字节文件。下载后校验最小体积（二进制约 6MB，阈值 1MB），
+# 失败自动切换下载器与下载源。
 TMP="$(mktemp)"
+MIN_BYTES=1000000
 ok=0
 for base in ${BASES}; do
   info "source ${base}"
-  if curl -fsSL "${base}/${asset}" -o "${TMP}"; then
-    ok=1
-    break
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsSL "${base}/${asset}" -o "${TMP}" 2>/dev/null &&
+       [ "$(wc -c < "${TMP}" | tr -d ' ')" -ge "${MIN_BYTES}" ]; then
+      ok=1
+      break
+    fi
   fi
+  if command -v wget >/dev/null 2>&1; then
+    if wget -qO "${TMP}" "${base}/${asset}" 2>/dev/null &&
+       [ "$(wc -c < "${TMP}" | tr -d ' ')" -ge "${MIN_BYTES}" ]; then
+      ok=1
+      break
+    fi
+  fi
+  rm -f "${TMP}"
 done
 if [ "${ok}" != "1" ]; then
   rm -f "${TMP}"
-  fail "download failed ${asset} (tried frp.sh and GitHub Releases; check your network)"
+  case "$(command -v curl 2>/dev/null)" in
+    /snap/*)
+      fail "download failed. You are using the Snap curl - its sandbox breaks file
+  downloads into /tmp (see https://github.com/boukendesho/curl-snap/issues/1).
+  Fix: sudo apt install curl && hash -r, then rerun this installer."
+      ;;
+    *)
+      fail "download failed ${asset} (tried frp.sh and GitHub Releases; check your network)"
+      ;;
+  esac
 fi
 say "downloaded $(human "$(wc -c < "${TMP}" | tr -d ' ')")"
 chmod +x "${TMP}"
@@ -87,7 +111,11 @@ else
   sudo mv -f "${TMP}" "${DEST}"
 fi
 VER="$("${DEST}" --version 2>/dev/null | head -1 || true)"
-say "installed ${DEST}${VER:+ (${VER})}"
+if [ -z "${VER}" ]; then
+  fail "installed binary is not runnable (empty or corrupted download). Remove it
+  with: sudo rm -f ${DEST} - then rerun this installer."
+fi
+say "installed ${DEST} (${VER})"
 
 # ---- first-run setup (interactive only) ----
 if [ -t 0 ] && [ -z "${FRPSH_SKIP_INIT:-}" ]; then
