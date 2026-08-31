@@ -1251,6 +1251,10 @@ pub async fn guest_session(
     let mut state = RoomState::new(room_id.to_string(), Role::Guest, listen_addr);
     let mut attempt: u64 = 0;
     let mut first = true;
+    // 上一轮直连建立后异常断开（如心跳超时）：说明打洞"单通"（我们能收到对端、
+    // 对端收不到我们，典型于对端防火墙拦入站）。下一轮跳过打洞直接走中继，
+    // 避免每个重连轮都复现同样的 3s 死链、无限循环。
+    let mut direct_broke = false;
     // TURN 中继上下文（配置了供应商时分配一次，直连失败回退用）
     let mut turn_client: Option<crate::p2p::turn::TurnClient> = None;
 
@@ -1397,7 +1401,7 @@ pub async fn guest_session(
             &signaling,
             room_id,
             &token,
-            force_relay,
+            force_relay || direct_broke,
             spread,
         )
         .await
@@ -1413,7 +1417,7 @@ pub async fn guest_session(
                 state.peer_addr = Some(peer);
                 announce_direct(peer);
                 let stream = engine.into_stream(peer, first, key_bytes);
-                run_data_plane(
+                let r = run_data_plane(
                     stream,
                     tun.as_ref(),
                     ForwardMode::Guest {
@@ -1422,7 +1426,10 @@ pub async fn guest_session(
                     },
                     &[],
                 )
-                .await
+                .await;
+                // 异常断开（心跳超时等）→ 下一轮强制中继；正常关闭 → 保持直连尝试
+                direct_broke = r.is_err();
+                r
             }
             PunchOutcome::TimedOut => {
                 state.relay_mode = true;
@@ -1913,6 +1920,9 @@ async fn mesh_host_loop(
 ) -> anyhow::Result<()> {
     let mut pending: HashMap<String, PendingHost> = HashMap::new();
     let mut established: HashMap<String, String> = HashMap::new();
+    // 直连链路的规范对端地址（uuid → 建链时观察到的来源）：后续信号从其他通告地址
+    // 到达时登记别名，保证数据帧从任一路径都能路由到同一条流
+    let mut established_peer: HashMap<String, SocketAddr> = HashMap::new();
     let mut last_guests: HashMap<String, crate::signaling::GuestInfo> = HashMap::new();
     let (relay_tx, mut relay_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, Result<crate::p2p::relay::RelayStream>)>();
@@ -2027,6 +2037,11 @@ async fn mesh_host_loop(
             }
             let Some(uuid) = uuid else { continue };
             if established.contains_key(&uuid) {
+                // 链路已建立，但信号从另一个通告地址到达（LAN 直达 vs NAT 回环竞态、
+                // 或对端地址迁移）：登记别名指向现有流，数据帧从任一路径都能到达。
+                if let Some(&canon) = established_peer.get(&uuid) {
+                    mesh.map_alias(src, canon);
+                }
                 continue;
             }
             let info = pending
@@ -2047,6 +2062,7 @@ async fn mesh_host_loop(
                     tun,
                     real_name,
                 );
+                established_peer.insert(uuid, src);
             }
         }
         // 4) 直连超时（或强制中继）→ 打开中继连接（按 UUID 配对）
@@ -2087,6 +2103,7 @@ async fn mesh_host_loop(
                 Ok(stream) => {
                     if let Some(p) = pending.remove(&uuid) {
                         log::info!("relay link with {uuid} established");
+                        established_peer.remove(&uuid); // 直连已被中继取代
                         // 若已有链路（如直连刚建立）→ 替换
                         if established.contains_key(&uuid) {
                             plane.unregister(&uuid);
@@ -2113,6 +2130,7 @@ async fn mesh_host_loop(
         // 6) 对端断线 → 重新入打洞队列
         while let Ok(uuid) = dead_rx.try_recv() {
             if established.remove(&uuid).is_some() {
+                established_peer.remove(&uuid);
                 log::warn!("peer {uuid} link lost, re-punching ...");
                 if let Some(info) = last_guests.get(&uuid) {
                     pending.insert(
@@ -2191,6 +2209,13 @@ fn mesh_establish_link(
         plane.unregister(uuid); // 替换旧链路（如中继 → 直连）
     }
     let stream = mesh.add_peer(peer, key_bytes);
+    // 对端的其余通告地址（公网映射 / 其他局域网 IP）作为别名登记到本条流：
+    // 数据帧可能从任一路径到达（LAN 直达 vs NAT 回环），统一路由到同一条流，
+    // 流本身从收到的帧动态学习实际可达的发送地址（避免"按公网地址键控、
+    // 局域网来源的帧全被丢弃"导致的单通死链）。
+    for a in mesh_peer_addrs(info) {
+        mesh.map_alias(a, peer);
+    }
     plane.register(
         uuid,
         mesh_routes_for(info),
