@@ -98,7 +98,7 @@ async fn real_main() -> anyhow::Result<()> {
             match cmd {
                 GameCmd::Create(args) => {
                     let cfg = Config::load_auto(config.as_deref())?;
-                    let prefix = args.prefix.unwrap_or_else(|| "game".into());
+                    let prefix = args.prefix.unwrap_or_default();
                     // game 系列：纯端口转发，不组网
                     frp_sh::commands::run_create(
                         cfg,
@@ -138,7 +138,7 @@ async fn real_main() -> anyhow::Result<()> {
             match cmd {
                 DevCmd::Create(args) => {
                     let cfg = Config::load_auto(config.as_deref())?;
-                    let prefix = args.prefix.unwrap_or_else(|| "dev".into());
+                    let prefix = args.prefix.unwrap_or_default();
                     // dev 系列：应用层端口转发，不组网
                     frp_sh::commands::run_create(
                         cfg,
@@ -178,7 +178,7 @@ async fn real_main() -> anyhow::Result<()> {
             match cmd {
                 LanCmd::Create(args) => {
                     let cfg = Config::load_auto(config.as_deref())?;
-                    let prefix = args.prefix.unwrap_or_else(|| "lan".into());
+                    let prefix = args.prefix.unwrap_or_default();
                     // lan 系列：组网，虚拟网卡默认开启；service 为占位（TUN 模式不使用）
                     let d = frp_sh::commands::TunOpts::host_default();
                     let tun_opts = Some(frp_sh::commands::TunOpts {
