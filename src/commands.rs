@@ -317,14 +317,17 @@ async fn run_data_plane(
 
 // ---------- serve ----------
 
-/// `frp-sh serve`：同时提供 HTTP REST、UDP 公网探测与 TCP 中继。
+/// `frp-sh serve`：同时提供 HTTP REST、UDP 公网探测、TCP 中继与可选的内置 TURN。
 ///
-/// `udp_addr`：可选独立 UDP 探测端口（云防火墙无法同端口开 TCP+UDP 时使用）。
+/// `udp_addr`：可选独立 UDP 探测端口（云防火墙无法同端口开 TCP+UDP 时使用）；
+/// `turn`：可选内置 TURN 监听地址（RFC 5766，认证复用 `--password`）。
 pub async fn run_serve(
     http_addr: String,
     relay_addr: String,
     udp_addr: Option<String>,
     password: Option<String>,
+    turn: Option<String>,
+    external_ip: Option<std::net::IpAddr>,
 ) -> anyhow::Result<()> {
     let http_listener = TcpListener::bind(&http_addr).await?;
     let http_sock: SocketAddr = http_listener.local_addr()?;
@@ -336,6 +339,23 @@ pub async fn run_serve(
     println!("  HTTP REST : {http_sock}");
     println!("  UDP echo  : {}", udp.local_addr()?);
     println!("  TCP relay : {relay_sock}");
+    let turn_task = match &turn {
+        Some(t) => {
+            let srv = crate::p2p::turn_server::TurnServer::start(
+                t.parse()
+                    .map_err(|e| anyhow::anyhow!("bad --turn addr {t}: {e}"))?,
+                password.as_deref(),
+                external_ip,
+            )
+            .await?;
+            println!("  TURN relay : {t} (RFC 5766, built-in)");
+            Some(tokio::spawn(async move { srv.run().await }))
+        }
+        None => {
+            println!("  TURN relay : disabled (use --turn 0.0.0.0:3478 to enable)");
+            None
+        }
+    };
     match &password {
         Some(_) => println!("  Auth       : enabled (--password) — clients must set the same password; relay traffic encrypted"),
         None => println!("  Auth       : disabled (no password)"),
@@ -356,6 +376,14 @@ pub async fn run_serve(
         r = http_task => { r??; }
         r = udp_task => { r??; }
         r = relay_task => { r??; }
+        r = async {
+            if let Some(t) = turn_task {
+                t.await??;
+            }
+            Ok::<(), anyhow::Error>(())
+        } => {
+            r?;
+        }
     }
     Ok(())
 }

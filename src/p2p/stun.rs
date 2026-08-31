@@ -92,6 +92,14 @@ pub fn new_txid() -> [u8; 12] {
     txid
 }
 
+/// 生成一个随机 hex 字符串（用于 nonce 等）。
+pub fn hex_token(bytes: usize) -> String {
+    use rand::RngCore;
+    let mut b = vec![0u8; bytes];
+    rand::thread_rng().fill_bytes(&mut b);
+    hex::encode(&b)
+}
+
 /// 构建 STUN 消息（不自动加 MESSAGE-INTEGRITY）。
 pub fn build(method: u16, class: u16, txid: &[u8; 12], attrs: &[(u16, &[u8])]) -> BytesMut {
     let mut body = BytesMut::new();

@@ -40,6 +40,14 @@ pub enum Commands {
         /// enables request authentication and relay traffic encryption
         #[arg(long)]
         password: Option<String>,
+        /// Built-in TURN relay listen address (optional, e.g. 0.0.0.0:3478);
+        /// provides RFC 5766 TURN relaying using the same --password
+        #[arg(long)]
+        turn: Option<String>,
+        /// Public IP advertised in TURN relay addresses (optional; needed when
+        /// the server is behind NAT and clients reach it via a public IP)
+        #[arg(long)]
+        external_ip: Option<String>,
     },
     /// Configure the signaling server interactively (first-run wizard)
     Config,
