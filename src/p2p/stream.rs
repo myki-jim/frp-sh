@@ -122,6 +122,10 @@ struct Shared {
     last_rx: Instant,
     /// 存活超时（默认 10s；`FRPSH_LIVENESS_MS` 可覆盖，测试可缩短）
     liveness: Duration,
+    /// 是否收到过对端的任何帧。mesh 模式下房主先于访客流存在而建链（由打洞信号触发），
+    /// 建链后到访客首帧到达前的静默是**正常现象**；此期间存活阈值放宽为 liveness×5，
+    /// 收到首帧后恢复严格检测。访客单独流由收到的帧触发创建（had_rx=true），静默即真断。
+    had_rx: bool,
     err: Option<String>,
     read_waker: Option<Waker>,
     write_waker: Option<Waker>,
@@ -155,7 +159,7 @@ pub struct UdpStream {
 }
 
 /// 构造一个对端的流状态（UdpStream 与 UdpMesh 共用）。
-fn make_shared(peer: SocketAddr, key: Option<[u8; 32]>) -> Shared {
+fn make_shared(peer: SocketAddr, key: Option<[u8; 32]>, had_rx: bool) -> Shared {
     let liveness = std::env::var("FRPSH_LIVENESS_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -177,6 +181,7 @@ fn make_shared(peer: SocketAddr, key: Option<[u8; 32]>) -> Shared {
         write_closed: false,
         last_rx: Instant::now(),
         liveness,
+        had_rx,
         err: None,
         read_waker: None,
         write_waker: None,
@@ -196,7 +201,9 @@ impl UdpStream {
         first: Option<(Vec<u8>, SocketAddr)>,
         key: Option<[u8; 32]>,
     ) -> Self {
-        let shared = Arc::new(Mutex::new(make_shared(peer, key)));
+        // 由收到的帧触发生成的流（first 传入打洞/首帧）视作对端已证实存活；
+        // 无首帧的流（mesh 建链）需等待对端首帧才进入严格存活检测
+        let shared = Arc::new(Mutex::new(make_shared(peer, key, first.is_some())));
         let out_notify = Arc::new(Notify::new());
         let idle_close = Arc::new(Notify::new());
         // JoinHandle 直接丢弃：任务以 detached 方式运行，由 idle_close 通知退出
@@ -310,8 +317,11 @@ impl UdpMesh {
     }
 
     /// 注册一个对端流（直连打洞成功后调用）。同一地址重复注册时先关闭旧流。
+    ///
+    /// mesh 建链由对端的打洞信号触发，此时对端的流可能尚未创建（双方建链时点
+    /// 天然不对称）：建立后到对端首帧前的静默是正常的，存活检测放宽（had_rx=false）。
     pub fn add_peer(&self, peer: SocketAddr, key: Option<[u8; 32]>) -> UdpStream {
-        let shared = Arc::new(Mutex::new(make_shared(peer, key)));
+        let shared = Arc::new(Mutex::new(make_shared(peer, key, false)));
         let out_notify = Arc::new(Notify::new());
         let idle_close = Arc::new(Notify::new());
         if let Some((_, old_close)) = self
@@ -494,6 +504,7 @@ async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
             g.peer = s;
         }
         g.last_rx = Instant::now();
+        g.had_rx = true; // 对端已证实存活：存活检测恢复严格阈值
 
         // 累积 ACK：丢弃已确认帧
         if ack > 0 {
@@ -651,12 +662,19 @@ async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
     }
 
     // 存活超时：对端长时间无任何帧（数据/ACK/FIN）→ 判定连接已死，主动报错，
-    // 让上层的自动重连循环接手（对端切换网络/掉线后不再无限重传挂死）
+    // 让上层的自动重连循环接手（对端切换网络/掉线后不再无限重传挂死）。
+    // mesh 建链后从未收到对端首帧前放宽为 liveness×5：双方建链时点不对称，
+    // 对端的流可能还在创建/打洞收尾，过早判死会造成"3 秒断链"重连循环。
     {
         let g = shared.lock().unwrap();
         if g.err.is_none() {
+            let limit = if g.had_rx {
+                g.liveness
+            } else {
+                g.liveness * 5
+            };
             let idle = now.duration_since(g.last_rx);
-            if idle > g.liveness {
+            if idle > limit {
                 let secs = idle.as_secs();
                 drop(g);
                 log::warn!("no heartbeat from peer for {secs}s; declaring connection lost");
@@ -901,6 +919,41 @@ mod tests {
         let (kind, _seq, ack, _) = parse_frame(&buf[..n]).expect("not an FRS1 frame");
         assert_eq!(kind, FrameKind::Ack);
         assert_eq!(ack, 2, "receiver should advance next_expected past seq=1");
+    }
+
+    /// mesh 建链后、对端首帧到达前的静默不应触发存活死亡（双方建链时点不对称）：
+    /// 宽限期为 liveness×5，收到首帧后恢复严格检测。
+    /// 回归测试：无宽限时，房主先建链、访客流晚 ~2s 出现，房主在访客第一帧
+    /// 到达前就 3s 判死 → "3 秒断链"重连循环。
+    #[tokio::test]
+    async fn mesh_establish_grace_allows_late_first_frame() {
+        let mesh_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (mesh, _punch_rx) = UdpMesh::new(mesh_sock);
+        let peer_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let canonical = peer_sock.local_addr().unwrap();
+
+        let mut stream = mesh.add_peer(canonical, None);
+        stream.set_liveness(Duration::from_millis(400)); // 宽限 = 400ms×5 = 2s
+
+        // 1.2s 无任何帧：严格阈值（400ms）早已超时，但宽限期内流必须存活
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+
+        // 对端首帧到达 → 流应正常接收（证明宽限期未被误判）
+        let frame = encode_frame(FrameKind::Data, 1, 0, b"late-hello");
+        peer_sock
+            .send_to(&frame, mesh.local_addr().unwrap())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf))
+            .await
+            .expect("stream died during establish grace")
+            .unwrap();
+        assert_eq!(&buf[..n], b"late-hello");
+
+        // 首帧后进入严格检测：对端静默 400ms → 流报错
+        let r = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await;
+        assert!(matches!(r, Ok(Err(_))), "expected liveness error after grace, got {r:?}");
     }
 
     #[tokio::test]
