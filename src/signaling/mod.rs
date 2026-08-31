@@ -100,6 +100,9 @@ pub struct GuestInfo {
     /// 访客暴露的局域网子网 CIDR（`--expose-lan`）
     #[serde(default)]
     pub subnets: Vec<String>,
+    /// 访客分配的 TURN relay 地址（本端 TURN 客户端的映射地址）
+    #[serde(default)]
+    pub turn_relay: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,4 +139,8 @@ pub struct RoomInfo {
     /// 房主程序版本（`major.minor.patch`）
     #[serde(default)]
     pub host_version: String,
+    /// 信令服务器下发的内置 TURN 地址（`serve --turn` 且启用密码认证时才有；
+    /// 客户端未配置 TURN 供应商时自动使用，凭据复用服务器密码）
+    #[serde(default)]
+    pub server_turn: Option<SocketAddr>,
 }
