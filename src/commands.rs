@@ -2201,6 +2201,8 @@ async fn mesh_host_loop(
     let mut turn_rebuild_at = Instant::now()
         .checked_sub(Duration::from_secs(10))
         .unwrap_or_else(Instant::now);
+    // TURN 链路异常死亡锁存：置位后本会话不再尝试 TURN，一律走 TCP 中继
+    let mut turn_dead = false;
     // 直连链路的规范对端地址（uuid → 建链时观察到的来源）：后续信号从其他通告地址
     // 到达时登记别名，保证数据帧从任一路径都能路由到同一条流
     let mut established_peer: HashMap<String, SocketAddr> = HashMap::new();
@@ -2359,8 +2361,9 @@ async fn mesh_host_loop(
                 .unwrap_or(true);
             if due && retry_ok {
                 // 有 TURN 客户端时优先走 TURN（UDP 中继，延迟优于 TCP 中继）；
-                // 在循环外处理（要 await 轮询 + remove pending，借用冲突）
-                if turn_client.is_some() {
+                // 在循环外处理（要 await 轮询 + remove pending，借用冲突）。
+                // turn_dead：本会话已有 TURN 链路异常死亡 → 一律走 TCP 中继会师。
+                if turn_client.is_some() && !turn_dead {
                     p.relay_attempted = true;
                     turn_attempt = Some(uuid.clone());
                     continue;
@@ -2445,7 +2448,11 @@ async fn mesh_host_loop(
         // 迟到的 TCP 中继配对结果会在第 5 节因 pending 已移除而被丢弃。
         // 另外：TURN 链路建立会 take 掉 turn_client——为后续（重）连访客保留
         // TURN 逃生能力，客户端为空且距上次尝试 ≥5s 时静默重建一个。
-        if turn_client.is_none() && now.duration_since(turn_rebuild_at) >= Duration::from_secs(5) {
+        // turn_dead（TURN 链路异常死亡锁存）后不再重建/尝试 TURN。
+        if turn_client.is_none()
+            && !turn_dead
+            && now.duration_since(turn_rebuild_at) >= Duration::from_secs(5)
+        {
             turn_rebuild_at = now;
             let offer = signaling
                 .get_room(room_id)
@@ -2542,9 +2549,18 @@ async fn mesh_host_loop(
         }
         // 6) 对端断线 → 重新入打洞队列
         while let Ok(uuid) = dead_rx.try_recv() {
+            let was_turn = established.get(&uuid).map(|v| v.as_str()) == Some("turn");
             if established.remove(&uuid).is_some() {
                 established_peer.remove(&uuid);
                 log::warn!("peer {uuid} link lost, re-punching ...");
+                if was_turn {
+                    // TURN 链路异常死亡（心跳超时）：对端多半收不到我们的 indication
+                    //（严格的 NAT 过滤等）且已自行落回其它路径。锁存后本会话改走
+                    // TCP 中继与对端会师，避免 host 固执重建 TURN 的死循环。
+                    turn_dead = true;
+                    turn_client = None;
+                    log::warn!("TURN link for {uuid} died abnormally; falling back to TCP relay");
+                }
                 if let Some(info) = last_guests.get(&uuid) {
                     pending.insert(
                         uuid,
