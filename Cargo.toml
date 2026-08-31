@@ -1,6 +1,6 @@
 ﻿[package]
 name = "frp-sh"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Social P2P tunnel: room-based UDP hole punching with relay fallback"
 license = "MIT"
