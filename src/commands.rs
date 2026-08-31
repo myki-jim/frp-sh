@@ -2104,7 +2104,7 @@ async fn mesh_host_loop(
                     if let Some(p) = pending.remove(&uuid) {
                         log::info!("relay link with {uuid} established");
                         established_peer.remove(&uuid); // 直连已被中继取代
-                        // 若已有链路（如直连刚建立）→ 替换
+                                                        // 若已有链路（如直连刚建立）→ 替换
                         if established.contains_key(&uuid) {
                             plane.unregister(&uuid);
                         }
