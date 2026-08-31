@@ -45,10 +45,14 @@ pub struct Room {
     pub host_lan: Vec<SocketAddr>,
     /// 房主局域网子网 CIDR（--tun 时访客据此加路由）
     pub host_subnets: Vec<String>,
+    /// 房主分配的 TURN relay 地址
+    pub host_turn_relay: Option<SocketAddr>,
     /// 访客局域网打洞地址（房主反向打洞）
     pub guest_lan: Vec<SocketAddr>,
     /// 访客暴露的局域网子网 CIDR（`--expose-lan`）
     pub guest_subnets: Vec<String>,
+    /// 访客分配的 TURN relay 地址
+    pub guest_turn_relay: Option<SocketAddr>,
     /// 房主预留的访客虚拟 IP 池（`--guest-ips`）
     pub guest_ips: Vec<String>,
     /// 房主程序版本（`major.minor.patch`）
@@ -161,6 +165,8 @@ async fn create_room(
             host_subnets: req.host_subnets,
             guest_lan: Vec::new(),
             guest_subnets: Vec::new(),
+            host_turn_relay: req.turn_relay,
+            guest_turn_relay: None,
             guest_ips: req.guest_ips,
             host_version: req.version,
             ip_assignments: HashMap::new(),
@@ -243,6 +249,7 @@ async fn join_room(
     room.guest_addr = Some(req.addr);
     room.guest_lan = req.addr_lan;
     room.guest_subnets = req.guest_subnets;
+    room.guest_turn_relay = req.turn_relay;
     Ok(Json(JoinRoomResponse {
         room_id,
         host_addr: room.host_addr,
@@ -269,8 +276,10 @@ async fn get_room(
         tun_ip: room.tun_ip.clone(),
         host_lan: room.host_lan.clone(),
         host_subnets: room.host_subnets.clone(),
+        host_turn_relay: room.host_turn_relay,
         guest_lan: room.guest_lan.clone(),
         guest_subnets: room.guest_subnets.clone(),
+        guest_turn_relay: room.guest_turn_relay,
         guests: room.guests.values().cloned().collect(),
         host_version: room.host_version.clone(),
     }))
@@ -291,6 +300,7 @@ async fn refresh_room(
     room.host_addr = req.addr;
     room.host_lan = req.host_lan;
     room.host_subnets = req.host_subnets;
+    room.host_turn_relay = req.turn_relay;
     Ok(StatusCode::NO_CONTENT)
 }
 

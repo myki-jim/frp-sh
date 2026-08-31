@@ -36,6 +36,10 @@ pub struct Config {
     /// 设置后公网地址学习优先走 STUN（免费、不依赖自建 UDP 探测），失败回退自建 echo。
     #[serde(default)]
     pub stun_addr: Option<String>,
+    /// 可选：TURN 供应商列表（`turn://user:pass@host:port` 或 `turn://host:port`）。
+    /// 打洞失败时按序尝试，测速选最快者建立 TURN 中继数据面；全部失败回退私有 TCP 中继。
+    #[serde(default)]
+    pub turn_providers: Vec<String>,
 }
 
 impl Default for Config {
@@ -47,6 +51,7 @@ impl Default for Config {
             uuid: None,
             password: None,
             stun_addr: None,
+            turn_providers: Vec::new(),
         }
     }
 }
@@ -194,6 +199,36 @@ impl Config {
             None => Ok(None),
         }
     }
+
+    /// 解析 TURN 供应商列表（`turn://user:pass@host:port`）。
+    pub fn turn_credentials(&self) -> Vec<crate::p2p::turn::TurnCredentials> {
+        self.turn_providers
+            .iter()
+            .filter_map(|s| parse_turn_url(s))
+            .collect()
+    }
+}
+
+/// 解析 `turn://[user:pass@]host:port`。
+pub fn parse_turn_url(s: &str) -> Option<crate::p2p::turn::TurnCredentials> {
+    let rest = s.strip_prefix("turn://")?;
+    let (userinfo, hostport) = match rest.split_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, rest),
+    };
+    let server: SocketAddr = hostport.parse().ok()?;
+    let (username, password) = match userinfo {
+        Some(u) => match u.split_once(':') {
+            Some((n, p)) => (n.to_string(), p.to_string()),
+            None => (u.to_string(), String::new()),
+        },
+        None => (String::new(), String::new()),
+    };
+    Some(crate::p2p::turn::TurnCredentials {
+        server,
+        username,
+        password,
+    })
 }
 
 #[cfg(test)]
@@ -229,6 +264,7 @@ mod tests {
             uuid: Some("123e4567-e89b-12d3-a456-426614174000".into()),
             password: Some("secret".into()),
             stun_addr: Some("stun.cloudflare.com:3478".into()),
+            turn_providers: vec!["turn://frp-sh:secret@1.2.3.4:3478".into()],
         };
         cfg.save(&path).unwrap();
         let loaded = Config::load(Some(&path)).unwrap();
