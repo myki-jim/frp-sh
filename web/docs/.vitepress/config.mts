@@ -13,6 +13,7 @@ const zhNav = [
 const zhSidebar = [
   { text: '入门', items: [
     { text: '简介', link: '/' },
+    { text: '名字的由来', link: '/name' },
     { text: '快速开始', link: '/quickstart' },
     { text: '安装与构建', link: '/install' },
     { text: '部署信令服务器', link: '/server' },
@@ -44,6 +45,7 @@ const enNav = [
 const enSidebar = [
   { text: 'Getting Started', items: [
     { text: 'Introduction', link: '/en/' },
+    { text: 'About the Name', link: '/en/name' },
     { text: 'Quickstart', link: '/en/quickstart' },
     { text: 'Installation', link: '/en/install' },
     { text: 'Deploy the Server', link: '/en/server' },

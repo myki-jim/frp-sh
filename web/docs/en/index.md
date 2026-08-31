@@ -40,6 +40,12 @@ and big-gap warnings. See the [versioning policy](./versioning).
 
 :::
 
+## About the Name
+
+We call ourselves `frp.sh`, but we have **nothing** to do with [FRP](https://github.com/fatedier/frp) — pure "domain squatting".
+**F**ast Room Protocol · **R**eal-time P2P · **P**layful Shell.
+**We don't penetrate your NAT. We delete the concept of NAT.** [（More on the name →）](./name)
+
 ## Install
 
 One-line install / update (same link for both — re-run to update; the script detects your OS and architecture and downloads the latest release from GitHub):

@@ -39,6 +39,12 @@ frp-sh 目前处于 **开发阶段**（`v0.1.x`），**1.0 之前功能与协议
 
 :::
 
+## 名字的由来？
+
+我们叫 `frp.sh`，但跟 [FRP](https://github.com/fatedier/frp) 没有半毛钱关系 —— 纯属“域名碰瓷”。
+**F**ast Room Protocol · **R**eal-time P2P · **P**layful Shell。
+**我们不穿透内网，我们消灭内网的概念。** [（更多吐槽 →）](./name)
+
 ## 安装
 
 一行命令安装 / 更新（链接同一，重复执行即更新；脚本自动检测系统与架构，从 GitHub Releases 下载最新版）：
