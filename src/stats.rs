@@ -119,8 +119,11 @@ pub fn clear_links() {
     links_cell().lock().unwrap().clear();
 }
 
-/// 面板快照：`[(peer, kind, detail, connected_at, sent, recv, rtt_last, rtt_ewma), …]`
-pub fn links_snapshot() -> Vec<(String, String, String, i64, u64, u64, u32, u32)> {
+/// 面板链路快照行：`(peer, kind, detail, connected_at, sent, recv, rtt_last, rtt_ewma)`
+pub type LinkRow = (String, String, String, i64, u64, u64, u32, u32);
+
+/// 面板快照。
+pub fn links_snapshot() -> Vec<LinkRow> {
     links_cell()
         .lock()
         .unwrap()
@@ -214,9 +217,6 @@ pub fn info_snapshot() -> SessionInfo {
         .unwrap()
         .clone()
 }
-
-/// 收发速率（字节/秒）：由快照间隔与字节数差在前端计算，这里不维护历史。
-pub type LinkRow = (String, String, i64, u64, u64, u32, u32);
 
 /// 供 JSON 序列化的链路快照（rtt_* 输出为毫秒浮点；bps 由前端采样差值计算）。
 pub fn links_json() -> Vec<serde_json::Map<String, serde_json::Value>> {

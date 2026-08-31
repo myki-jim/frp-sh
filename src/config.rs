@@ -55,7 +55,7 @@ pub fn device_name(configured: Option<&str>) -> String {
     configured
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| hostname())
+        .unwrap_or_else(hostname)
 }
 
 /// CLI `--name`（优先于 config）。
