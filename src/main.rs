@@ -252,17 +252,17 @@ async fn real_main() -> anyhow::Result<()> {
             } else {
                 let cfg = Config::load_auto(config.as_deref())?;
                 println!("{}", "frp-sh - social P2P mesh tool".cyan().bold());
-                println!(
-                    "{}",
-                    frp_sh::commands::kv("Signaling", cfg.signaling_addr.clone())
-                );
-                println!("{}", frp_sh::commands::kv("Relay", cfg.relay_addr.clone()));
+                let mut home_rows: Vec<(&str, String)> = vec![
+                    ("Signaling", cfg.signaling_addr.clone()),
+                    ("Relay", cfg.relay_addr.clone()),
+                ];
                 if let Some(u) = &cfg.signaling_udp {
-                    println!("{}", frp_sh::commands::kv("UDP probe", u));
+                    home_rows.push(("UDP probe", u.clone()));
                 }
                 if let Some(id) = &cfg.uuid {
-                    println!("{}", frp_sh::commands::kv("Your ID", id));
+                    home_rows.push(("Your ID", id.clone()));
                 }
+                println!("{}", frp_sh::utils::kv_table(&home_rows));
                 println!("\n  {}", "Common commands:".cyan());
                 println!(
                     "    {}  mesh: create a room (virtual NIC puts the whole machine on the mesh)",

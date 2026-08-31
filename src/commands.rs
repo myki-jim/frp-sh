@@ -457,9 +457,11 @@ pub async fn run_serve(
     let relay_sock: SocketAddr = relay_listener.local_addr()?;
 
     println!("{}", step("frp-sh signaling server"));
-    println!("{}", kv("HTTP REST", http_sock));
-    println!("{}", kv("UDP echo", udp.local_addr()?));
-    println!("{}", kv("TCP relay", relay_sock));
+    let mut server_rows: Vec<(&str, String)> = vec![
+        ("HTTP REST", http_sock.to_string()),
+        ("UDP echo", udp.local_addr()?.to_string()),
+        ("TCP relay", relay_sock.to_string()),
+    ];
     let turn_task = match &turn {
         Some(t) => {
             let srv = crate::p2p::turn_server::TurnServer::start(
@@ -469,30 +471,25 @@ pub async fn run_serve(
                 external_ip,
             )
             .await?;
-            println!("{}", kv("TURN relay", format!("{t} (RFC 5766, built-in)")));
+            server_rows.push(("TURN relay", format!("{t} (RFC 5766, built-in)")));
             Some(tokio::spawn(async move { srv.run().await }))
         }
         None => {
-            println!(
-                "{}",
-                kv(
-                    "TURN relay",
-                    dim("disabled (use --turn 0.0.0.0:3478 to enable)")
-                )
-            );
+            server_rows.push((
+                "TURN relay",
+                dim("disabled (use --turn 0.0.0.0:3478 to enable)"),
+            ));
             None
         }
     };
     match &password {
-        Some(_) => println!(
-            "{}",
-            kv(
-                "Auth",
-                "enabled — clients must set the same password; relay traffic encrypted"
-            )
-        ),
-        None => println!("{}", kv("Auth", dim("disabled (no password)"))),
+        Some(_) => server_rows.push((
+            "Auth",
+            "enabled — clients must set the same password; relay traffic encrypted".into(),
+        )),
+        None => server_rows.push(("Auth", dim("disabled (no password)"))),
     }
+    println!("{}", utils::kv_table(&server_rows));
     println!("  {}", dim("(Ctrl-C to stop)"));
 
     let state = server::new_state();
@@ -667,29 +664,26 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         ok("config saved"),
         dim(path.display().to_string())
     );
-    println!("{}", kv("Signaling", cfg.signaling_addr.clone()));
-    println!("{}", kv("Relay", cfg.relay_addr.clone()));
+    let mut cfg_rows: Vec<(&str, String)> = vec![
+        ("Signaling", cfg.signaling_addr.clone()),
+        ("Relay", cfg.relay_addr.clone()),
+    ];
     if let Some(u) = &cfg.signaling_udp {
-        println!("{}", kv("UDP probe", u));
+        cfg_rows.push(("UDP probe", u.clone()));
     }
     if cfg.password.is_some() {
-        println!(
-            "{}",
-            kv(
-                "Password",
-                "configured (requests authenticated, relay encrypted)"
-            )
-        );
+        cfg_rows.push((
+            "Password",
+            "configured (requests authenticated, relay encrypted)".into(),
+        ));
     }
     if let Some(s) = &cfg.stun_addr {
-        println!(
-            "{}",
-            kv(
-                "STUN",
-                format!("{s} (public-address learning via STUN first)")
-            )
-        );
+        cfg_rows.push((
+            "STUN",
+            format!("{s} (public-address learning via STUN first)"),
+        ));
     }
+    println!("{}", utils::kv_table(&cfg_rows));
 
     // 软连通性检查（不阻塞）
     println!("\n  {}", step("checking server connectivity ..."));
@@ -985,51 +979,43 @@ pub async fn run_create(
         .await?;
     let room_id = resp.room_id.clone();
     println!("\n  {}", ok(format!("Room created : {room_id}")));
-    println!("{}", kv("Signaling", cfg.signaling_addr.clone()));
+    let mut host_rows: Vec<(&str, String)> = vec![("Signaling", cfg.signaling_addr.clone())];
     if let Some(u) = &cfg.uuid {
-        println!("{}", kv("Your ID", u));
+        host_rows.push(("Your ID", u.clone()));
     }
     let lan_list: Vec<String> = lan_addrs.iter().map(|a| a.to_string()).collect();
     if !lan_list.is_empty() {
-        println!("{}", kv("LAN addrs", lan_list.join(", ")));
+        host_rows.push(("LAN addrs", lan_list.join(", ")));
     }
     if let Some(t) = &tun {
-        println!(
-            "{}",
-            kv(
-                "Vnet IP",
-                format!("{} (peer can ping/connect directly to this IP)", t.ip)
-            )
-        );
-        println!("{}", kv("Mode", "LAN mesh (virtual NIC)"));
+        host_rows.push((
+            "Vnet IP",
+            format!("{} (peer can ping/connect directly to this IP)", t.ip),
+        ));
+        host_rows.push(("Mode", "LAN mesh (virtual NIC)".into()));
         if !lan_subnets.is_empty() {
-            println!(
-                "{}",
-                kv(
-                    "LAN subnets",
-                    format!(
-                        "{} (--expose-lan: accessible by guest)",
-                        lan_subnets.join(", ")
-                    )
-                )
-            );
+            host_rows.push((
+                "LAN subnets",
+                format!(
+                    "{} (--expose-lan: accessible by guest)",
+                    lan_subnets.join(", ")
+                ),
+            ));
         }
         if !guest_ips.is_empty() {
-            println!(
-                "{}",
-                kv(
-                    "Guest IPs",
-                    format!("{} (assigned in join order)", guest_ips.join(", "))
-                )
-            );
+            host_rows.push((
+                "Guest IPs",
+                format!("{} (assigned in join order)", guest_ips.join(", ")),
+            ));
         }
     } else {
-        println!("{}", kv("Local service", service.clone()));
-        println!("{}", kv("Mode", "port forwarding"));
+        host_rows.push(("Local service", service.clone()));
+        host_rows.push(("Mode", "port forwarding".into()));
     }
     if key.is_some() {
-        println!("{}", kv("Encryption", "on (--key)"));
+        host_rows.push(("Encryption", "on (--key)".into()));
     }
+    println!("{}", utils::kv_table(&host_rows));
     println!("\n  {}", dim("Waiting for a guest to join ..."));
 
     let session = host_session(
@@ -1421,20 +1407,21 @@ pub async fn run_join(
     if !utils::validate_room_id(&room_id) {
         anyhow::bail!("invalid room id: {room_id} (expected format like game-a3f9c2)");
     }
+    let mut pre_rows: Vec<(&str, String)> = Vec::new();
     if let Some(u) = &cfg.uuid {
-        println!("{}", kv("Your ID", u));
+        pre_rows.push(("Your ID", u.clone()));
     }
     if let Some(t) = &tun {
-        println!(
-            "{}",
-            kv(
-                "Vnet IP",
-                format!(
-                    "{} (mesh virtual IP, friends can connect directly to your whole machine)",
-                    t.ip
-                )
-            )
-        );
+        pre_rows.push((
+            "Vnet IP",
+            format!(
+                "{} (mesh virtual IP, friends can connect directly to your whole machine)",
+                t.ip
+            ),
+        ));
+    }
+    if !pre_rows.is_empty() {
+        println!("{}", utils::kv_table(&pre_rows));
     }
     let session = guest_session(
         &cfg,
@@ -1607,30 +1594,32 @@ pub async fn guest_session(
         {
             Ok(join) => {
                 println!("\n  {}", ok(format!("Joined room : {}", join.room_id)));
-                println!("{}", kv("Host address", join.host_addr));
+                let mut guest_rows: Vec<(&str, String)> =
+                    vec![("Host address", join.host_addr.to_string())];
                 if let Some(ip) = &host_tun_ip {
-                    println!("{}", kv("Host vnet IP", ip));
+                    guest_rows.push(("Host vnet IP", ip.clone()));
                 }
-                show_host_version(&info.host_version);
                 // 服务器从房主预留 IP 池分配虚拟 IP（访客未指定 --ip 时）
                 if let (Some(t), Some(ip)) = (tun.as_mut(), &join.assigned_ip) {
                     if t.ip != *ip {
-                        println!("{}", kv("Assigned IP", format!("{ip} (host-assigned)")));
+                        guest_rows.push(("Your IP", format!("{ip} (host-assigned)")));
                         t.ip = ip.clone();
                     }
                 }
                 if !info.host_subnets.is_empty() {
-                    println!("{}", kv("Host LAN", info.host_subnets.join(", ")));
+                    guest_rows.push(("Host LAN", info.host_subnets.join(", ")));
                 }
                 if tun.is_some() {
-                    println!("{}", kv("Mode", "LAN mesh (virtual NIC)"));
+                    guest_rows.push(("Mode", "LAN mesh (virtual NIC)".into()));
                 } else {
-                    println!("{}", kv("Local listen", listen.clone()));
-                    println!("{}", kv("Mode", "port forwarding"));
+                    guest_rows.push(("Local listen", listen.clone()));
+                    guest_rows.push(("Mode", "port forwarding".into()));
                 }
                 if key.is_some() {
-                    println!("{}", kv("Encryption", "on (--key)"));
+                    guest_rows.push(("Encryption", "on (--key)".into()));
                 }
+                show_host_version(&info.host_version);
+                println!("{}", utils::kv_table(&guest_rows));
                 println!("\n  {}", dim("Punching through NAT ..."));
             }
             Err(e) => {
