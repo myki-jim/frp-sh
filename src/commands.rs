@@ -438,10 +438,30 @@ pub async fn run_serve(
     println!("  (Ctrl-C to stop)");
 
     let state = server::new_state();
+    // 对客户端通告的内置 TURN 公网地址：仅在 `--turn` 且启用密码认证时下发。
+    // 凭据复用服务器密码（客户端已完成认证才拿得到房间信息），未启用认证的
+    // 公开服务器不下发，避免开放中继被滥用。
+    let turn_public = match (&turn, password.as_deref()) {
+        (Some(t), Some(_)) => {
+            let a: SocketAddr = t
+                .parse()
+                .map_err(|e| anyhow::anyhow!("bad --turn addr {t}: {e}"))?;
+            match external_ip {
+                Some(ip) => Some(SocketAddr::new(ip, a.port())),
+                None if !a.ip().is_unspecified() => Some(a),
+                None => {
+                    log::warn!("--turn with unspecified IP needs --external-ip to advertise");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     let http_task = tokio::spawn(server::run_http(
         http_listener,
         state.clone(),
         password.clone(),
+        turn_public,
     ));
     let udp_task = tokio::spawn(server::run_udp_echo(udp));
     let relay_task = tokio::spawn(server::run_relay(relay_listener, state, password));
@@ -776,6 +796,45 @@ async fn try_turn_connect(cfg: &Config) -> anyhow::Result<Option<crate::p2p::tur
     Ok(best.map(|(_, c)| c))
 }
 
+/// TURN 解析（"TURN 跟着信令走"）：
+///
+/// 1. 客户端自配供应商（`turn_providers`）优先，多供应商测速选优；
+/// 2. 未配置供应商时，自动使用信令服务器下发的内置 TURN（`RoomInfo.server_turn`），
+///    凭据复用服务器密码（内置 TURN：username=`frp-sh`，realm=`frp.sh`，long-term credential）。
+///    服务器仅在启用了密码认证时才下发该地址，客户端已通过同一密码认证，
+///    因此不需要在配置文件里做任何 TURN 设置。
+async fn try_turn_connect_with_offer(
+    cfg: &Config,
+    server_turn: Option<SocketAddr>,
+) -> anyhow::Result<Option<crate::p2p::turn::TurnClient>> {
+    if !cfg.turn_providers.is_empty() {
+        return try_turn_connect(cfg).await;
+    }
+    let Some(addr) = server_turn else {
+        return Ok(None);
+    };
+    let Some(password) = cfg.password.as_deref() else {
+        log::warn!("server offers TURN at {addr} but no password is configured locally");
+        return Ok(None);
+    };
+    let cred = crate::p2p::turn::TurnCredentials {
+        server: addr,
+        username: "frp-sh".into(),
+        password: password.to_string(),
+    };
+    let sock = UdpSocket::bind("0.0.0.0:0").await?;
+    match crate::p2p::turn::TurnClient::connect(sock, &cred).await {
+        Ok(c) => {
+            log::info!("using server-provided TURN at {addr} (relay {})", c.relay);
+            Ok(Some(c))
+        }
+        Err(e) => {
+            log::warn!("server TURN {addr} unreachable: {e}");
+            Ok(None)
+        }
+    }
+}
+
 /// 用本端 TURN 客户端与对端 relay 地址建立 FRS1 数据面（授权 + 流）。
 async fn turn_data_plane(
     client: crate::p2p::turn::TurnClient,
@@ -979,9 +1038,14 @@ pub async fn host_session(
         } else {
             Vec::new()
         };
-        // TURN：配置了供应商且尚未分配时连接（测速选优），refresh 时通告 relay 地址
-        if !cfg.turn_providers.is_empty() && turn_client.is_none() {
-            if let Ok(Some(c)) = try_turn_connect(cfg).await {
+        // TURN：客户端自配供应商优先，否则用信令服务器下发的内置 TURN；refresh 时通告 relay 地址
+        if turn_client.is_none() {
+            let offer = signaling
+                .get_room(room_id)
+                .await
+                .ok()
+                .and_then(|i| i.server_turn);
+            if let Ok(Some(c)) = try_turn_connect_with_offer(cfg, offer).await {
                 turn_client = Some(c);
             }
         }
@@ -1415,15 +1479,19 @@ pub async fn guest_session(
         } else {
             Vec::new()
         };
-        // TURN：配置了供应商且尚未分配时连接（测速选优），加入时通告 relay 地址
+        // TURN：客户端自配供应商优先，否则用信令服务器下发的内置 TURN；
+        // 加入时通告本端 relay 地址（房主据此建立 TURN 链路）
         let mut turn_relay: Option<SocketAddr> = None;
-        if !cfg.turn_providers.is_empty() && turn_client.is_none() {
-            if let Ok(Some(c)) = try_turn_connect(cfg).await {
+        if turn_client.is_none() {
+            if let Ok(Some(c)) = try_turn_connect_with_offer(cfg, info.server_turn).await {
                 turn_relay = Some(c.relay);
                 turn_client = Some(c);
             }
-        } else if let Some(t) = &turn_client {
-            turn_relay = Some(t.relay);
+        }
+        if turn_relay.is_none() {
+            if let Some(t) = &turn_client {
+                turn_relay = Some(t.relay);
+            }
         }
         match signaling
             .join_room(
@@ -1934,8 +2002,22 @@ pub async fn host_mesh_session(
         } else {
             Vec::new()
         };
+        // TURN：客户端自配供应商优先，否则用信令服务器下发的内置 TURN；
+        // 分配后立即通告 relay 地址（访客直连失败时据此走 TURN 逃生）
+        let turn_client: Option<crate::p2p::turn::TurnClient> = {
+            let offer = signaling
+                .get_room(room_id)
+                .await
+                .ok()
+                .and_then(|i| i.server_turn);
+            match try_turn_connect_with_offer(cfg, offer).await {
+                Ok(Some(c)) => Some(c),
+                _ => None,
+            }
+        };
+        let turn_relay = turn_client.as_ref().map(|c| c.relay);
         if let Err(e) = signaling
-            .refresh_room(room_id, my_ext, lan_addrs, lan_subnets, None)
+            .refresh_room(room_id, my_ext, lan_addrs, lan_subnets, turn_relay)
             .await
         {
             return Err(e.into()); // 房间失效（过期/被删）
@@ -1963,6 +2045,7 @@ pub async fn host_mesh_session(
             cfg.signaling_udp_addr()?,
             my_ext,
             mesh_port,
+            turn_client,
         )
         .await;
         // 测试用完成条件：达到目标访客数后 mesh_host_loop 正常返回 → 整个会话结束
@@ -1997,6 +2080,7 @@ async fn mesh_host_loop(
     udp_probe: SocketAddr,
     mut current_ext: SocketAddr,
     mesh_local_port: u16,
+    mut turn_client: Option<crate::p2p::turn::TurnClient>,
 ) -> anyhow::Result<()> {
     let mut pending: HashMap<String, PendingHost> = HashMap::new();
     let mut established: HashMap<String, String> = HashMap::new();
@@ -2146,6 +2230,7 @@ async fn mesh_host_loop(
             }
         }
         // 4) 直连超时（或强制中继）→ 打开中继连接（按 UUID 配对）
+        let mut turn_attempt: Option<String> = None;
         for (uuid, p) in pending.iter_mut() {
             if p.relay_attempted {
                 continue;
@@ -2156,6 +2241,13 @@ async fn mesh_host_loop(
                 .map(|t| now.duration_since(t) >= Duration::from_secs(30))
                 .unwrap_or(true);
             if due && retry_ok {
+                // 有 TURN 客户端时优先走 TURN（UDP 中继，延迟优于 TCP 中继）；
+                // 在循环外处理（要 await 轮询 + remove pending，借用冲突）
+                if turn_client.is_some() {
+                    p.relay_attempted = true;
+                    turn_attempt = Some(uuid.clone());
+                    continue;
+                }
                 p.relay_attempted = true;
                 p.relay_at = Some(now);
                 let uuid_c = uuid.clone();
@@ -2175,6 +2267,60 @@ async fn mesh_host_loop(
                     .await;
                     let _ = tx.send((uuid_c, r));
                 });
+            }
+        }
+        // 4.5) TURN 中继（网格）：轮询等访客通告 relay 地址（最多 5s）→ 建立 FRS1 数据面
+        if let Some(uuid) = turn_attempt {
+            let mut gr = None;
+            for _ in 0..20 {
+                if let Ok(r) = signaling.get_room(room_id).await {
+                    if let Some(g) = r.guests.iter().find(|g| g.uuid == uuid) {
+                        if let Some(x) = g.turn_relay {
+                            gr = Some(x);
+                            break;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            if let Some(gr) = gr {
+                if let Some(tc) = turn_client.take() {
+                    println!(
+                        ">>> {} ...",
+                        warn("UDP hole punching failed, trying TURN relay")
+                    );
+                    match turn_data_plane(tc, gr, key_bytes).await {
+                        Ok(stream) => {
+                            if let Some(p) = pending.remove(&uuid) {
+                                log::info!("TURN link with {uuid} established");
+                                established_peer.remove(&uuid);
+                                if established.contains_key(&uuid) {
+                                    plane.unregister(&uuid);
+                                }
+                                plane.register(
+                                    &uuid,
+                                    mesh_routes_for(&p.info),
+                                    Box::new(stream),
+                                    dispatch_tx.clone(),
+                                );
+                                established.insert(uuid, "turn".into());
+                            } else {
+                                drop(stream); // 已直连 → 丢弃多余 TURN 链路
+                            }
+                            continue;
+                        }
+                        Err(e) => {
+                            log::warn!("TURN link with {uuid} failed: {e}");
+                        }
+                    }
+                }
+            } else {
+                log::info!("guest {uuid} has no TURN relay advertised; falling back to TCP relay");
+            }
+            // TURN 不可用/失败 → 交还 TCP 中继路径（清除标记，下一轮立即 spawn）
+            if let Some(p) = pending.get_mut(&uuid) {
+                p.relay_attempted = false;
+                p.relay_at = None;
             }
         }
         // 5) 中继结果 → 注册链路
@@ -2247,7 +2393,13 @@ async fn mesh_host_loop(
                 };
                 log::info!("host public address changed to {ext}, refreshing room ...");
                 let _ = signaling
-                    .refresh_room(room_id, ext, lan_addrs, lan_subnets, None)
+                    .refresh_room(
+                        room_id,
+                        ext,
+                        lan_addrs,
+                        lan_subnets,
+                        turn_client.as_ref().map(|c| c.relay),
+                    )
                     .await;
             }
         }

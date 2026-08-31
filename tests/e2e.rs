@@ -41,7 +41,12 @@ async fn try_start_server(password: Option<&str>) -> Option<TestServer> {
     let relay_port = relay_listener.local_addr().unwrap().port();
     let state = server::new_state();
     let pw = password.map(str::to_string);
-    tokio::spawn(server::run_http(http_listener, state.clone(), pw.clone()));
+    tokio::spawn(server::run_http(
+        http_listener,
+        state.clone(),
+        pw.clone(),
+        None,
+    ));
     tokio::spawn(server::run_udp_echo(udp));
     tokio::spawn(server::run_relay(relay_listener, state, pw.clone()));
     Some(TestServer {
