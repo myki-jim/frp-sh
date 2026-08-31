@@ -188,8 +188,10 @@ fn make_shared(peer: SocketAddr, key: Option<[u8; 32]>) -> Shared {
 
 impl UdpStream {
     /// `key`：32 字节共享密钥；为 `Some` 时所有数据帧负载用 ChaCha20-Poly1305 加密。
-    pub fn new(
-        socket: UdpSocket,
+    ///
+    /// `socket` 为数据报传输：`UdpSocket`（直连）或 `TurnClient`（TURN 中继）均可。
+    pub fn new<S: crate::p2p::turn::DatagramSocket + 'static>(
+        socket: S,
         peer: SocketAddr,
         first: Option<(Vec<u8>, SocketAddr)>,
         key: Option<[u8; 32]>,
@@ -383,8 +385,8 @@ async fn mesh_peer_timer(
     }
 }
 
-async fn run(
-    socket: UdpSocket,
+async fn run<S: crate::p2p::turn::DatagramSocket>(
+    socket: S,
     shared: Arc<Mutex<Shared>>,
     out_notify: Arc<Notify>,
     idle_close: Arc<Notify>,
@@ -441,8 +443,8 @@ async fn run(
 }
 
 /// 处理收到的一个数据报（必须是合法 FRS1 帧）。
-async fn handle_incoming(
-    socket: &UdpSocket,
+async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
+    socket: &S,
     shared: &Arc<Mutex<Shared>>,
     data: &[u8],
     src: Option<SocketAddr>,
@@ -535,7 +537,7 @@ async fn handle_incoming(
 }
 
 /// 将用户写入的字节切帧发送（滑动窗口内）。
-async fn flush_out(socket: &UdpSocket, shared: &Arc<Mutex<Shared>>) {
+async fn flush_out<S: crate::p2p::turn::DatagramSocket>(socket: &S, shared: &Arc<Mutex<Shared>>) {
     loop {
         let send: Option<(BytesMut, SocketAddr)> = {
             let mut g = shared.lock().unwrap();
@@ -593,7 +595,11 @@ async fn flush_out(socket: &UdpSocket, shared: &Arc<Mutex<Shared>>) {
 }
 
 /// 定时任务：重传未确认帧 + keepalive + FIN 确认超时检测。
-async fn on_timer(socket: &UdpSocket, shared: &Arc<Mutex<Shared>>, last_tx: &mut Instant) {
+async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
+    socket: &S,
+    shared: &Arc<Mutex<Shared>>,
+    last_tx: &mut Instant,
+) {
     let now = Instant::now();
 
     // FIN 确认超时：对端已不可达/已关闭 socket，视为关闭完成（尽力而为的 FIN 握手）

@@ -449,12 +449,23 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         Some(pw_input.trim().to_string())
     };
 
+    // 5. STUN 服务器（可选；公网地址学习优先走 STUN，失败回退自建 UDP 探测）
+    print!("  5. STUN server (optional, e.g. stun.cloudflare.com:3478):\n  > ");
+    out.flush()?;
+    let stun_input = read_line();
+    let stun_addr = if stun_input.trim().is_empty() {
+        None
+    } else {
+        Some(stun_input.trim().to_string())
+    };
+
     let cfg = Config {
         signaling_addr,
         relay_addr,
         signaling_udp,
         uuid: None, // 设备 UUID 存于独立 identity 文件
         password,
+        stun_addr,
     };
 
     // 保存
@@ -473,6 +484,9 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     }
     if cfg.password.is_some() {
         println!("    password    : configured (requests authenticated, relay encrypted)");
+    }
+    if let Some(s) = &cfg.stun_addr {
+        println!("    STUN        : {s} (public-address learning via STUN first)");
     }
 
     // 软连通性检查（不阻塞）
@@ -635,7 +649,12 @@ pub async fn run_create(
     let engine = PunchEngine::bind().await?;
     let token = utils::rand_token();
     let my_ext = signaling
-        .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
+        .learn_public_addr_auto(
+            engine.socket(),
+            cfg.signaling_udp_addr()?,
+            &token,
+            cfg.stun_addr_opt().ok().flatten(),
+        )
         .await?;
     log::info!("public address: {my_ext}");
     let tun_ip = tun.as_ref().map(|t| t.ip.clone());
@@ -774,7 +793,12 @@ pub async fn host_session(
         let engine = PunchEngine::bind().await?;
         let token = utils::rand_token();
         let my_ext = signaling
-            .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
+            .learn_public_addr_auto(
+                engine.socket(),
+                cfg.signaling_udp_addr()?,
+                &token,
+                cfg.stun_addr_opt().ok().flatten(),
+            )
             .await?;
         log::info!("public address: {my_ext}");
         let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
@@ -1140,7 +1164,12 @@ pub async fn guest_session(
         // 刷新本机公网地址并登记（NAT 映射可能已过期）
         let token = utils::rand_token();
         let my_ext = match signaling
-            .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
+            .learn_public_addr_auto(
+                engine.socket(),
+                cfg.signaling_udp_addr()?,
+                &token,
+                cfg.stun_addr_opt().ok().flatten(),
+            )
             .await
         {
             Ok(a) => a,
@@ -1595,7 +1624,12 @@ pub async fn host_mesh_session(
         let engine = PunchEngine::bind().await?;
         let token = utils::rand_token();
         let my_ext = signaling
-            .learn_public_addr(engine.socket(), cfg.signaling_udp_addr()?, &token)
+            .learn_public_addr_auto(
+                engine.socket(),
+                cfg.signaling_udp_addr()?,
+                &token,
+                cfg.stun_addr_opt().ok().flatten(),
+            )
             .await?;
         log::info!("public address: {my_ext}");
         let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
