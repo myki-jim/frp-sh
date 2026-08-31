@@ -208,6 +208,10 @@ async fn real_main() -> anyhow::Result<()> {
                         mtu: args.mtu,
                         lan_routes: Vec::new(), // 加入房间后由房主通告的子网填充
                     });
+                    // lan join 恒为 TUN 模式：把本机实际使用的虚拟 IP 上报服务器，
+                    // 房主据此建 /32 路由（否则房主→访客单播全部丢弃，ping 不通）
+                    let reported_ip =
+                        Some(tun_opts.as_ref().map(|t| t.ip.clone()).unwrap_or_default());
                     // listen 为占位（TUN 模式不使用）
                     frp_sh::commands::run_join(
                         cfg,
@@ -218,7 +222,7 @@ async fn real_main() -> anyhow::Result<()> {
                         0,
                         args.spread,
                         tun_opts,
-                        requested_ip,
+                        reported_ip,
                         args.expose_lan,
                     )
                     .await?;

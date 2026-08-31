@@ -1736,10 +1736,15 @@ fn mesh_peer_addrs(info: &crate::signaling::GuestInfo) -> Vec<SocketAddr> {
 /// 访客链路的路由表（虚拟 IP /32 + 暴露的局域网子网）。
 fn mesh_routes_for(info: &crate::signaling::GuestInfo) -> Vec<(u32, u8)> {
     let mut routes = Vec::new();
-    if let Some(ip) = &info.vnet_ip {
-        if let Ok(a) = ip.parse::<std::net::Ipv4Addr>() {
-            routes.push((u32::from(a), 32));
-        }
+    // 访客虚拟 IP：优先服务器分配（IP 池模式）；缺省时按访客 UUID 确定性派生——
+    // 访客侧本地派生的正是同一个 IP（utils::derive_vnet_ip），无需信令上报。
+    // 缺了这条 /32 路由，房主→访客的全部单播会在 TUN 读取处被静默丢弃（ping 不通）。
+    let vnet = info
+        .vnet_ip
+        .clone()
+        .unwrap_or_else(|| utils::derive_vnet_ip(&info.uuid));
+    if let Ok(a) = vnet.parse::<std::net::Ipv4Addr>() {
+        routes.push((u32::from(a), 32));
     }
     for cidr in &info.subnets {
         if let Some((net, pfx)) = utils::parse_cidr(cidr) {
