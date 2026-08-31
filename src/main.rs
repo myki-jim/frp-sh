@@ -27,8 +27,22 @@ async fn real_main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(filter)).init();
 
     let cli::Cli {
-        command, config, ..
+        command,
+        config,
+        panel_addr,
+        no_panel,
+        ..
     } = cli;
+
+    // 客户端 Web 面板（默认 127.0.0.1:6793）：随进程常驻，无会话时显示 idle。
+    // serve 模式不需要（服务端面板挂在 8080 的 /panel）。
+    if !no_panel && !matches!(command, Some(Commands::Serve { .. })) {
+        if let Ok(addr) = panel_addr.parse() {
+            tokio::spawn(frp_sh::panel::serve_client(addr));
+        } else {
+            eprintln!("  ⚠ bad --panel-addr {panel_addr}; panel disabled");
+        }
+    }
 
     // 版本横幅：ASCII 字符画 logo + 版本/线协议
     println!(

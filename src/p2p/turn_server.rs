@@ -21,6 +21,9 @@ use tokio::sync::Mutex;
 
 type HmacSha1 = Hmac<Sha1>;
 
+/// 当前活跃 TURN allocation 数（panel 用）。
+pub static TURN_ALLOCS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// TURN 服务端（RFC 5766 UDP 子集）。
 pub struct TurnServer {
     listen: Arc<UdpSocket>,
@@ -87,7 +90,12 @@ impl TurnServer {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 let mut map = a.lock().await;
+                let before = map.len();
                 map.retain(|_, x| x.expires > Instant::now());
+                let expired = before - map.len();
+                if expired > 0 {
+                    TURN_ALLOCS.fetch_sub(expired, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         });
         Ok(srv)
@@ -165,6 +173,7 @@ impl TurnServer {
             expires: Instant::now() + Duration::from_secs(LIFETIME as u64),
         };
         self.allocs.lock().await.insert(client_key, alloc);
+        crate::p2p::turn_server::TURN_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // relay 收包任务：peer 数据 → Data indication → 客户端
         let allocs = self.allocs.clone();
         let listen = self.listen.clone();

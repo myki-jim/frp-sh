@@ -3,7 +3,7 @@ printf 'signaling_addr = "http://101.43.41.195:8080"\nrelay_addr = "101.43.41.19
 cat /frpsh.toml
 pkill frp-sh 2>/dev/null
 sleep 1
-nohup /frp-sh --config /frpsh.toml lan join 5439 --relay --verbose > /join.log 2>&1 &
+nohup /frp-sh --config /frpsh.toml lan join 2976 --relay --verbose > /join.log 2>&1 &
 sleep 22
 grep -E 'Joined|TURN relay link|trying relay|relay connected|heartbeat' /join.log | head -8
 echo '--- recv count ---'

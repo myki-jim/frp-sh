@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>frp-sh panel</title>
+<script type="module" src="https://unpkg.com/mdui@2/mdui.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/mdui@2/mdui.css">
+<style>
+:root{--bd:#e3e3e8;--bg:#f7f7fa;--card:#fff;--tx:#1c1c1e;--dim:#85858b;
+  --green:#34c759;--orange:#ff9f0a;--red:#ff3b30;--blue:#0a84ff}
+@media(prefers-color-scheme:dark){:root{--bd:#2c2c2e;--bg:#111114;--card:#1c1c1f;--tx:#f2f2f5;--dim:#98989f}}
+*{box-sizing:border-box;margin:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}
+.bar{display:flex;align-items:center;gap:10px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:5}
+.bar h1{font-size:17px;font-weight:700}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;border:1px solid var(--bd);font-size:12px;color:var(--dim);background:var(--bg)}
+.chip b{color:var(--tx);font-weight:600}
+.spacer{flex:1}
+.langbtn{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:12px}
+.wrap{max-width:1080px;margin:18px auto;padding:0 16px;display:grid;gap:16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px 18px}
+.card h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);margin-bottom:12px}
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px 18px}
+.stat .n{font-size:26px;font-weight:700}
+.stat .l{font-size:12px;color:var(--dim);margin-top:2px}
+.room{border:1px solid var(--bd);border-radius:12px;margin-bottom:10px;overflow:hidden}
+.room-h{display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer;flex-wrap:wrap}
+.room-h:hover{background:var(--bg)}
+.room-h .rid{font-weight:700;font-size:15px;font-family:ui-monospace,monospace}
+.room-h .meta{color:var(--dim);font-size:12.5px}
+.room-b{display:none;padding:6px 14px 14px;border-top:1px solid var(--bd)}
+.room.open .room-b{display:block}
+svg .edge-direct{stroke:var(--green)}svg .edge-turn{stroke:var(--orange)}svg .edge-relay{stroke:var(--red)}
+.foot{color:var(--dim);font-size:11.5px;text-align:center;padding:10px 0 22px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+.idle{color:var(--dim);text-align:center;padding:30px 0}
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1>frp-sh panel</h1>
+  <span class="chip" id="chip-ver">—</span>
+  <span class="chip" id="chip-proto">—</span>
+  <span class="chip" id="chip-auth">—</span>
+  <span class="spacer"></span>
+  <span class="chip" id="chip-up">—</span>
+  <button class="langbtn" id="lang" onclick="toggleLang()">中文</button>
+</div>
+<div class="wrap">
+  <div class="stat-row" id="stats"></div>
+  <div class="card">
+    <h2 data-i18n="rooms">Rooms</h2>
+    <div id="rooms"><div class="idle">…</div></div>
+  </div>
+</div>
+<div class="foot" id="foot">ws</div>
+<script>
+const I18N={
+en:{rooms:"Rooms",rooms_n:"Rooms",guests:"Guests",relays:"Relay links",turn:"TURN allocs",
+host:"host",guests_n:"guests",ttl:"expires in",ver:"version",topo:"Topology",lang:"中文",
+d:"d",h:"h",m:"m",no:"no rooms",auth_on:"auth on",auth_off:"auth off"},
+zh:{rooms:"房间",rooms_n:"房间数",guests:"访客数",relays:"中继链路",turn:"TURN 分配",
+host:"房主",guests_n:"访客",ttl:"剩余",ver:"版本",topo:"拓扑",lang:"English",
+d:"天",h:"时",m:"分",no:"暂无房间",auth_on:"认证开",auth_off:"认证关"}};
+let LANG=localStorage.getItem("frpsh-lang")||"en";
+const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
+function applyLang(){document.querySelectorAll("[data-i18n]").forEach(e=>e.textContent=t(e.dataset.i18n));
+document.getElementById("lang").textContent=t("lang")}
+function toggleLang(){LANG=LANG==="en"?"zh":"en";localStorage.setItem("frpsh-lang",LANG);applyLang();render(lastWS)}
+function fmtUp(s){const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+return (d?d+t("d")+" ":"")+(h?h+t("h")+" ":"")+m+t("m")}
+function fmtTtl(s){if(s<=0)return"—";const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h+t("h")+" "+m+t("m")}
+function esc(s){return String(s).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]))}
+let lastWS=null;
+function render(d){
+if(!d)return;
+const s=d.summary||{},rooms=d.rooms||[];
+document.getElementById("chip-ver").textContent=s.version||"—";
+document.getElementById("chip-proto").textContent="protocol "+(s.protocol||"—");
+document.getElementById("chip-auth").innerHTML="<b>"+(s.auth?t("auth_on"):t("auth_off"))+"</b>";
+document.getElementById("chip-up").textContent=fmtUp(s.uptime_s||0);
+const st=[["rooms_n",s.rooms],["guests",s.guests],["relays",s.relay_links],["turn",s.turn_allocs]];
+document.getElementById("stats").innerHTML=st.map(([k,v])=>
+'<div class="stat"><div class="n">'+(v??0)+'</div><div class="l">'+esc(t(k))+"</div></div>").join("");
+const rc=document.getElementById("rooms");
+if(!rooms.length){rc.innerHTML='<div class="idle">'+esc(t("no"))+"</div>";return}
+rc.innerHTML=rooms.map((r,i)=>{
+const g=(r.guests||[]).length;
+let inner='<div class="room-h" onclick="this.parentNode.classList.toggle(\'open\')">'
++'<span class="rid">'+esc(r.room_id)+"</span>"
++'<span class="meta">'+esc(t("host"))+" "+esc((r.host&&r.host.addr)||"—")+" · v"+esc((r.host&&r.host.version)||"?")+"</span>"
++'<span class="meta">'+g+" "+esc(t("guests_n"))+"</span>"
++'<span class="meta">'+esc(t("ttl"))+" "+fmtTtl(r.ttl_left_s||0)+"</span></div>";
+inner+='<div class="room-b"><h2 style="margin-top:10px">'+esc(t("topo"))+"</h2>"
++'<svg viewBox="0 0 500 240" width="100%" height="220" id="topo-'+i+'"></svg></div>';
+return '<div class="room" id="room-'+i+'">'+inner+"</div>";
+}).join("");
+rooms.forEach((r,i)=>drawTopo(document.getElementById("topo-"+i),r));
+}
+function drawTopo(svg,r){
+if(!svg)return;svg.innerHTML="";
+const cx=250,cy=120,rx=170,ry=85;
+const host=r.host||{};const guests=r.guests||[];
+const line=(x2,y2,kind)=>{
+const el=document.createElementNS("http://www.w3.org/2000/svg","line");
+el.setAttribute("x1",cx);el.setAttribute("y1",cy);el.setAttribute("x2",x2);el.setAttribute("y2",y2);
+el.setAttribute("class","edge-"+kind);el.setAttribute("stroke-width","2.5");el.setAttribute("opacity","0.85");
+svg.appendChild(el);};
+const node=(x,y,label,me)=>{
+const g=document.createElementNS("http://www.w3.org/2000/svg","g");
+const c=document.createElementNS("http://www.w3.org/2000/svg","circle");
+c.setAttribute("cx",x);c.setAttribute("cy",y);c.setAttribute("r",24);
+c.setAttribute("fill",me?"var(--blue)":"var(--card)");
+c.setAttribute("stroke",me?"none":"var(--bd)");c.setAttribute("stroke-width","1.5");
+g.appendChild(c);
+const t1=document.createElementNS("http://www.w3.org/2000/svg","text");
+t1.setAttribute("x",x);t1.setAttribute("y",y+4);t1.setAttribute("text-anchor","middle");
+t1.setAttribute("font-size","9.5");t1.setAttribute("fill",me?"#fff":"var(--tx)");
+t1.setAttribute("font-family","monospace");t1.textContent=label;g.appendChild(t1);
+svg.appendChild(g);};
+node(cx,cy,(host.vnet_ip||r.room_id||"host").slice(0,9),true);
+guests.forEach((g2,i)=>{
+const kind=g2.turn_relay?"turn":(r.relay_pairs>0?"relay":"direct");
+const ang=-Math.PI/2+i*2*Math.PI/Math.max(guests.length,1);
+const x=cx+rx*Math.cos(ang),y=cy+ry*Math.sin(ang);
+line(x,y,kind);
+node(x,y,(g2.assigned_ip||g2.uuid||"?").slice(0,9),false);
+});
+}
+const wsProto=location.protocol==="https:"?"wss":"ws";
+function connect(){
+const ws=new WebSocket(wsProto+"://"+location.host+"/api/panel/ws");
+ws.onmessage=e=>{lastWS=JSON.parse(e.data);render(lastWS)};
+ws.onclose=()=>{document.getElementById("foot").textContent="ws reconnecting …";setTimeout(connect,2000)};
+ws.onopen=()=>{document.getElementById("foot").textContent="ws · 2s"};
+}
+applyLang();connect();
+</script>
+</body>
+</html>
