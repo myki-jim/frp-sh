@@ -41,6 +41,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_panel: bool,
 
+    /// Device display name (panel/topology; default hostname, config `name` also works)
+    #[arg(long, global = true)]
+    pub name: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

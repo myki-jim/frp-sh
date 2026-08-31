@@ -7,136 +7,248 @@
 <script type="module" src="https://unpkg.com/mdui@2/mdui.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/mdui@2/mdui.css">
 <style>
-:root{--bd:#e3e3e8;--bg:#f7f7fa;--card:#fff;--tx:#1c1c1e;--dim:#85858b;
-  --green:#34c759;--orange:#ff9f0a;--red:#ff3b30;--blue:#0a84ff}
-@media(prefers-color-scheme:dark){:root{--bd:#2c2c2e;--bg:#111114;--card:#1c1c1f;--tx:#f2f2f5;--dim:#98989f}}
+:root{
+  --bg:#f4f5fb; --card:#ffffff; --tx:#171923; --dim:#7a7f93; --bd:#e6e8f2;
+  --accent:#5468ff; --accent2:#8b5cf6; --green:#12b76a; --orange:#f79009; --red:#f04438;
+  --shadow:0 1px 2px rgba(23,25,35,.05),0 8px 24px -12px rgba(23,25,35,.12);
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#0e1015; --card:#171a21; --tx:#eef0f6; --dim:#8b90a5; --bd:#262a36;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px -12px rgba(0,0,0,.5);
+}}
 *{box-sizing:border-box;margin:0}
-body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}
-.bar{display:flex;align-items:center;gap:10px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:5}
-.bar h1{font-size:17px;font-weight:700}
-.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;border:1px solid var(--bd);font-size:12px;color:var(--dim);background:var(--bg)}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--tx);font-size:14px;-webkit-font-smoothing:antialiased}
+.bar{display:flex;align-items:center;gap:12px;padding:14px 24px;background:var(--card);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:9}
+.logo{width:34px;height:34px;border-radius:10px;flex:none;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;color:#fff;font-weight:800;font-size:15px;box-shadow:0 4px 12px -4px var(--accent)}
+.bar h1{font-size:16.5px;font-weight:700;letter-spacing:.2px}
+.bar h1 small{display:block;font-size:10.5px;color:var(--dim);font-weight:500;letter-spacing:1.2px;text-transform:uppercase}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:999px;border:1px solid var(--bd);font-size:12px;color:var(--dim);background:var(--bg)}
 .chip b{color:var(--tx);font-weight:600}
+.chip .dot{width:7px;height:7px;border-radius:50%}
 .spacer{flex:1}
-.langbtn{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:12px}
-.wrap{max-width:1080px;margin:18px auto;padding:0 16px;display:grid;gap:16px}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px 18px}
-.card h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);margin-bottom:12px}
-.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
-.stat{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px 18px}
-.stat .n{font-size:26px;font-weight:700}
-.stat .l{font-size:12px;color:var(--dim);margin-top:2px}
-.room{border:1px solid var(--bd);border-radius:12px;margin-bottom:10px;overflow:hidden}
-.room-h{display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer;flex-wrap:wrap}
-.room-h:hover{background:var(--bg)}
-.room-h .rid{font-weight:700;font-size:15px;font-family:ui-monospace,monospace}
-.room-h .meta{color:var(--dim);font-size:12.5px}
-.room-b{display:none;padding:6px 14px 14px;border-top:1px solid var(--bd)}
-.room.open .room-b{display:block}
-svg .edge-direct{stroke:var(--green)}svg .edge-turn{stroke:var(--orange)}svg .edge-relay{stroke:var(--red)}
-.foot{color:var(--dim);font-size:11.5px;text-align:center;padding:10px 0 22px}
+.btn{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:9px;padding:6px 14px;cursor:pointer;font-size:12.5px;transition:.15s}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.wrap{max-width:1100px;margin:22px auto;padding:0 20px;display:grid;gap:18px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow)}
+.card h2{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.1px;color:var(--dim);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.card h2::before{content:"";width:3px;height:12px;border-radius:2px;background:linear-gradient(180deg,var(--accent),var(--accent2))}
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
+.stat{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:16px 18px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.stat::after{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:linear-gradient(180deg,var(--accent),var(--accent2));opacity:.85}
+.stat .n{font-size:28px;font-weight:800;font-variant-numeric:tabular-nums}
+.stat .l{font-size:12px;color:var(--dim);margin-top:3px}
+.room{background:var(--card);border:1px solid var(--bd);border-radius:16px;box-shadow:var(--shadow);cursor:pointer;transition:.18s;display:flex;align-items:center;gap:16px;padding:16px 20px;flex-wrap:wrap}
+.room:hover{border-color:var(--accent);transform:translateY(-1px)}
+.rid{font-weight:800;font-size:19px;font-variant-numeric:tabular-nums;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent;min-width:74px}
+.rmeta{color:var(--dim);font-size:12.5px;line-height:1.7}
+.rmeta b{color:var(--tx);font-weight:600}
+.arrow{margin-left:auto;color:var(--dim);font-size:18px}
+.ttlbar{height:4px;border-radius:4px;background:var(--bd);overflow:hidden;width:120px}
+.ttlbar i{display:block;height:100%;background:linear-gradient(90deg,var(--green),#6ce9a6)}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:4px 16px;padding:8px 0;border-bottom:1px dashed var(--bd);font-size:13.5px}
+.kv:last-child{border-bottom:0}
+.kv .k{color:var(--dim)}
+.kv .v{word-break:break-all}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
-.idle{color:var(--dim);text-align:center;padding:30px 0}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.8px;padding:8px 10px;border-bottom:1px solid var(--bd)}
+td{padding:10px;border-bottom:1px solid var(--bd)}
+tr:last-child td{border-bottom:0}
+.idle{color:var(--dim);text-align:center;padding:36px 0}
+.foot{color:var(--dim);font-size:11.5px;text-align:center;padding:12px 0 24px}
+#gate{position:fixed;inset:0;background:var(--bg);z-index:99;display:none;place-items:center}
+#gate .card{width:min(380px,90vw);text-align:center;padding:36px 32px}
+#gate .logo{width:52px;height:52px;font-size:22px;margin:0 auto 16px}
+#gate h3{margin-bottom:6px}
+#gate p{color:var(--dim);font-size:12.5px;margin-bottom:18px}
+#gate input{width:100%;padding:11px 14px;border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx);font-size:14px;outline:none;margin-bottom:12px}
+#gate input:focus{border-color:var(--accent)}
+#gate .err{color:var(--red);font-size:12px;min-height:16px;margin-bottom:8px}
+#gate .btn{width:100%;padding:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:0;color:#fff;font-weight:600;font-size:14px}
+svg .e-direct{stroke:var(--green)}svg .e-turn{stroke:var(--orange)}svg .e-relay{stroke:var(--red)}
+@media(max-width:720px){.wrap{padding:0 12px}.kv{grid-template-columns:130px 1fr}}
 </style>
 </head>
 <body>
 <div class="bar">
-  <h1>frp-sh panel</h1>
-  <span class="chip" id="chip-ver">—</span>
-  <span class="chip" id="chip-proto">—</span>
-  <span class="chip" id="chip-auth">—</span>
+  <div class="logo">fs</div>
+  <h1>frp-sh panel<small>signaling server</small></h1>
   <span class="spacer"></span>
-  <span class="chip" id="chip-up">—</span>
-  <button class="langbtn" id="lang" onclick="toggleLang()">中文</button>
+  <span class="chip" id="chip-auth"><span class="dot"></span><b>—</b></span>
+  <span class="chip" id="chip-ver">—</span>
+  <button class="btn" id="lang" onclick="toggleLang()">中文</button>
 </div>
-<div class="wrap">
+
+<div class="wrap" id="home" style="display:none">
   <div class="stat-row" id="stats"></div>
   <div class="card">
     <h2 data-i18n="rooms">Rooms</h2>
-    <div id="rooms"><div class="idle">…</div></div>
+    <div id="rooms"></div>
   </div>
 </div>
+
+<div class="wrap" id="detail" style="display:none"></div>
+
 <div class="foot" id="foot">ws</div>
+
+<div id="gate">
+  <div class="card">
+    <div class="logo">fs</div>
+    <h3 data-i18n="gate_t">Authentication required</h3>
+    <p data-i18n="gate_p">This server is protected by its password (--password).</p>
+    <div class="err" id="gate-err"></div>
+    <input type="password" id="gate-pw" placeholder="server password" autocomplete="off">
+    <button class="btn" onclick="saveToken()" data-i18n="gate_go">Enter panel</button>
+  </div>
+</div>
+
 <script>
 const I18N={
 en:{rooms:"Rooms",rooms_n:"Rooms",guests:"Guests",relays:"Relay links",turn:"TURN allocs",
-host:"host",guests_n:"guests",ttl:"expires in",ver:"version",topo:"Topology",lang:"中文",
-d:"d",h:"h",m:"m",no:"no rooms",auth_on:"auth on",auth_off:"auth off"},
+host:"Host",guests_n:"guests",ttl:"TTL",lang:"中文",no:"No active rooms",
+auth_on:"auth on",auth_off:"auth off",auth_ok:"authenticated",auth_no:"not authenticated",
+gate_t:"Authentication required",gate_p:"This server is protected by its password (--password).",
+gate_go:"Enter panel",back:"Back to overview",detail:"Room detail",topo:"Topology",
+pub:"Public address",lan:"LAN addresses",vnet:"Vnet IP",created:"Created",left:"Time left",
+device:"Device",turn_r:"TURN relay",relays_l:"Relay links",proto:"protocol",
+d:"d",h:"h",m:"m"},
 zh:{rooms:"房间",rooms_n:"房间数",guests:"访客数",relays:"中继链路",turn:"TURN 分配",
-host:"房主",guests_n:"访客",ttl:"剩余",ver:"版本",topo:"拓扑",lang:"English",
-d:"天",h:"时",m:"分",no:"暂无房间",auth_on:"认证开",auth_off:"认证关"}};
+host:"房主",guests_n:"位访客",ttl:"剩余",lang:"English",no:"暂无活跃房间",
+auth_on:"鉴权开",auth_off:"鉴权关",auth_ok:"已鉴权",auth_no:"未鉴权",
+gate_t:"需要鉴权",gate_p:"该服务器已启用密码保护（--password）。",
+gate_go:"进入面板",back:"返回总览",detail:"房间详情",topo:"拓扑",
+pub:"公网地址",lan:"局域网地址",vnet:"虚拟 IP",created:"创建于",left:"剩余时间",
+device:"设备",turn_r:"TURN 中继",relays_l:"中继链路",proto:"线协议",
+d:"天",h:"时",m:"分"}};
 let LANG=localStorage.getItem("frpsh-lang")||"en";
 const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
-function applyLang(){document.querySelectorAll("[data-i18n]").forEach(e=>e.textContent=t(e.dataset.i18n));
-document.getElementById("lang").textContent=t("lang")}
-function toggleLang(){LANG=LANG==="en"?"zh":"en";localStorage.setItem("frpsh-lang",LANG);applyLang();render(lastWS)}
-function fmtUp(s){const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
-return (d?d+t("d")+" ":"")+(h?h+t("h")+" ":"")+m+t("m")}
-function fmtTtl(s){if(s<=0)return"—";const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h+t("h")+" "+m+t("m")}
-function esc(s){return String(s).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]))}
-let lastWS=null;
-function render(d){
-if(!d)return;
-const s=d.summary||{},rooms=d.rooms||[];
-document.getElementById("chip-ver").textContent=s.version||"—";
-document.getElementById("chip-proto").textContent="protocol "+(s.protocol||"—");
-document.getElementById("chip-auth").innerHTML="<b>"+(s.auth?t("auth_on"):t("auth_off"))+"</b>";
-document.getElementById("chip-up").textContent=fmtUp(s.uptime_s||0);
-const st=[["rooms_n",s.rooms],["guests",s.guests],["relays",s.relay_links],["turn",s.turn_allocs]];
-document.getElementById("stats").innerHTML=st.map(([k,v])=>
-'<div class="stat"><div class="n">'+(v??0)+'</div><div class="l">'+esc(t(k))+"</div></div>").join("");
-const rc=document.getElementById("rooms");
-if(!rooms.length){rc.innerHTML='<div class="idle">'+esc(t("no"))+"</div>";return}
-rc.innerHTML=rooms.map((r,i)=>{
-const g=(r.guests||[]).length;
-let inner='<div class="room-h" onclick="this.parentNode.classList.toggle(\'open\')">'
-+'<span class="rid">'+esc(r.room_id)+"</span>"
-+'<span class="meta">'+esc(t("host"))+" "+esc((r.host&&r.host.addr)||"—")+" · v"+esc((r.host&&r.host.version)||"?")+"</span>"
-+'<span class="meta">'+g+" "+esc(t("guests_n"))+"</span>"
-+'<span class="meta">'+esc(t("ttl"))+" "+fmtTtl(r.ttl_left_s||0)+"</span></div>";
-inner+='<div class="room-b"><h2 style="margin-top:10px">'+esc(t("topo"))+"</h2>"
-+'<svg viewBox="0 0 500 240" width="100%" height="220" id="topo-'+i+'"></svg></div>';
-return '<div class="room" id="room-'+i+'">'+inner+"</div>";
-}).join("");
-rooms.forEach((r,i)=>drawTopo(document.getElementById("topo-"+i),r));
+function applyLang(){document.querySelectorAll("[data-i18n]").forEach(e=>e.textContent=t(e.dataset.i18n));document.getElementById("lang").textContent=t("lang")}
+function toggleLang(){LANG=LANG==="en"?"zh":"en";localStorage.setItem("frpsh-lang",LANG);applyLang();route()}
+function esc(s){return String(s??"—").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]))}
+function fmtTtl(s){if(s<=0)return"—";const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+t("h")+" ":"")+m+t("m")}
+
+let TOKEN=sessionStorage.getItem("frpsh-token")||"";
+function tokenQs(){return TOKEN?("?token="+encodeURIComponent(TOKEN)):""}
+function showGate(msg){document.getElementById("gate").style.display="grid";document.getElementById("gate-err").textContent=msg||""}
+function hideGate(){document.getElementById("gate").style.display="none"}
+function saveToken(){TOKEN=document.getElementById("gate-pw").value.trim();
+if(!TOKEN){document.getElementById("gate-err").textContent="password required";return}
+sessionStorage.setItem("frpsh-token",TOKEN);connect()}
+document.getElementById("gate-pw").addEventListener("keydown",e=>{if(e.key==="Enter")saveToken()});
+
+let lastSummary=null,lastRooms=null;
+async function fetchJson(url){
+  const r=await fetch(url+tokenQs());
+  if(r.status===401){showGate(t("gate_p"));throw new Error("unauthorized")}
+  return r.json();
 }
-function drawTopo(svg,r){
-if(!svg)return;svg.innerHTML="";
-const cx=250,cy=120,rx=170,ry=85;
-const host=r.host||{};const guests=r.guests||[];
-const line=(x2,y2,kind)=>{
-const el=document.createElementNS("http://www.w3.org/2000/svg","line");
-el.setAttribute("x1",cx);el.setAttribute("y1",cy);el.setAttribute("x2",x2);el.setAttribute("y2",y2);
-el.setAttribute("class","edge-"+kind);el.setAttribute("stroke-width","2.5");el.setAttribute("opacity","0.85");
-svg.appendChild(el);};
-const node=(x,y,label,me)=>{
-const g=document.createElementNS("http://www.w3.org/2000/svg","g");
-const c=document.createElementNS("http://www.w3.org/2000/svg","circle");
-c.setAttribute("cx",x);c.setAttribute("cy",y);c.setAttribute("r",24);
-c.setAttribute("fill",me?"var(--blue)":"var(--card)");
-c.setAttribute("stroke",me?"none":"var(--bd)");c.setAttribute("stroke-width","1.5");
-g.appendChild(c);
-const t1=document.createElementNS("http://www.w3.org/2000/svg","text");
-t1.setAttribute("x",x);t1.setAttribute("y",y+4);t1.setAttribute("text-anchor","middle");
-t1.setAttribute("font-size","9.5");t1.setAttribute("fill",me?"#fff":"var(--tx)");
-t1.setAttribute("font-family","monospace");t1.textContent=label;g.appendChild(t1);
-svg.appendChild(g);};
-node(cx,cy,(host.vnet_ip||r.room_id||"host").slice(0,9),true);
-guests.forEach((g2,i)=>{
-const kind=g2.turn_relay?"turn":(r.relay_pairs>0?"relay":"direct");
-const ang=-Math.PI/2+i*2*Math.PI/Math.max(guests.length,1);
-const x=cx+rx*Math.cos(ang),y=cy+ry*Math.sin(ang);
-line(x,y,kind);
-node(x,y,(g2.assigned_ip||g2.uuid||"?").slice(0,9),false);
-});
+async function refresh(){
+  try{
+    lastSummary=await fetchJson("/api/panel/summary");
+    lastRooms=await fetchJson("/api/panel/rooms");
+    hideGate();renderAuth();route();
+  }catch(e){}
 }
-const wsProto=location.protocol==="https:"?"wss":"ws";
+function renderAuth(){
+  const c=document.getElementById("chip-auth");
+  if(!lastSummary)return;
+  if(lastSummary.auth){c.innerHTML='<span class="dot" style="background:var(--green)"></span><b>'+esc(t("auth_on")+" · "+t(TOKEN?"auth_ok":"auth_no"))+'</b>'}
+  else{c.innerHTML='<span class="dot" style="background:var(--dim)"></span><b>'+esc(t("auth_off"))+'</b>'}
+  document.getElementById("chip-ver").textContent=(lastSummary.version||"—")+" · "+t("proto")+" v"+(lastSummary.protocol||"—");
+}
+function statCard(n,l){return '<div class="stat"><div class="n">'+(n??0)+'</div><div class="l">'+esc(l)+"</div></div>"}
+function renderHome(){
+  const s=lastSummary||{};
+  document.getElementById("stats").innerHTML=
+    statCard(s.rooms,t("rooms_n"))+statCard(s.guests,t("guests"))+
+    statCard(s.relay_links,t("relays"))+statCard(s.turn_allocs,t("turn"));
+  const rooms=lastRooms||[];
+  const rc=document.getElementById("rooms");
+  if(!rooms.length){rc.innerHTML='<div class="idle">'+esc(t("no"))+"</div>";return}
+  rc.innerHTML=rooms.map(r=>{
+    const g=(r.guests||[]).length;
+    const ttlFrac=Math.max(0,Math.min(1,(r.ttl_left_s||0)/43200));
+    return '<div class="room" onclick="openRoom(\''+esc(r.room_id)+'\')">'
+      +'<div class="rid">'+esc(r.room_id)+"</div>"
+      +'<div class="rmeta"><b>'+esc((r.host&&r.host.name)||t("host"))+'</b> · v'+esc(r.host&&r.host.version)+"<br>"
+      +g+" "+esc(t("guests_n"))+" · "+esc(r.host&&r.host.addr)+"</div>"
+      +'<div><div class="rmeta" style="margin-bottom:4px">'+esc(t("ttl"))+" "+esc(fmtTtl(r.ttl_left_s))+'</div><div class="ttlbar"><i style="width:'+Math.round(ttlFrac*100)+'%"></i></div></div>'
+      +'<span class="arrow">›</span></div>';
+  }).join("");
+}
+function openRoom(id){location.hash="#/room/"+id;route()}
+function goHome(){location.hash="";route()}
+function route(){
+  const m=location.hash.match(/^#\/room\/(.+)$/);
+  const isDetail=!!m&&!!(lastRooms||[]).find(r=>r.room_id===m[1]);
+  document.getElementById("home").style.display=isDetail?"none":"block";
+  document.getElementById("detail").style.display=isDetail?"block":"none";
+  if(isDetail)renderDetail(m[1]);else renderHome();
+}
+function topoSvg(room){
+  const cx=280,cy=150,rx=210,ry=95;
+  const host=room.host||{},guests=room.guests||[];
+  const relays=room.relay_pairs||0;
+  let s='<svg viewBox="0 0 560 300" width="100%" height="300">';
+  guests.forEach((g,i)=>{
+    const ang=-Math.PI/2+i*2*Math.PI/Math.max(guests.length,1);
+    const x=cx+rx*Math.cos(ang),y=cy+ry*Math.sin(ang);
+    const kind=g.turn_relay?"turn":(relays>0?"relay":"direct");
+    s+='<line x1="'+cx+'" y1="'+cy+'" x2="'+x+'" y2="'+y+'" class="e-'+kind+'" stroke-width="3" opacity=".8"/>';
+  });
+  s+='<circle cx="'+cx+'" cy="'+cy+'" r="34" fill="var(--accent)"/>'
+    +'<text x="'+cx+'" y="'+(cy-2)+'" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">'+esc((host.name||"host").slice(0,10))+'</text>'
+    +'<text x="'+cx+'" y="'+(cy+13)+'" text-anchor="middle" font-size="9" fill="#dfe3ff" font-family="monospace">'+esc(host.vnet_ip||room.room_id)+'</text>';
+  guests.forEach((g,i)=>{
+    const ang=-Math.PI/2+i*2*Math.PI/Math.max(guests.length,1);
+    const x=cx+rx*Math.cos(ang),y=cy+ry*Math.sin(ang);
+    s+='<circle cx="'+x+'" cy="'+y+'" r="30" fill="var(--card)" stroke="var(--bd)" stroke-width="1.5"/>'
+      +'<text x="'+x+'" y="'+(y-2)+'" text-anchor="middle" font-size="10.5" fill="var(--tx)" font-weight="600">'+esc((g.name||g.uuid||"?").slice(0,10))+'</text>'
+      +'<text x="'+x+'" y="'+(y+12)+'" text-anchor="middle" font-size="8.5" fill="var(--dim)" font-family="monospace">'+esc(g.vnet_ip||"")+'</text>';
+  });
+  return s+"</svg>";
+}
+function renderDetail(id){
+  const room=(lastRooms||[]).find(r=>r.room_id===id);
+  if(!room){route();return}
+  const host=room.host||{};const guests=room.guests||[];
+  const kv=(k,v)=>'<div class="kv"><span class="k">'+esc(k)+'</span><span class="v">'+v+"</span></div>";
+  const d=document.getElementById("detail");
+  let table='<table><tr><th>'+esc(t("device"))+'</th><th>'+esc(t("pub"))+'</th><th>'+esc(t("lan"))+'</th><th>'+esc(t("vnet"))+'</th><th>'+esc(t("turn_r"))+"</th></tr>";
+  guests.forEach(g=>{
+    table+='<tr><td><b>'+esc(g.name||g.uuid)+"</b></td>"
+      +'<td class="mono">'+esc(g.addr)+"</td>"
+      +'<td class="mono">'+esc((g.lan||[]).join(", ")||"—")+"</td>"
+      +'<td class="mono">'+esc(g.vnet_ip||"—")+"</td>"
+      +'<td class="mono">'+esc(g.turn_relay||"—")+"</td></tr>";
+  });
+  table+="</table>";
+  d.innerHTML=
+    '<span class="back" onclick="goHome()" style="cursor:pointer">‹ '+esc(t("back"))+"</span>"
+    +'<div class="card"><h2>'+esc(t("detail"))+' — '+esc(room.room_id)+"</h2>"
+    +'<div class="kv"><span class="k">'+esc(t("host"))+'</span><span class="v"><b>'+esc(host.name||"—")+'</b> <span class="mono">('+esc(host.addr)+")</span> · v"+esc(host.version)+"</span></div>"
+    +kv(t("vnet"),'<span class="mono">'+esc(host.vnet_ip||"—")+"</span>")
+    +kv(t("lan"),'<span class="mono">'+esc((host.lan||[]).join(", ")||"—")+"</span>")
+    +kv(t("created"),'<span class="mono">'+new Date((room.created_at||0)*1000).toLocaleString()+"</span>")
+    +kv(t("left"),esc(fmtTtl(room.ttl_left_s))+" · "+esc(t("relays_l"))+": "+(room.relay_pairs||0))+"</div>"
+    +'<div class="card"><h2>'+esc(t("topo"))+"</h2>"+topoSvg(room)+"</div>"
+    +'<div class="card"><h2>'+esc(t("guests"))+"</h2>"
+    +(guests.length?table:'<div class="idle">'+esc(t("no"))+"</div>")+"</div>";
+}
+let ws=null;
 function connect(){
-const ws=new WebSocket(wsProto+"://"+location.host+"/api/panel/ws");
-ws.onmessage=e=>{lastWS=JSON.parse(e.data);render(lastWS)};
-ws.onclose=()=>{document.getElementById("foot").textContent="ws reconnecting …";setTimeout(connect,2000)};
-ws.onopen=()=>{document.getElementById("foot").textContent="ws · 2s"};
+  const proto=location.protocol==="https:"?"wss":"ws";
+  ws=new WebSocket(proto+"://"+location.host+"/api/panel/ws"+tokenQs());
+  ws.onmessage=e=>{
+    const d=JSON.parse(e.data);
+    lastSummary=d.summary;lastRooms=d.rooms;
+    hideGate();renderAuth();route();
+  };
+  ws.onclose=()=>{document.getElementById("foot").textContent="ws reconnecting …";setTimeout(connect,2500)};
+  ws.onopen=()=>{document.getElementById("foot").textContent="ws · 2s"};
 }
-applyLang();connect();
+applyLang();
+fetchJson("/api/panel/summary").then(s=>{lastSummary=s;renderAuth();hideGate();connect();}).catch(()=>{});
 </script>
 </body>
 </html>

@@ -3,7 +3,7 @@
 use crate::error::{FrpError, Result};
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 #[derive(Debug, Clone, Copy)]
@@ -26,6 +26,65 @@ pub trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin +
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
 pub type RelayStream = Box<dyn AsyncReadWrite>;
+
+/// 流量计数包装层：中继 TCP 无应用层心跳（RTT 不可测），但字节数照常统计，
+/// 面板链路卡片即可显示速率与活跃状态。
+pub(crate) struct CountingStream<S> {
+    inner: S,
+    stats: std::sync::Arc<crate::stats::StreamStats>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for CountingStream<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        std::pin::Pin::new(&mut self.inner)
+            .poll_read(cx, buf)
+            .map(|r| {
+                if let Ok(()) = &r {
+                    let n = buf.filled().len() - before;
+                    if n > 0 {
+                        self.stats.on_recv(n);
+                    }
+                }
+                r
+            })
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for CountingStream<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner)
+            .poll_write(cx, buf)
+            .map(|r| {
+                if let Ok(n) = &r {
+                    if *n > 0 {
+                        self.stats.on_sent(*n);
+                    }
+                }
+                r
+            })
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
 
 /// 对 TCP 连接启用短周期保活：空闲约 5s 开始探测，Linux/Windows 约 30s、
 /// macOS 约 30s 内感知死对端（默认系统参数下为 2 小时以上）。
@@ -68,7 +127,7 @@ pub async fn connect(
     token: Option<&str>,
     encrypted: bool,
     peer_uuid: Option<&str>,
-) -> Result<RelayStream> {
+) -> Result<(RelayStream, std::sync::Arc<crate::stats::StreamStats>)> {
     let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(relay_addr))
         .await
         .map_err(|_| FrpError::Relay(format!("connect {relay_addr} timed out")))?
@@ -120,6 +179,7 @@ pub async fn connect(
     let stream = rd
         .reunite(wr)
         .map_err(|_| FrpError::Relay("stream reunite failed".into()))?;
+    let stats = crate::stats::StreamStats::new(crate::stats::KIND_RELAY);
     if encrypted {
         let key = match token {
             Some(t) => crate::p2p::enc::key_from_password(t),
@@ -129,8 +189,21 @@ pub async fn connect(
                 ))
             }
         };
-        Ok(Box::new(crate::p2p::enc::EncStream::new(stream, &key)))
+        let enc = crate::p2p::enc::EncStream::new(stream, &key);
+        Ok((
+            Box::new(CountingStream {
+                inner: enc,
+                stats: stats.clone(),
+            }),
+            stats,
+        ))
     } else {
-        Ok(Box::new(stream))
+        Ok((
+            Box::new(CountingStream {
+                inner: stream,
+                stats: stats.clone(),
+            }),
+            stats,
+        ))
     }
 }

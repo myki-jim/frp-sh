@@ -34,6 +34,9 @@ pub struct CreateRoomRequest {
     /// 房主程序版本（`major.minor.patch`，用于访客端兼容性提示）
     #[serde(default)]
     pub version: String,
+    /// 房主设备显示名（面板显示；默认主机名）
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +54,9 @@ pub struct JoinRoomRequest {
     /// 访客设备 UUID（IP 池分配时用于稳定复用同一 IP）
     #[serde(default)]
     pub visitor_id: Option<String>,
+    /// 设备显示名（默认主机名，`--name`/config `name` 覆盖；房内重名自动加后缀）
+    #[serde(default)]
+    pub name: Option<String>,
     /// 访客显式指定的虚拟 IP（--ip）
     #[serde(default)]
     pub requested_ip: Option<String>,
@@ -69,6 +75,9 @@ pub struct JoinRoomResponse {
     /// 服务器从房主预留 IP 池中分配给该访客的虚拟 IP（未启用 IP 池时为 None）
     #[serde(default)]
     pub assigned_ip: Option<String>,
+    /// 服务器去重后的设备显示名（重名自动加 -2/-3 后缀）
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// 房主刷新自己的公网地址（重连时 NAT 映射可能已过期）。
@@ -89,6 +98,9 @@ pub struct RefreshRoomRequest {
 pub struct GuestInfo {
     /// 访客设备 UUID（匿名访客为地址字符串）
     pub uuid: String,
+    /// 设备显示名（默认主机名；房内重名自动加后缀）
+    #[serde(default)]
+    pub name: Option<String>,
     /// 访客公网 UDP 地址
     pub addr: SocketAddr,
     /// 访客局域网打洞地址（同局域网直连）
@@ -139,6 +151,9 @@ pub struct RoomInfo {
     /// 房主程序版本（`major.minor.patch`）
     #[serde(default)]
     pub host_version: String,
+    /// 房主设备显示名（默认主机名；旧服务器不返回时为 None）
+    #[serde(default)]
+    pub host_name: Option<String>,
     /// 信令服务器下发的内置 TURN 地址（`serve --turn` 且启用密码认证时才有；
     /// 客户端未配置 TURN 供应商时自动使用，凭据复用服务器密码）
     #[serde(default)]
