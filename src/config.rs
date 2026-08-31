@@ -32,6 +32,10 @@ pub struct Config {
     /// 用于请求认证与中继流量加密）。
     #[serde(default)]
     pub password: Option<String>,
+    /// 可选：STUN 服务器地址（如 `stun.cloudflare.com:3478`）。
+    /// 设置后公网地址学习优先走 STUN（免费、不依赖自建 UDP 探测），失败回退自建 echo。
+    #[serde(default)]
+    pub stun_addr: Option<String>,
 }
 
 impl Default for Config {
@@ -42,6 +46,7 @@ impl Default for Config {
             signaling_udp: None,
             uuid: None,
             password: None,
+            stun_addr: None,
         }
     }
 }
@@ -178,6 +183,17 @@ impl Config {
         addr.parse()
             .map_err(|e| anyhow::anyhow!("bad udp addr {addr}: {e}"))
     }
+
+    /// 可选 STUN 服务器地址（解析为 `SocketAddr`）。
+    pub fn stun_addr_opt(&self) -> anyhow::Result<Option<SocketAddr>> {
+        match &self.stun_addr {
+            Some(s) => Ok(Some(
+                s.parse()
+                    .map_err(|e| anyhow::anyhow!("bad stun addr {s}: {e}"))?,
+            )),
+            None => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -212,6 +228,7 @@ mod tests {
             signaling_udp: Some("1.2.3.4:9002".into()),
             uuid: Some("123e4567-e89b-12d3-a456-426614174000".into()),
             password: Some("secret".into()),
+            stun_addr: Some("stun.cloudflare.com:3478".into()),
         };
         cfg.save(&path).unwrap();
         let loaded = Config::load(Some(&path)).unwrap();

@@ -267,4 +267,27 @@ impl SignalingClient {
             }
         }
     }
+
+    /// 学习公网地址：配置了 STUN 时优先走 STUN（免费、不依赖自建 UDP 探测），
+    /// 失败回退到自建服务器的 UDP echo。两种方式都使用打洞 socket 本身。
+    pub async fn learn_public_addr_auto(
+        &self,
+        udp: &tokio::net::UdpSocket,
+        server_udp: SocketAddr,
+        token: &str,
+        stun: Option<SocketAddr>,
+    ) -> Result<SocketAddr> {
+        if let Some(stun_addr) = stun {
+            match crate::p2p::stun::binding_probe(udp, stun_addr).await {
+                Ok(addr) => {
+                    log::info!("public address via STUN {stun_addr}: {addr}");
+                    return Ok(addr);
+                }
+                Err(e) => {
+                    log::warn!("STUN binding failed ({e}), falling back to server UDP echo");
+                }
+            }
+        }
+        self.learn_public_addr(udp, server_udp, token).await
+    }
 }
