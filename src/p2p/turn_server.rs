@@ -167,6 +167,7 @@ impl TurnServer {
         self.allocs.lock().await.insert(client_key, alloc);
         // relay 收包任务：peer 数据 → Data indication → 客户端
         let allocs = self.allocs.clone();
+        let listen = self.listen.clone();
         let ck = client_key;
         tokio::spawn(async move {
             let mut buf = [0u8; 4096];
@@ -193,7 +194,10 @@ impl TurnServer {
                         (stun::ATTR_DATA, &buf[..n]),
                     ],
                 );
-                let _ = relay_socket.send_to(&req, client).await;
+                // RFC 5766：所有 server→client 的 TURN 消息必须走 5-tuple（3478 监听口）。
+                // 之前从 relay 端口发出，NAT 后的客户端只对 3478 有映射 → indication
+                // 被 NAT 丢弃，跨网客户端永远收不到对端数据（本机/同 LAN 测试不可见）。
+                let _ = listen.send_to(&req, client).await;
             }
         });
         // 200 响应

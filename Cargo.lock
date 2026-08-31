@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "frp-sh"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "async-trait",
