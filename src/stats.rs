@@ -79,9 +79,11 @@ impl StreamStats {
 
 /// 一条注册进面板的链路：标识（对端/类型）+ 统计句柄。
 pub struct LinkEntry {
-    /// 对端显示标识（mesh 中为对端 uuid，点对点为地址）
+    /// 对端显示标识（mesh 中为对端设备名，点对点为 "host"）
     pub peer: String,
     pub kind: &'static str,
+    /// 详细地址（公网 UDP 地址 / 虚拟 IP 等，面板展示）
+    pub detail: String,
     pub stats: Arc<StreamStats>,
 }
 
@@ -117,8 +119,8 @@ pub fn clear_links() {
     links_cell().lock().unwrap().clear();
 }
 
-/// 面板快照：`[(peer, kind, connected_at, sent, recv, rtt_last, rtt_ewma), …]`
-pub fn links_snapshot() -> Vec<(String, String, i64, u64, u64, u32, u32)> {
+/// 面板快照：`[(peer, kind, detail, connected_at, sent, recv, rtt_last, rtt_ewma), …]`
+pub fn links_snapshot() -> Vec<(String, String, String, i64, u64, u64, u32, u32)> {
     links_cell()
         .lock()
         .unwrap()
@@ -128,6 +130,7 @@ pub fn links_snapshot() -> Vec<(String, String, i64, u64, u64, u32, u32)> {
             (
                 l.peer.clone(),
                 l.kind.to_string(),
+                l.detail.clone(),
                 s.connected_at.load(Ordering::Relaxed),
                 s.sent_bytes.load(Ordering::Relaxed),
                 s.recv_bytes.load(Ordering::Relaxed),
@@ -145,6 +148,12 @@ pub struct SessionInfo {
     pub room: String,
     pub signaling: String,
     pub my_id: String,
+    /// 设备显示名（--name / config name / 主机名）
+    pub device_name: String,
+    /// 本端公网 UDP 地址（探测所得）
+    pub ext_addr: String,
+    /// 本端局域网地址列表（逗号分隔，面板展示）
+    pub lan_addrs: String,
     pub vnet_ip: String,
     pub tun: String,
     pub mtu: u32,
@@ -170,6 +179,15 @@ pub fn update_info(patch: SessionInfo) {
     }
     if !patch.my_id.is_empty() {
         info.my_id = patch.my_id;
+    }
+    if !patch.device_name.is_empty() {
+        info.device_name = patch.device_name;
+    }
+    if !patch.ext_addr.is_empty() {
+        info.ext_addr = patch.ext_addr;
+    }
+    if !patch.lan_addrs.is_empty() {
+        info.lan_addrs = patch.lan_addrs;
     }
     if !patch.vnet_ip.is_empty() {
         info.vnet_ip = patch.vnet_ip;
@@ -204,22 +222,25 @@ pub type LinkRow = (String, String, i64, u64, u64, u32, u32);
 pub fn links_json() -> Vec<serde_json::Map<String, serde_json::Value>> {
     links_snapshot()
         .into_iter()
-        .map(|(peer, kind, since, sent, recv, rtt_last, rtt_ewma)| {
-            let mut m = serde_json::Map::new();
-            m.insert("peer".into(), serde_json::json!(peer));
-            m.insert("kind".into(), serde_json::json!(kind));
-            m.insert("since".into(), serde_json::json!(since));
-            m.insert("sent_bytes".into(), serde_json::json!(sent));
-            m.insert("recv_bytes".into(), serde_json::json!(recv));
-            m.insert(
-                "rtt_last".into(),
-                serde_json::json!((rtt_last as f64 / 1000.0 * 10.0).round() / 10.0),
-            );
-            m.insert(
-                "rtt_ewma".into(),
-                serde_json::json!((rtt_ewma as f64 / 1000.0 * 10.0).round() / 10.0),
-            );
-            m
-        })
+        .map(
+            |(peer, kind, detail, since, sent, recv, rtt_last, rtt_ewma)| {
+                let mut m = serde_json::Map::new();
+                m.insert("peer".into(), serde_json::json!(peer));
+                m.insert("kind".into(), serde_json::json!(kind));
+                m.insert("detail".into(), serde_json::json!(detail));
+                m.insert("since".into(), serde_json::json!(since));
+                m.insert("sent_bytes".into(), serde_json::json!(sent));
+                m.insert("recv_bytes".into(), serde_json::json!(recv));
+                m.insert(
+                    "rtt_last".into(),
+                    serde_json::json!((rtt_last as f64 / 1000.0 * 10.0).round() / 10.0),
+                );
+                m.insert(
+                    "rtt_ewma".into(),
+                    serde_json::json!((rtt_ewma as f64 / 1000.0 * 10.0).round() / 10.0),
+                );
+                m
+            },
+        )
         .collect()
 }

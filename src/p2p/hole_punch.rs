@@ -106,6 +106,7 @@ impl PunchEngine {
         crate::stats::push_link(crate::stats::LinkEntry {
             peer: peer.to_string(),
             kind: "direct",
+            detail: String::new(),
             stats: st.clone(),
         });
         stream::UdpStream::new(self.socket, peer, first, key).with_stats(st)

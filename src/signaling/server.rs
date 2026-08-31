@@ -63,6 +63,8 @@ pub struct Room {
     pub guest_ips: Vec<String>,
     /// 房主程序版本（`major.minor.patch`）
     pub host_version: String,
+    /// 房主设备显示名（默认主机名）
+    pub host_name: Option<String>,
     /// 已分配：visitor UUID -> 虚拟 IP（重连复用）
     pub ip_assignments: HashMap<String, String>,
     /// 全部访客（网格模式多访客）：uuid -> 访客信息
@@ -118,31 +120,52 @@ pub async fn run_http(
 }
 
 /// 请求认证：服务器设置了密码时校验 `X-Frp-Sh-Token`（/version 与 /health 免认证）。
+///
+/// 面板策略：`/panel` 页面本身免认证（渲染登录框）；`/api/panel/*` 数据接口
+/// 与其他 REST 一样需要 token（服务器设置了密码时）。
 async fn auth_middleware(
     State(state): State<AppState>,
     req: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
     let path = req.uri().path().to_string();
-    if path == "/version" || path == "/health" || path == "/panel" || path.starts_with("/api/panel")
-    {
-        // 面板为只读视图且不含敏感字段（无密码/密钥），免认证开放
+    if path == "/version" || path == "/health" || path == "/panel" || path == "/" {
         return Ok(next.run(req).await);
     }
     if let Some(pw) = &state.password {
+        // 面板数据接口：token 可走 header 或 query（浏览器 WebSocket 友好）
         let token = req
             .headers()
             .get(AUTH_HEADER)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if token != pw {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "unauthorized: invalid or missing server password (set password in config)".into(),
-            ));
+            .map(str::to_string)
+            .or_else(|| {
+                req.uri().query().and_then(|q| {
+                    q.split('&').find_map(|kv| {
+                        let (k, v) = kv.split_once('=')?;
+                        if k == "token" {
+                            Some(v.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                })
+            });
+        match token {
+            Some(t) if constant_time_eq(&t, pw) => {}
+            _ => return Err((StatusCode::UNAUTHORIZED, "unauthorized".into())),
         }
     }
     Ok(next.run(req).await)
+}
+
+/// 常数时间字符串比较（防时序侧信道）。
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// 返回服务器版本、线协议版本与是否启用密码认证。
@@ -187,6 +210,7 @@ async fn create_room(
             guest_turn_relay: None,
             guest_ips: req.guest_ips,
             host_version: req.version,
+            host_name: req.name,
             ip_assignments: HashMap::new(),
             guests: HashMap::new(),
             relay_host: None,
@@ -253,10 +277,29 @@ async fn join_room(
         .visitor_id
         .clone()
         .unwrap_or_else(|| format!("anon-{}", req.addr));
+    // 设备显示名：房内去重（重名自动加 -2/-3 后缀）
+    let base_name = req
+        .name
+        .clone()
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| req.addr.ip().to_string());
+    let taken_names: std::collections::HashSet<String> = room
+        .guests
+        .values()
+        .filter(|g| g.uuid != guest_uuid)
+        .filter_map(|g| g.name.clone())
+        .collect();
+    let mut device_name = base_name.clone();
+    let mut n = 2;
+    while taken_names.contains(&device_name) {
+        device_name = format!("{base_name}-{n}");
+        n += 1;
+    }
     room.guests.insert(
         guest_uuid.clone(),
         super::GuestInfo {
             uuid: guest_uuid,
+            name: Some(device_name.clone()),
             addr: req.addr,
             lan: req.addr_lan.clone(),
             vnet_ip: assigned_ip.clone(),
@@ -273,6 +316,7 @@ async fn join_room(
         room_id,
         host_addr: room.host_addr,
         assigned_ip,
+        name: Some(device_name.clone()),
     }))
 }
 
@@ -301,6 +345,7 @@ async fn get_room(
         guest_turn_relay: room.guest_turn_relay,
         guests: room.guests.values().cloned().collect(),
         host_version: room.host_version.clone(),
+        host_name: room.host_name.clone(),
         server_turn: state.turn_public,
     }))
 }

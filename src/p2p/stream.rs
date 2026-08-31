@@ -241,6 +241,11 @@ impl UdpStream {
         self
     }
 
+    /// 取本流的统计句柄（未挂接时 None）。
+    pub fn stats_handle(&self) -> Option<Arc<crate::stats::StreamStats>> {
+        self.shared.lock().unwrap().stats.clone()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.shared.lock().unwrap()
     }
@@ -358,6 +363,7 @@ impl UdpMesh {
         crate::stats::push_link(crate::stats::LinkEntry {
             peer: peer.to_string(),
             kind: "direct",
+            detail: String::new(),
             stats: st,
         });
         let s = self.socket.clone();

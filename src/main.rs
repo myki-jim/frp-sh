@@ -31,8 +31,11 @@ async fn real_main() -> anyhow::Result<()> {
         config,
         panel_addr,
         no_panel,
+        name,
         ..
     } = cli;
+
+    frp_sh::config::set_cli_name(name);
 
     // 客户端 Web 面板（默认 127.0.0.1:6793）：随进程常驻，无会话时显示 idle。
     // serve 模式不需要（服务端面板挂在 8080 的 /panel）。

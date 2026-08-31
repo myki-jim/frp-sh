@@ -58,6 +58,7 @@ async fn try_start_server(password: Option<&str>) -> Option<TestServer> {
             password: pw,
             stun_addr: None,
             turn_providers: Vec::new(),
+            name: None,
         },
     })
 }
@@ -82,6 +83,7 @@ async fn create_room(cfg: &Config) -> String {
             Vec::new(),
             Vec::new(),
             "0.0.0".into(),
+            None,
             None,
         )
         .await
@@ -266,6 +268,7 @@ async fn e2e_mesh_multi_guest_links() {
                     Some(format!("mesh-guest-{i}")),
                     None,
                     Vec::new(),
+                    None,
                     None,
                 )
                 .await
@@ -539,6 +542,7 @@ async fn e2e_mesh_relay_pairing() {
                 None,
                 Vec::new(),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -553,7 +557,7 @@ async fn e2e_mesh_relay_pairing() {
         )
         .await;
         match stream {
-            Ok(mut s) => {
+            Ok((mut s, _st)) => {
                 // 配对成功后双向拷贝生效：写入的数据应到达房主侧
                 let _ = s.write_all(b"mesh-relay-ok").await;
                 tokio::time::sleep(Duration::from_millis(600)).await;
@@ -604,6 +608,7 @@ async fn room_lifecycle_api() {
             Vec::new(),
             "0.0.0".into(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -619,6 +624,7 @@ async fn room_lifecycle_api() {
             None,
             None,
             Vec::new(),
+            None,
             None,
         )
         .await
@@ -659,6 +665,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             vec!["10.66.0.2".into(), "10.66.0.3".into(), "10.66.0.4".into()],
             "0.0.0".into(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -674,6 +681,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             None,
             Vec::new(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -685,6 +693,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Some(uid.into()),
             None,
             Vec::new(),
+            None,
             None,
         )
         .await
@@ -701,6 +710,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Some("223e4567-e89b-12d3-a456-426614174000".into()),
             None,
             Vec::new(),
+            None,
             None,
         )
         .await
@@ -719,6 +729,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Vec::new(),
             "0.0.0".into(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -730,6 +741,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Some(uid.into()),
             None,
             Vec::new(),
+            None,
             None,
         )
         .await
@@ -772,6 +784,7 @@ async fn server_auth_rejects_wrong_password() {
             Vec::new(),
             Vec::new(),
             "0.0.0".into(),
+            None,
             None,
         )
         .await

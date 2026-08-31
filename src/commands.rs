@@ -656,6 +656,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         password,
         stun_addr,
         turn_providers: Vec::new(),
+        name: None, // 设备显示名默认主机名；可手动编辑 config 加 name 字段
     };
 
     // 保存
@@ -913,11 +914,15 @@ async fn try_turn_connect_with_offer(
 }
 
 /// 用本端 TURN 客户端与对端 relay 地址建立 FRS1 数据面（授权 + 流）。
+/// 返回 (流, 统计句柄)：mesh 场景由会话层把 peer 标识替换为对端设备名。
 async fn turn_data_plane(
     client: crate::p2p::turn::TurnClient,
     peer_relay: SocketAddr,
     key_bytes: Option<[u8; 32]>,
-) -> anyhow::Result<crate::p2p::stream::UdpStream> {
+) -> anyhow::Result<(
+    crate::p2p::stream::UdpStream,
+    std::sync::Arc<crate::stats::StreamStats>,
+)> {
     client
         .create_permission(peer_relay)
         .await
@@ -927,9 +932,12 @@ async fn turn_data_plane(
     crate::stats::push_link(crate::stats::LinkEntry {
         peer: peer_relay.to_string(),
         kind: "turn",
+        detail: String::new(),
         stats: st.clone(),
     });
-    Ok(crate::p2p::stream::UdpStream::new(client, peer_relay, None, key_bytes).with_stats(st))
+    let stream = crate::p2p::stream::UdpStream::new(client, peer_relay, None, key_bytes)
+        .with_stats(st.clone());
+    Ok((stream, st))
 }
 
 /// `game create`：注册房间，进入房主会话；返回房间号。
@@ -986,6 +994,7 @@ pub async fn run_create(
             guest_ips.clone(),
             crate::version::VERSION.to_string(),
             None, // host 的 TURN relay 在 refresh 时通告（此时尚未分配）
+            Some(crate::config::device_name(cfg.name.as_deref())),
         )
         .await?;
     let room_id = resp.room_id.clone();
@@ -1084,6 +1093,7 @@ pub async fn host_session(
         room: room_id.to_string(),
         signaling: cfg.signaling_addr.clone(),
         my_id: cfg.uuid.clone().unwrap_or_default(),
+        device_name: crate::config::device_name(cfg.name.as_deref()),
         encryption: key.is_some(),
         started_at: utils::now_unix() as i64,
         ..Default::default()
@@ -1161,6 +1171,16 @@ pub async fn host_session(
             // 房间已失效（过期/被删）→ 无法继续，结束
             return Err(e.into());
         }
+        // 面板：本端公网/局域网地址 + 房内对端设备名
+        crate::stats::update_info(crate::stats::SessionInfo {
+            ext_addr: my_ext.to_string(),
+            lan_addrs: utils::lan_socket_addrs(engine.local_addr()?.port())
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            ..Default::default()
+        });
 
         let punch_sp = spin("punching to guest ...");
         let punch_result =
@@ -1217,7 +1237,7 @@ pub async fn host_session(
                 if let (Some(tc), Some(gr)) = (turn_client.take(), guest_relay) {
                     println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, gr, key_bytes).await {
-                        Ok(stream) => {
+                        Ok((stream, _st)) => {
                             let r = run_data_plane(
                                 stream,
                                 tun.as_ref(),
@@ -1264,11 +1284,12 @@ pub async fn host_session(
                 )
                 .await
                 {
-                    Ok(s) => {
+                    Ok((s, st)) => {
                         crate::stats::push_link(crate::stats::LinkEntry {
-                            peer: "relay".into(),
+                            peer: "guest".into(),
                             kind: "relay",
-                            stats: crate::stats::StreamStats::new(crate::stats::KIND_RELAY),
+                            detail: format!("tcp relay {relay_addr}"),
+                            stats: st,
                         });
                         s
                     }
@@ -1517,6 +1538,7 @@ pub async fn guest_session(
         room: room_id.to_string(),
         signaling: cfg.signaling_addr.clone(),
         my_id: cfg.uuid.clone().unwrap_or_default(),
+        device_name: crate::config::device_name(cfg.name.as_deref()),
         encryption: key.is_some(),
         started_at: utils::now_unix() as i64,
         ..Default::default()
@@ -1612,6 +1634,16 @@ pub async fn guest_session(
         };
         probe_sp.finish_and_clear();
         let my_lan = utils::lan_socket_addrs(engine.local_addr()?.port());
+        // 面板：本端公网/局域网地址
+        crate::stats::update_info(crate::stats::SessionInfo {
+            ext_addr: my_ext.to_string(),
+            lan_addrs: my_lan
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            ..Default::default()
+        });
         // 默认不暴露本地局域网；仅 --expose-lan 时通告子网
         let guest_subnets = if expose_lan {
             utils::lan_subnet_cidrs()
@@ -1642,6 +1674,7 @@ pub async fn guest_session(
                 requested_ip.clone(),
                 guest_subnets,
                 turn_relay,
+                Some(crate::config::device_name(cfg.name.as_deref())),
             )
             .await
         {
@@ -1704,6 +1737,14 @@ pub async fn guest_session(
                 state.peer_addr = Some(peer);
                 announce_direct(peer);
                 let stream = engine.into_stream(peer, first, key_bytes);
+                // 面板：访客视角链路对端是房主 → peer 统一显示 "host"
+                crate::stats::remove_link(&peer.to_string());
+                crate::stats::push_link(crate::stats::LinkEntry {
+                    peer: "host".into(),
+                    kind: "direct",
+                    detail: peer.to_string(),
+                    stats: stream.stats_handle().unwrap(),
+                });
                 let r = run_data_plane(
                     stream,
                     tun.as_ref(),
@@ -1741,7 +1782,15 @@ pub async fn guest_session(
                 if let (Some(tc), Some(hr)) = (turn_client.take(), host_relay) {
                     println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, hr, key_bytes).await {
-                        Ok(stream) => {
+                        Ok((stream, st)) => {
+                            // 面板：访客视角对端是房主
+                            crate::stats::remove_link(&hr.to_string());
+                            crate::stats::push_link(crate::stats::LinkEntry {
+                                peer: "host".into(),
+                                kind: "turn",
+                                detail: hr.to_string(),
+                                stats: st,
+                            });
                             let r = run_data_plane(
                                 stream,
                                 tun.as_ref(),
@@ -1795,11 +1844,12 @@ pub async fn guest_session(
                 )
                 .await
                 {
-                    Ok(s) => {
+                    Ok((s, st)) => {
                         crate::stats::push_link(crate::stats::LinkEntry {
-                            peer: "relay".into(),
+                            peer: "host".into(),
                             kind: "relay",
-                            stats: crate::stats::StreamStats::new(crate::stats::KIND_RELAY),
+                            detail: format!("tcp relay {relay_addr}"),
+                            stats: st,
                         });
                         s
                     }
@@ -2267,8 +2317,13 @@ async fn mesh_host_loop(
     // 到达时登记别名，保证数据帧从任一路径都能路由到同一条流
     let mut established_peer: HashMap<String, SocketAddr> = HashMap::new();
     let mut last_guests: HashMap<String, crate::signaling::GuestInfo> = HashMap::new();
-    let (relay_tx, mut relay_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, Result<crate::p2p::relay::RelayStream>)>();
+    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::unbounded_channel::<(
+        String,
+        Result<(
+            crate::p2p::relay::RelayStream,
+            std::sync::Arc<crate::stats::StreamStats>,
+        )>,
+    )>();
     // 网格轮询更快（250ms）：访客加入/地址变化尽快感知，缩小与首轮打洞的竞态窗口
     const MESH_POLL: Duration = Duration::from_millis(100);
     let mut last_poll = Instant::now() - MESH_POLL;
@@ -2470,13 +2525,25 @@ async fn mesh_host_loop(
                 if let Some(tc) = turn_client.take() {
                     println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, gr, key_bytes).await {
-                        Ok(stream) => {
+                        Ok((stream, turn_st)) => {
                             if let Some(p) = pending.remove(&uuid) {
                                 log::info!("TURN link with {uuid} established");
                                 established_peer.remove(&uuid);
                                 if established.contains_key(&uuid) {
                                     plane.unregister(&uuid);
                                 }
+                                // 面板链路条目：peer 用设备名，保留 RTT 统计句柄
+                                crate::stats::remove_link(&gr.to_string());
+                                crate::stats::push_link(crate::stats::LinkEntry {
+                                    peer: p.info.name.clone().unwrap_or_else(|| uuid.clone()),
+                                    kind: "turn",
+                                    detail: format!(
+                                        "{} · vnet {}",
+                                        p.info.addr,
+                                        p.info.vnet_ip.as_deref().unwrap_or("-")
+                                    ),
+                                    stats: turn_st,
+                                });
                                 plane.register(
                                     &uuid,
                                     mesh_routes_for(&p.info),
@@ -2552,7 +2619,7 @@ async fn mesh_host_loop(
                 if let (Some(gr), Some(tc)) = (gr, turn_client.take()) {
                     println!("  {}", warn("switching to TURN relay"));
                     match turn_data_plane(tc, gr, key_bytes).await {
-                        Ok(stream) => {
+                        Ok((stream, turn_st)) => {
                             if let Some(p) = pending.remove(&uuid) {
                                 log::info!(
                                     "TURN link with {uuid} established (replacing pending TCP relay)"
@@ -2561,6 +2628,17 @@ async fn mesh_host_loop(
                                 if established.contains_key(&uuid) {
                                     plane.unregister(&uuid);
                                 }
+                                crate::stats::remove_link(&gr.to_string());
+                                crate::stats::push_link(crate::stats::LinkEntry {
+                                    peer: p.info.name.clone().unwrap_or_else(|| uuid.clone()),
+                                    kind: "turn",
+                                    detail: format!(
+                                        "{} · vnet {}",
+                                        p.info.addr,
+                                        p.info.vnet_ip.as_deref().unwrap_or("-")
+                                    ),
+                                    stats: turn_st,
+                                });
                                 plane.register(
                                     &uuid,
                                     mesh_routes_for(&p.info),
@@ -2580,7 +2658,7 @@ async fn mesh_host_loop(
         // 5) 中继结果 → 注册链路
         while let Ok((uuid, res)) = relay_rx.try_recv() {
             match res {
-                Ok(stream) => {
+                Ok((stream, st)) => {
                     if let Some(p) = pending.remove(&uuid) {
                         log::info!("relay link with {uuid} established");
                         established_peer.remove(&uuid); // 直连已被中继取代
@@ -2589,9 +2667,14 @@ async fn mesh_host_loop(
                             plane.unregister(&uuid);
                         }
                         crate::stats::push_link(crate::stats::LinkEntry {
-                            peer: uuid.clone(),
+                            peer: p.info.name.clone().unwrap_or_else(|| uuid.clone()),
                             kind: "relay",
-                            stats: crate::stats::StreamStats::new(crate::stats::KIND_RELAY),
+                            detail: format!(
+                                "{} · vnet {}",
+                                p.info.addr,
+                                p.info.vnet_ip.as_deref().unwrap_or("-")
+                            ),
+                            stats: st,
                         });
                         plane.register(
                             &uuid,
@@ -2710,6 +2793,17 @@ fn mesh_establish_link(
         plane.unregister(uuid); // 替换旧链路（如中继 → 直连）
     }
     let stream = mesh.add_peer(peer, key_bytes);
+    // 面板链路条目：直连流的 peer 初始为对端地址（add_peer 内注册），
+    // 这里统一替换为设备名并补充地址明细。
+    crate::stats::remove_link(&peer.to_string());
+    crate::stats::push_link(crate::stats::LinkEntry {
+        peer: info.name.clone().unwrap_or_else(|| uuid.to_string()),
+        kind: "direct",
+        detail: format!("{} · vnet {}", peer, info.vnet_ip.as_deref().unwrap_or("-")),
+        stats: stream
+            .stats_handle()
+            .unwrap_or_else(|| crate::stats::StreamStats::new(crate::stats::KIND_DIRECT)),
+    });
     // 对端的其余通告地址（公网映射 / 其他局域网 IP）作为别名登记到本条流：
     // 数据帧可能从任一路径到达（LAN 直达 vs NAT 回环），统一路由到同一条流，
     // 流本身从收到的帧动态学习实际可达的发送地址（避免"按公网地址键控、
