@@ -22,9 +22,9 @@ Three services come up together:
 
 - **HTTP REST** (8080/tcp): room registration and lookup
 - **UDP public probe** (8080/udp): clients learn their public address
-- **TCP relay** (8081/tcp): data forwarding when punching fails
+- **TCP relay** (8081/tcp): data forwarding when punching fails (add `--turn 0.0.0.0:3478` to provide a standard TURN UDP relay — see [Server Deployment](./server))
 
-> Open `8080/tcp`, `8080/udp`, and `8081/tcp` in both the cloud security group and the OS firewall.
+> Open `8080/tcp`, `8080/udp`, and `8081/tcp` in both the cloud security group and the OS firewall (`3478/udp` too when TURN is enabled).
 
 For a permanent setup see [Deploy the Server](./server).
 
@@ -124,7 +124,7 @@ frp-sh dev join dev-a3f9c2 --listen 127.0.0.1:8080
 
 `game` / `dev` are pure port forwarding — no virtual NIC, no admin rights needed.
 
-If punching fails, it falls back automatically:
+If punching fails, it falls back automatically (preferring the TURN UDP relay when `turn_providers` is configured):
 
 ```text
 >>> UDP hole punching failed, falling back to relay ...

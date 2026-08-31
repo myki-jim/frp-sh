@@ -56,6 +56,16 @@ Base URL：`signaling_addr`（如 `http://host:8080`）。
 { "room_id": "game-a3f9c2", "host_addr": "223.117.153.115:44276" }
 ```
 
+### TURN relay 地址字段
+
+启用 TURN（配置了 `turn_providers`）时，房间对象额外携带双方经 TURN 分配的 relay 地址：
+
+- `POST /room/create` 请求可带 `turn_relay`（房主侧，创建时通常尚未分配，为 `null`）
+- `POST /room/{id}/refresh` 与 `POST /room/{id}/join` 请求可带 `turn_relay`
+- `GET /room/{id}` 响应含 `host_turn_relay` 与 `guest_turn_relay`（未通告时为 `null`）
+
+客户端打洞失败后**轮询房间最多 5 秒**等对端通告 relay 地址，拿到后即可建立 TURN 数据面（见第 7 节）。
+
 ### DELETE `/room/{id}`
 
 `204` 成功，`404` 不存在。
@@ -172,6 +182,39 @@ TCP 文本行协议（`\r\n` 结尾）：
 | `ERROR ROOM_EXPIRED` / `ERROR BAD_HELLO` / `ERROR BAD_ROLE` / `ERROR ALREADY_CONNECTED` / `ERROR NO_PEER` | 拒绝 |
 
 配对成功后服务器对两端 socket 双向拷贝，客户端无感知。配对等待上限 10 分钟。
+
+## 7. TURN 中继协议
+
+TURN 中继实现 **RFC 5389（STUN）+ RFC 5766（TURN）UDP 子集**，与标准 TURN 服务器（coturn 等）互通：
+
+| 方法 | 用途 |
+|------|------|
+| `Allocate` | 申请 relay 地址（响应中的 **XOR-RELAYED-ADDRESS (0x0016)** 即本端 relay 地址） |
+| `CreatePermission` | 授权对端 relay 地址，允许其向本端 relay 发包 |
+| `Send` indication | 客户端 → 服务器：把数据投递给授权对端 |
+| `Data` indication | 服务器 → 客户端：对端发来的数据 |
+| `Refresh` | 续期（默认 lifetime 600s，客户端按一半周期自动刷新） |
+| `Binding` | STUN 公网地址探测 / 连通性检查 |
+
+### 认证（long-term credential）
+
+- 请求含 `USERNAME`、`REALM`、`NONCE`、`MESSAGE-INTEGRITY`（HMAC-SHA1）
+- 密钥 = `MD5(user:realm:pass)`；nonce 由服务器签发，401 后带 nonce 重试（最多 5 次）
+- 内置 TURN 服务器约定：用户名 `frp-sh`、realm `frp.sh`、密码 = `serve --password` 的值
+
+### 数据面
+
+FRS1 可靠流**直接跑在 TURN 之上**（`UdpStream` 泛型化为 `DatagramSocket`，
+直连/TURN 共用同一实现）：发送 = Send indication 封装一帧 FRS1，
+接收 = 从 Data indication 取出。上层隧道、加密、多连接复用逻辑完全不变。
+
+### 回退顺序
+
+```text
+打洞直连 ──失败──▶ TURN 中继 ──失败──▶ 私有 TCP 中继（第 6 节）
+```
+
+多个 TURN 供应商并行 Allocate 测速，取 RTT 最快者；`--relay` 强制时跳过打洞直接进回退链。
 
 ## 兼容性说明
 

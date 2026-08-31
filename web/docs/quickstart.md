@@ -22,9 +22,9 @@ cargo build --release
 
 - **HTTP REST**（8080/tcp）：房间注册与查询
 - **UDP 公网探测**（8080/udp）：客户端学习自己的公网地址
-- **TCP 中继**（8081/tcp）：打洞失败时的数据转发通道
+- **TCP 中继**（8081/tcp）：打洞失败时的数据转发通道（可再加 `--turn 0.0.0.0:3478` 提供标准 TURN UDP 中继，见[服务器部署](./server.md)）
 
-> 记得在云厂商安全组和系统防火墙放行 `8080/tcp`、`8080/udp`、`8081/tcp`。
+> 记得在云厂商安全组和系统防火墙放行 `8080/tcp`、`8080/udp`、`8081/tcp`（启用 TURN 时还需 `3478/udp`）。
 
 服务器端也可以直接用打包好的二进制，见[部署信令服务器](./server.md)的 systemd 方式。
 
@@ -122,7 +122,7 @@ frp-sh dev join dev-a3f9c2 --listen 127.0.0.1:8080
 
 `game` / `dev` 系列为纯端口转发，不创建虚拟网卡，无需管理员权限。
 
-如果打洞失败，会自动回退：
+如果打洞失败，会自动回退（配置了 `turn_providers` 时优先走 TURN UDP 中继）：
 
 ```text
 >>> UDP hole punching failed, falling back to relay ...

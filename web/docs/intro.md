@@ -15,7 +15,8 @@ frp-sh lan join lan-xxxx   # 朋友：凭房间号加入，即可互访整机与
 | **游戏** | `frp-sh game` | Minecraft 等联机游戏，纯端口转发（默认 25565） |
 | **开发** | `frp-sh dev` | 开发调试，应用层端口转发 |
 
-当 NAT 过于严格、打洞失败时，流量自动回退到信令服务器中继，保证可用。
+当 NAT 过于严格、打洞失败时，流量自动回退到中继（配置了 TURN 供应商时优先走标准
+TURN UDP 中继，否则走信令服务器私有 TCP 中继），保证可用。
 
 ## 核心特性
 
@@ -24,11 +25,12 @@ frp-sh lan join lan-xxxx   # 朋友：凭房间号加入，即可互访整机与
 | 房间制社交组网 | `lan-xxxxxx` 房间号，朋友凭号加入，无需配置 IP |
 | 虚拟网卡组网 | `lan` 系列：二层隧道整机入网，可访问对方整个局域网（类 Tailscale） |
 | 同局域网直连 | 自动通告局域网地址，同一 WiFi 秒级直连，不经服务器 |
-| UDP 打洞 | STUN 简化版公网探测 + PUNCH/ACK 同时握手，可穿透受限锥形 NAT |
+| UDP 打洞 | STUN 优先的公网探测 + PUNCH/ACK 同时握手，可穿透受限锥形 NAT |
 | 端口散布 | `--spread` 轻量端口预测，提高对称 NAT 命中率 |
-| 端到端加密 | `--key <口令>` 双方一致即启用 ChaCha20-Poly1305 |
+| 端到端加密 | `--key <口令>` 双方一致即启用 ChaCha20-Poly1305（直连与 TURN 路径） |
 | 多连接复用 | 同一隧道会话顺序接受多个 TCP 连接 |
-| 中继回退 | 打洞失败自动转服务器 TCP 中继，另有「迟到直连」复查自愈 |
+| 中继回退 | 打洞失败自动转 TURN 中继（可选）或服务器 TCP 中继，另有「迟到直连」复查自愈 |
+| 内置 TURN | `serve --turn` 单二进制提供标准 RFC 5766 TURN，客户端多供应商自动择优 |
 | 单文件二进制 | 不依赖 frp / libp2p / webrtc，全部逻辑自包含 |
 
 ## 适用场景
@@ -64,7 +66,8 @@ sequenceDiagram
     end
     Note over G,H: 直连成功 → FRS1 可靠流 → CNEW 隧道帧协议
     alt 打洞超时
-        G->>S: 中继 HELLO GUEST
+        G->>S: TURN 中继（配置了 turn_providers 时，UDP）或
+        G->>S: 中继 HELLO GUEST（私有 TCP 兜底）
         H->>S: 中继 HELLO HOST
         S-->>G,H: 配对成功，服务器双向拷贝
     end

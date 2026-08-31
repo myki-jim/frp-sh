@@ -59,10 +59,10 @@ frp-sh --verbose lan join lan-a3f9c2
 
 ## `frp-sh serve` —— 启动信令服务器
 
-在公网 VPS 上运行，提供房间注册、UDP 公网探测与 TCP 中继转发。
+在公网 VPS 上运行，提供房间注册、UDP 公网探测、TCP 中继转发与可选的内置 TURN 中继。
 
 ```bash
-frp-sh serve [--addr <地址>] [--relay-addr <地址>] [--udp-addr <地址>] [--password <口令>]
+frp-sh serve [--addr <地址>] [--relay-addr <地址>] [--udp-addr <地址>] [--password <口令>] [--turn <地址>] [--external-ip <IP>]
 ```
 
 `Ctrl-C` 优雅退出。
@@ -126,6 +126,39 @@ frp-sh serve --addr 0.0.0.0:8080 --udp-addr 0.0.0.0:8082
 frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password 你的密码
 ```
 
+### `--turn <地址>`
+
+**作用**：启用**内置 TURN 服务器**（RFC 5766 UDP 子集，可选）。
+
+- **默认值**：关闭（不提供 TURN；客户端打洞失败时回退到私有 TCP 中继）
+- 指定监听地址即可启用，如 `--turn 0.0.0.0:3478`
+- 认证复用 `--password`：TURN 用户名固定为 `frp-sh`，密码与服务器密码一致
+- 客户端侧只需在配置 `turn_providers` 里写 `turn://frp-sh:<密码>@<服务器IP>:3478`，
+  打洞失败时会自动改走 TURN（无需 `--relay`）
+- 启用后防火墙需额外放行 TURN 端口（`3478/udp`）以及分配给客户端的 relay 端口段
+- 也可不启用内置 TURN，而是把 frp.sh 官方服务器或自建 coturn 作为供应商配进客户端
+
+**示例**：
+
+```bash
+frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password 你的密码 --turn 0.0.0.0:3478
+```
+
+### `--external-ip <IP>`
+
+**作用**：服务器对外的公网 IP（可选，配合 `--turn` 使用）。
+
+- **默认值**：取 `--turn` 监听地址的 IP；监听 `0.0.0.0` 时取本机第一个局域网地址
+- 服务器位于 NAT / Docker 后面时，默认值可能是内网地址（如 `172.17.0.6`），
+  此时用此参数显式指定公网 IP，TURN 才会向客户端通告正确的 relay 地址
+- 通常与 `--turn` 一起使用；不带 `--turn` 时无意义
+
+**示例**：
+
+```bash
+frp-sh serve --turn 0.0.0.0:3478 --external-ip 101.43.41.195
+```
+
 ---
 
 ## `frp-sh lan create` —— 组网：房主创建房间
@@ -174,7 +207,8 @@ frp-sh lan create --ttl 86400       # 24 小时
 
 - **默认值**：关闭（自动打洞，失败才回退中继）
 - 适用场景：NAT 过于严格、双方网络打洞必然失败、或希望流量固定经服务器
-- 中继通道为明文转发；需要机密性时配合 `--key`
+- 强制中继时按回退链走：**TURN 中继**（配置了 `turn_providers` 时）→ 私有 TCP 中继
+- 私有 TCP 中继在服务器设了 `--password` 时有密码级流加密；需要端到端机密性时配合 `--key`（作用于 UDP 数据面：直连与 TURN 路径）
 
 **示例**：
 
@@ -758,7 +792,7 @@ frp-sh dev join dev-a3f9c2 --listen 127.0.0.1:8080 --key devpass
 frp-sh config [--config <FILE>]
 ```
 
-**作用**：交互式询问并保存信令服务器、中继地址等信息。
+**作用**：交互式询问并保存信令服务器、中继地址等信息（向导共 5 步：信令地址 → 中继地址 → 独立 UDP 端口 → 服务器密码 → 可选 STUN 服务器）。
 
 - 不传 `--config` 时保存到平台默认路径（见 `-c, --config` 章节）
 - 每个问题直接回车使用默认值
@@ -858,7 +892,8 @@ frp-sh lan join lan-a3f9c2
 | `Vnet IP      : 10.66.0.x` | 你的虚拟网卡 IP（lan 系列；朋友可长期用此 IP 直连你的整机） |
 | `>>> 本地局域网直连 (LAN direct) with <addr>` | **同 WiFi/局域网直连成功**（不经服务器，延迟最低） |
 | `>>> P2P direct link established with <addr>` | **公网打洞成功**，P2P 直连 |
-| `>>> UDP hole punching failed, falling back to relay ...` | 打洞失败，转入中继 |
+| `>>> UDP hole punching failed, falling back to relay ...` | 打洞失败，转入中继（配置了 TURN 时先试 TURN，再试私有 TCP） |
+| `>>> UDP hole punching failed, trying TURN relay` | 打洞失败，改走 TURN 中继（配置了 `turn_providers` 时） |
 | `>>> late P2P link established with <addr>` | 中继等待期间补抓到直连，已切回 P2P |
 | `connection N from <addr>` | 访客侧：本地新连接进入隧道 |
 | `guest connection N, dialing local service ...` | 房主侧：收到访客连接，拨号本地服务 |
