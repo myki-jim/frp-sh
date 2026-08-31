@@ -4,6 +4,19 @@ The current version focuses on "simple, robust, good enough". Planned capabiliti
 
 ## Near term
 
+- [ ] **TURN relay (v0.2 main line)**:
+  - Built-in TURN server (`serve --turn`, RFC 5766 UDP subset, auth reuses `--password`)
+  - Client supports **multiple TURN providers** (`relay_chain`: built-in / self-hosted
+    coturn / Cloudflare TURN, etc.)
+  - **Automatic best-path selection**: measure RTT of every candidate at connect time
+    (PUNCH probe for direct + relay probe per TURN), pick the best reachable path
+  - **Automatic switching**: on failure degrade down the chain; while on a relay,
+    periodically re-evaluate and **seamlessly upgrade** (a UDP-based data plane means
+    direct ↔ TURN is an address swap, not a tunnel rebuild)
+  - The private TCP relay stays as a last-resort fallback (TCP is more reliable where
+    carriers QoS UDP)
+- [ ] **STUN public-address learning**: `stun.cloudflare.com` / self-hosted TURN's STUN
+  channel as a replacement/complement for the custom UDP echo
 - [ ] **Concurrent multi-connection**: carry multiple local TCP connections over one tunnel simultaneously (currently sequential)
 - [ ] **WebSocket signaling**: instant guest-join notification to the host instead of polling (lower direct-link latency)
 - [ ] **UPnP automatic port mapping**: an additional option before punching, when the router supports it
@@ -12,8 +25,8 @@ The current version focuses on "simple, robust, good enough". Planned capabiliti
 
 - [ ] **x25519 key exchange**: automatic per-session key agreement (replacing manual `--key`)
 - [ ] **Encrypted relay**: confidentiality on the relay path too (currently `--key` applies to P2P direct only)
-- [ ] **Multi-node rooms (>2 people)**: a central node broadcasts member addresses for mesh P2P
 - [ ] **Adaptive transport parameters**: auto-tune window, retransmit interval, and MTU from loss/latency
+- [ ] **TURN provider discovery**: the signaling server publishes an available TURN list; clients pick automatically
 
 ## Long term
 
