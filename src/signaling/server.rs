@@ -30,6 +30,9 @@ pub const AUTH_HEADER: &str = "X-Frp-Sh-Token";
 pub struct AppState {
     pub rooms: SharedState,
     pub password: Option<String>,
+    /// 内置 TURN 的公网地址（`--turn` + 启用密码认证时下发 RoomInfo.server_turn；
+    /// 凭据复用服务器密码，客户端无需任何配置即可使用）
+    pub turn_public: Option<SocketAddr>,
 }
 
 #[derive(Debug)]
@@ -87,10 +90,12 @@ pub async fn run_http(
     listener: TcpListener,
     state: SharedState,
     password: Option<String>,
+    turn_public: Option<SocketAddr>,
 ) -> anyhow::Result<()> {
     let app_state = AppState {
         rooms: state,
         password: password.clone(),
+        turn_public,
     };
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -243,6 +248,7 @@ async fn join_room(
             lan: req.addr_lan.clone(),
             vnet_ip: assigned_ip.clone(),
             subnets: req.guest_subnets.clone(),
+            turn_relay: req.turn_relay,
         },
     );
     // 兼容旧客户端：guest_addr 保持"最近加入者"视图
@@ -282,6 +288,7 @@ async fn get_room(
         guest_turn_relay: room.guest_turn_relay,
         guests: room.guests.values().cloned().collect(),
         host_version: room.host_version.clone(),
+        server_turn: state.turn_public,
     }))
 }
 
