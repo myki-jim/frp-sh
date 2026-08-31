@@ -4,9 +4,9 @@ The full data path has four layers: **signaling** (make a room) → **hole punch
 
 ## 1. Signaling: room-based address exchange
 
-### Public address probing (STUN-lite)
+### Public address probing (STUN first, echo fallback)
 
-A host behind NAT cannot know its own public address; frp-sh uses server echo instead:
+A host behind NAT cannot know its own public address directly. frp-sh first tries **standard STUN** (RFC 5389 Binding, when `stun_addr` is configured, e.g. `stun.cloudflare.com:3478`); if STUN is unavailable it falls back to server echo (`ECHO`/`ADDR`):
 
 ```text
 client UDP socket ──ECHO <token>──▶ signaling server
@@ -150,7 +150,29 @@ Each direction is driven by **two long-lived tasks + bounded channels**, which s
 
 ## 5. Relay fallback
 
-On punch timeout (~3s) or `--relay`, both sides connect to the server relay instead:
+On punch timeout (~3s) or `--relay`, both sides fall back in this order:
+
+```text
+punch failure ──▶ TURN relay (when turn_providers is configured) ──failure──▶ private TCP relay
+```
+
+### 5a. TURN relay (UDP, preferred)
+
+With `turn_providers` configured (built-in TURN / coturn / Cloudflare TURN), a punch failure goes to TURN first: both sides exchange **TURN relay addresses** (`host_turn_relay` / `guest_turn_relay`) over signaling, authorize each other with CreatePermission, and run the FRS1 reliable stream over the TURN relay (UDP — better traversal and latency than the TCP relay):
+
+```text
+Guest ──UDP──▶ TURN server ◀──UDP── Host
+      (FRS1 frames wrapped in TURN Send/Data indications)
+```
+
+- With multiple providers, **Allocate in parallel and speed-test**, picking the one with the lowest RTT
+- Auth: RFC 5389 long-term credential (MD5(user:realm:pass), rotating nonce)
+- The data plane shares the same `UdpStream` (`DatagramSocket` abstraction) as direct connections; the upper tunnel logic is unchanged
+- Built-in TURN server: `serve --turn` (RFC 5766 UDP subset, relay ports assigned randomly, CreatePermission gates peer traffic, auth reuses `--password`)
+
+### 5b. Private TCP relay (fallback)
+
+When TURN is not configured or unavailable, connect to the server's private TCP relay:
 
 ```text
 Guest ──TCP──▶ Server (8081) ◀──TCP── Host

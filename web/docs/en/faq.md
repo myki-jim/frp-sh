@@ -23,6 +23,7 @@ Punch failure is normal for strict NATs and **does not break usage** —it falls
 - Try a larger `--spread` (symmetric NAT)
 - Make sure UDP outbound works on both sides
 - If both ends are behind the same NAT/LAN, public-IP punching is a hairpin case and may fail —use `--relay`
+- After a punch failure, prefer **TURN relay** (configure `turn_providers`; a UDP relay with better traversal/latency than the private TCP relay); only when TURN is also unavailable does it fall back to the private TCP relay
 
 ### Direct link established but no data flows
 
@@ -52,20 +53,20 @@ AddrInUse
 
 After a TCP listener closes, Windows briefly holds the port in a transitional state; immediately re-binding UDP on the same port can fail:
 
-- Wait 2— seconds before restarting
+- Wait 2–3 seconds before restarting
 - Or use a separate UDP probe port (`signaling_udp` + a dedicated server listener)
 
 ## Performance & stability
 
 ### Slow transfers
 
-- The reliable stream window is 32 脳 1200 B 鈮?38 KB in flight; high-latency links are throughput-limited
+- The reliable stream window is 32 × 1200 B ≈ 38 KB in flight; high-latency links are throughput-limited
 - Relay mode is capped by the server's egress
 - Direct punching is generally faster (one less hop)
 
 ### Connection dies after long idle
 
-NAT mappings expire (usually 30—20 s). frp-sh sends keepalive ACKs every second, so this normally doesn't happen; if your NAT has an extremely short timeout, keep a trickle of data flowing.
+NAT mappings expire (usually 30–120 s). frp-sh sends keepalive ACKs every second, so this normally doesn't happen; if your NAT has an extremely short timeout, keep a trickle of data flowing.
 
 ### Frames dropped under heavy load
 
@@ -77,15 +78,18 @@ The read buffer caps at 1 MB; beyond that frames are dropped and recovered by re
 
 Two layers:
 
-- **Server password** (`serve --password`): the relay channel is encrypted with a
-  ChaCha20-Poly1305 **stream cipher** keyed by the password — third parties
-  (ISP/middleboxes) can't see the content (the server holds the password and can
-  decrypt to forward)
+- **Server password** (`serve --password`): the private TCP relay channel is
+  stream-encrypted with ChaCha20-Poly1305 using a password-derived key — third
+  parties (ISP/middleboxes) can't see the content (the server holds the
+  password and can decrypt to forward); TURN relay uses standard long-term
+  credential auth (prevents impersonation), but a standard TURN data plane is
+  plaintext — pair it with `--key` when you need confidentiality
 - **`--key` end-to-end**: P2P direct traffic is encrypted with a key derived from
   `--key` — **the server cannot decrypt it either** (even if the password leaks)
 
-Combo: use `--key` for end-to-end secrecy; a server password at least keeps relay
-traffic off the wire in plaintext.
+Combo: prefer `--key` for end-to-end secrecy on self-use/LAN direct links; when
+punching fails and you go through relay, a server password at least keeps traffic
+from being naked on the wire.
 
 ### Can the signaling server require a password (stop strangers creating rooms)?
 

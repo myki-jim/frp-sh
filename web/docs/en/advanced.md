@@ -13,7 +13,7 @@ frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565 --key "our-passphrase"
 ```
 
 - A mismatch makes the session exit with `decryption failed (wrong --key?)`
-- Encryption applies to **P2P direct** data frames (relay traffic is plaintext; see security notes)
+- `--key` is end-to-end, applied to the FRS1 payloads on the **UDP data plane**: both the P2P direct and TURN relay paths are encrypted (the peer sees plaintext, the server does not); **private TCP relay** does not apply `--key`, but when the server sets `--password` that channel has its own password-derived stream encryption
 - The passphrase is passed on the command line — be aware of shell history; wrap it yourself in sensitive environments
 
 ## Multi-connection reuse
@@ -37,8 +37,27 @@ frp-sh game create --relay
 frp-sh game join game-xxxx --relay
 ```
 
-- Skips punching and goes straight through the server relay
+- Skips punching and goes straight into the relay fallback chain: **TURN relay** (when `turn_providers` is configured) → private TCP relay
 - For: known non-punchable NATs, server-side traffic logging, or quick link verification
+
+## Configure TURN providers
+
+By default a punch failure goes to the private TCP relay; with `turn_providers` configured, **TURN relay** is preferred (UDP, standard RFC 5766, interoperable with coturn/Cloudflare TURN, etc.). In `config.toml`:
+
+```toml
+# Single provider (built-in TURN server: serve --turn 0.0.0.0:3478)
+turn_providers = ["turn://frp-sh:YOUR_PASSWORD@SERVER_IP:3478"]
+
+# Multiple providers: parallel speed test, auto-picks the lowest RTT
+turn_providers = [
+  "turn://frp-sh:YOUR_PASSWORD@101.43.41.195:3478",   # your own VPS
+  "turn://user:pass@turn.example.com:3478",           # third-party TURN
+]
+```
+
+- On punch failure (including `--relay`), the order tried is: TURN relay → private TCP relay as the fallback
+- It's a global setting — no need to configure per room; the `frp-sh config` wizard doesn't ask about TURN yet, so edit the config by hand
+- Deploying the built-in TURN relay: see [Server deployment](./server#built-in-turn-relay-optional)
 
 ## Tuning the punch spread
 

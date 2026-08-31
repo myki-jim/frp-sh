@@ -64,10 +64,10 @@ frp-sh --verbose lan join lan-a3f9c2
 ## `frp-sh serve` — start the signaling server
 
 Run it on a public VPS to provide room registration, UDP public-address probing,
-and TCP relay forwarding.
+TCP relay forwarding, and the optional built-in TURN relay.
 
 ```bash
-frp-sh serve [--addr <addr>] [--relay-addr <addr>] [--udp-addr <addr>] [--password <passphrase>]
+frp-sh serve [--addr <addr>] [--relay-addr <addr>] [--udp-addr <addr>] [--password <passphrase>] [--turn <addr>] [--external-ip <IP>]
 ```
 
 `Ctrl-C` shuts down gracefully.
@@ -135,6 +135,39 @@ frp-sh serve --addr 0.0.0.0:8080 --udp-addr 0.0.0.0:8082
 frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password YOUR_PASSWORD
 ```
 
+### `--turn <addr>`
+
+**Purpose**: enable the **built-in TURN server** (RFC 5766 UDP subset, optional).
+
+- **Default**: off (no TURN; clients fall back to the private TCP relay when punching fails)
+- Give it a listen address to enable it, e.g. `--turn 0.0.0.0:3478`
+- Auth reuses `--password`: the TURN username is fixed to `frp-sh` and the password matches the server password
+- On the client side, just put `turn://frp-sh:<password>@<SERVER_IP>:3478` in the config's
+  `turn_providers`; punching failures then switch to TURN automatically (no `--relay` needed)
+- When enabled, the firewall must additionally open the TURN port (`3478/udp`) plus the relay port range handed out to clients
+- You can also skip the built-in TURN and configure the official frp.sh server or a self-hosted coturn as a provider on the client
+
+**Example**:
+
+```bash
+frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password YOUR_PASSWORD --turn 0.0.0.0:3478
+```
+
+### `--external-ip <IP>`
+
+**Purpose**: the server's public IP (optional, used with `--turn`).
+
+- **Default**: the IP of the `--turn` listen address; when listening on `0.0.0.0`, the machine's first LAN address
+- Behind NAT / Docker the default may be a private address (e.g. `172.17.0.6`); use this
+  option to specify the public IP explicitly so TURN advertises the correct relay addresses
+- Normally used together with `--turn`; meaningless without it
+
+**Example**:
+
+```bash
+frp-sh serve --turn 0.0.0.0:3478 --external-ip 101.43.41.195
+```
+
 ---
 
 ## `frp-sh lan create` — mesh: host creates a room
@@ -192,7 +225,8 @@ frp-sh lan create --ttl 86400       # 24 hours
 - **Default**: off (auto punching with relay fallback)
 - Use when NAT is too strict, punching is guaranteed to fail, or you want traffic
   to always go through the server
-- The relay path is plaintext; combine with `--key` when confidentiality matters
+- Forced relay follows the fallback chain: **TURN relay** (when `turn_providers` is configured) → private TCP relay
+- The private TCP relay has password-derived stream encryption when the server sets `--password`; for end-to-end confidentiality use `--key` (applies to the UDP data plane: direct and TURN paths)
 
 **Example**:
 
@@ -808,7 +842,8 @@ frp-sh config [--config <FILE>]
 ```
 
 **Purpose**: interactively asks for and saves the signaling server, relay address,
-and other settings.
+and other settings (the wizard has 5 steps: signaling address → relay address →
+separate UDP port → server password → optional STUN server).
 
 - Without `--config`, saves to the platform default path (see `-c, --config`)
 - Press Enter on any prompt to use the default value
@@ -916,7 +951,8 @@ Notes:
 | `Vnet IP      : 10.66.0.x` | your virtual NIC IP (lan series; friends can reach your whole machine long-term) |
 | `>>> 本地局域网直连 (LAN direct) with <addr>` | **same-WiFi/LAN direct link** (no server involved, lowest latency) |
 | `>>> P2P direct link established with <addr>` | **punch succeeded**, P2P direct |
-| `>>> UDP hole punching failed, falling back to relay ...` | punching failed, switching to relay |
+| `>>> UDP hole punching failed, falling back to relay ...` | punching failed, switching to relay (tries TURN first when configured, then private TCP) |
+| `>>> UDP hole punching failed, trying TURN relay` | punching failed, switching to TURN relay (when `turn_providers` is configured) |
 | `>>> late P2P link established with <addr>` | direct link re-captured while waiting on relay |
 | `connection N from <addr>` | guest side: a local connection entered the tunnel |
 | `guest connection N, dialing local service ...` | host side: guest connected, dialing local service |

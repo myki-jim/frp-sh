@@ -4,9 +4,11 @@ frp-sh 的完整数据通路分四层：**信令**（建房间）→ **打洞**�
 
 ## 1. 信令：房间制地址交换
 
-### 公网地址探测（STUN 简化版）
+### 公网地址探测（STUN 优先，回显兜底）
 
-NAT 之后的本机无法直接知道自己的公网地址，frp-sh 用「服务器回显」实现：
+NAT 之后的本机无法直接知道自己的公网地址。frp-sh 先尝试**标准 STUN**（RFC 5389
+Binding，配置了 `stun_addr` 时，如 `stun.cloudflare.com:3478`），STUN 不可用时回退到
+服务器回显（`ECHO`/`ADDR`）：
 
 ```text
 客户端 UDP socket ──ECHO <token>──▶ 信令服务器
@@ -150,7 +152,32 @@ sequenceDiagram
 
 ## 5. 中继回退
 
-打洞超时（约 3 秒）或 `--relay` 强制时，双方改为连接服务器中继：
+打洞超时（约 3 秒）或 `--relay` 强制时，双方按以下顺序回退：
+
+```text
+打洞失败 ──▶ TURN 中继（配置了 turn_providers 时）──失败──▶ 私有 TCP 中继
+```
+
+### 5a. TURN 中继（UDP，优先）
+
+客户端配置 `turn_providers`（如内置 TURN / coturn / Cloudflare TURN）后，打洞失败时
+先走 TURN：双方各自通过信令交换 **TURN relay 地址**（`host_turn_relay` / `guest_turn_relay`），
+再互相 CreatePermission 授权，把 FRS1 可靠流跑在 TURN relay 上（UDP，穿透性与延迟都好于 TCP 中继）：
+
+```text
+访客 ──UDP──▶ TURN 服务器 ◀──UDP── 房主
+      （FRS1 帧封装在 TURN Send/Data indication 里）
+```
+
+- 多个供应商时**并行 Allocate 测速**，选 RTT 最快者
+- 认证：RFC 5389 long-term credential（MD5(user:realm:pass)，nonce 循环）
+- 数据面与直连共用同一套 `UdpStream`（`DatagramSocket` 抽象），上层隧道逻辑完全不变
+- 内置 TURN 服务器：`serve --turn`（RFC 5766 UDP 子集，relay 端口随机分配，
+  CreatePermission 门控对端流量，认证复用 `--password`）
+
+### 5b. 私有 TCP 中继（兜底）
+
+TURN 未配置或不可用时，连接服务器的私有 TCP 中继：
 
 ```text
 访客 ──TCP──▶ 服务器(8081) ◀──TCP── 房主

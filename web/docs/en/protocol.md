@@ -56,6 +56,16 @@ Response `200`:
 { "room_id": "game-a3f9c2", "host_addr": "223.117.153.115:44276" }
 ```
 
+### TURN relay address fields
+
+When TURN is enabled (`turn_providers` configured), the room object additionally carries the relay addresses both sides allocated via TURN:
+
+- `POST /room/create` may carry `turn_relay` (host side; usually not allocated yet at creation time, so `null`)
+- `POST /room/{id}/refresh` and `POST /room/{id}/join` may carry `turn_relay`
+- `GET /room/{id}` responses include `host_turn_relay` and `guest_turn_relay` (`null` when not advertised)
+
+After a punch failure the client **polls the room for up to 5 seconds** waiting for the peer to advertise its relay address, then builds the TURN data plane (see section 7).
+
 ### DELETE `/room/{id}`
 
 `204` on success, `404` if missing.
@@ -172,6 +182,37 @@ Server → Client: WAIT\r\n | OK\r\n | ERROR <reason>\r\n
 | `ERROR ROOM_EXPIRED` / `ERROR BAD_HELLO` / `ERROR BAD_ROLE` / `ERROR ALREADY_CONNECTED` / `ERROR NO_PEER` | rejected |
 
 After pairing, the server copies both directions; the ends are transparent. Pairing waits up to 10 minutes.
+
+## 7. TURN relay protocol
+
+The TURN relay implements an **RFC 5389 (STUN) + RFC 5766 (TURN) UDP subset** and interoperates with standard TURN servers (coturn, etc.):
+
+| Method | Purpose |
+|--------|---------|
+| `Allocate` | allocate a relay address (the **XOR-RELAYED-ADDRESS (0x0016)** in the response is your relay address) |
+| `CreatePermission` | authorize the peer's relay address so it may send to your relay |
+| `Send` indication | client → server: deliver data to the authorized peer |
+| `Data` indication | server → client: data from the peer |
+| `Refresh` | extend the allocation (default lifetime 600s; the client refreshes at half the period) |
+| `Binding` | STUN public-address probing / connectivity checks |
+
+### Authentication (long-term credential)
+
+- Requests carry `USERNAME`, `REALM`, `NONCE`, `MESSAGE-INTEGRITY` (HMAC-SHA1)
+- Key = `MD5(user:realm:pass)`; the server issues the nonce — retry with the nonce after a 401 (up to 5 times)
+- Built-in TURN server convention: username `frp-sh`, realm `frp.sh`, password = the `serve --password` value
+
+### Data plane
+
+The FRS1 reliable stream runs **directly on top of TURN** (`UdpStream` generalized to `DatagramSocket`; direct and TURN share the same implementation): sending wraps one FRS1 frame in a Send indication, receiving unpacks it from a Data indication. The upper tunnel, encryption, and multi-connection reuse logic are unchanged.
+
+### Fallback order
+
+```text
+punch direct ──failure──▶ TURN relay ──failure──▶ private TCP relay (section 6)
+```
+
+Multiple TURN providers Allocate in parallel and are speed-tested, picking the lowest RTT; `--relay` skips punching and enters the fallback chain directly.
 
 ## Compatibility notes
 
