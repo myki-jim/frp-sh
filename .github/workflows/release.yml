@@ -19,6 +19,15 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             asset: frp-sh-linux-aarch64
+          # musl 静态构建：OpenWrt / Alpine 等 musl libc 系统（无 glibc 依赖）
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: frp-sh-linux-x86_64-musl
+            zigbuild: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            asset: frp-sh-linux-aarch64-musl
+            zigbuild: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: frp-sh-windows-x86_64.exe
