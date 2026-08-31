@@ -52,6 +52,7 @@ async fn try_start_server(password: Option<&str>) -> Option<TestServer> {
             uuid: None,
             password: pw,
             stun_addr: None,
+            turn_providers: Vec::new(),
         },
     })
 }
@@ -76,6 +77,7 @@ async fn create_room(cfg: &Config) -> String {
             Vec::new(),
             Vec::new(),
             "0.0.0".into(),
+            None,
         )
         .await
         .unwrap();
@@ -259,6 +261,7 @@ async fn e2e_mesh_multi_guest_links() {
                     Some(format!("mesh-guest-{i}")),
                     None,
                     Vec::new(),
+                    None,
                 )
                 .await
                 .unwrap();
@@ -415,6 +418,88 @@ async fn e2e_turn_builtin_frs1_stream() {
     assert_eq!(got, payload, "FRS1 over built-in TURN mismatch");
 }
 
+/// 会话级 TURN 回退链：force_relay（跳过打洞）+ 配置 turn_providers 指向内置 TURN，
+/// host/guest 经 TURN 中继交换数据（而不是私有 TCP 中继）。
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_turn_chain_relay() {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+        .try_init();
+    let turn_addr = turn_builtin_test(None).await;
+    let srv = start_server().await;
+    let room_id = create_room(&srv.cfg).await;
+    let tp = vec![format!("turn://127.0.0.1:{}", turn_addr.port())];
+    let mut cfg_h = srv.cfg.clone();
+    cfg_h.turn_providers = tp.clone();
+    let mut cfg_g = srv.cfg.clone();
+    cfg_g.turn_providers = tp;
+
+    let echo = spawn_echo_server().await;
+    let cfg_h2 = cfg_h.clone();
+    let room_h = room_id.clone();
+    let host = tokio::spawn(async move {
+        commands::host_session(
+            &cfg_h2,
+            &room_h,
+            echo.to_string(),
+            true, // force_relay：跳过打洞，直接进入中继（TURN 优先）
+            None,
+            1, // max_conns
+            0, // spread
+            None,
+            Some(1), // max_rounds
+            false,
+        )
+        .await
+    });
+    let guest_listen = free_local_port().await;
+    let cfg_g2 = cfg_g.clone();
+    let room_g = room_id.clone();
+    let guest = tokio::spawn(async move {
+        commands::guest_session(
+            &cfg_g2,
+            &room_g,
+            guest_listen.to_string(),
+            true,
+            None,
+            1,
+            0,
+            None,
+            Some(1),
+            None,
+            false,
+        )
+        .await
+    });
+
+    // 驱动一次 echo（经 TURN 中继的数据面）
+    let payload = b"turn-chain-echo";
+    let mut client = None;
+    for _ in 0..200 {
+        if let Ok(s) = TcpStream::connect(guest_listen).await {
+            client = Some(s);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut client = client.expect("guest listen not ready");
+    client.write_all(payload).await.unwrap();
+    let mut buf = [0u8; 64];
+    let n = client.read(&mut buf).await.unwrap();
+    assert_eq!(&buf[..n], payload, "echo over TURN chain mismatch");
+    drop(client);
+
+    let host_res = tokio::time::timeout(Duration::from_secs(60), host)
+        .await
+        .expect("host timeout")
+        .unwrap();
+    let guest_res = tokio::time::timeout(Duration::from_secs(60), guest)
+        .await
+        .expect("guest timeout")
+        .unwrap();
+    assert!(host_res.is_ok(), "host session failed: {host_res:?}");
+    assert!(guest_res.is_ok(), "guest session failed: {guest_res:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_mesh_relay_pairing() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
@@ -448,6 +533,7 @@ async fn e2e_mesh_relay_pairing() {
                 Some(guest_uuid.clone()),
                 None,
                 Vec::new(),
+                None,
             )
             .await
             .unwrap();
@@ -512,6 +598,7 @@ async fn room_lifecycle_api() {
             Vec::new(),
             Vec::new(),
             "0.0.0".into(),
+            None,
         )
         .await
         .unwrap();
@@ -520,7 +607,15 @@ async fn room_lifecycle_api() {
     assert!(info.guest_addr.is_none());
 
     let joined = client
-        .join_room(&created.room_id, my_ext, Vec::new(), None, None, Vec::new())
+        .join_room(
+            &created.room_id,
+            my_ext,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(joined.host_addr, my_ext);
@@ -558,6 +653,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Vec::new(),
             vec!["10.66.0.2".into(), "10.66.0.3".into(), "10.66.0.4".into()],
             "0.0.0".into(),
+            None,
         )
         .await
         .unwrap();
@@ -572,6 +668,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Some(uid.into()),
             None,
             Vec::new(),
+            None,
         )
         .await
         .unwrap();
@@ -583,6 +680,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Some(uid.into()),
             None,
             Vec::new(),
+            None,
         )
         .await
         .unwrap();
@@ -598,6 +696,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Some("223e4567-e89b-12d3-a456-426614174000".into()),
             None,
             Vec::new(),
+            None,
         )
         .await
         .unwrap();
@@ -614,6 +713,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Vec::new(),
             Vec::new(),
             "0.0.0".into(),
+            None,
         )
         .await
         .unwrap();
@@ -625,6 +725,7 @@ async fn guest_ip_pool_assigns_stable_ips() {
             Some(uid.into()),
             None,
             Vec::new(),
+            None,
         )
         .await
         .unwrap();
@@ -666,6 +767,7 @@ async fn server_auth_rejects_wrong_password() {
             Vec::new(),
             Vec::new(),
             "0.0.0".into(),
+            None,
         )
         .await
         .unwrap_err();

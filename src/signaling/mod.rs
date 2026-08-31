@@ -28,6 +28,9 @@ pub struct CreateRoomRequest {
     /// 同一设备（UUID）重连复用同一 IP
     #[serde(default)]
     pub guest_ips: Vec<String>,
+    /// 房主分配的 TURN relay 地址（配置了 TURN 供应商时）
+    #[serde(default)]
+    pub turn_relay: Option<SocketAddr>,
     /// 房主程序版本（`major.minor.patch`，用于访客端兼容性提示）
     #[serde(default)]
     pub version: String,
@@ -54,6 +57,9 @@ pub struct JoinRoomRequest {
     /// 访客暴露的局域网子网 CIDR（`--expose-lan` 时通告，房主据此加路由访问访客局域网）
     #[serde(default)]
     pub guest_subnets: Vec<String>,
+    /// 本端分配的 TURN relay 地址（配置了 TURN 供应商时通告，供对端经 TURN 中继建立数据面）
+    #[serde(default)]
+    pub turn_relay: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +79,9 @@ pub struct RefreshRoomRequest {
     pub host_lan: Vec<SocketAddr>,
     #[serde(default)]
     pub host_subnets: Vec<String>,
+    /// 本端分配的 TURN relay 地址（配置了 TURN 供应商时）
+    #[serde(default)]
+    pub turn_relay: Option<SocketAddr>,
 }
 
 /// 房间内一个访客的完整信息（网格模式多访客；旧客户端忽略该字段）。
@@ -109,12 +118,18 @@ pub struct RoomInfo {
     /// 房主局域网子网 CIDR（--tun 时访客据此加路由）
     #[serde(default)]
     pub host_subnets: Vec<String>,
+    /// 房主分配的 TURN relay 地址（配置了 TURN 供应商时）
+    #[serde(default)]
+    pub host_turn_relay: Option<SocketAddr>,
     /// 访客局域网打洞地址（房主反向打洞）
     #[serde(default)]
     pub guest_lan: Vec<SocketAddr>,
     /// 访客暴露的局域网子网 CIDR（`--expose-lan`）
     #[serde(default)]
     pub guest_subnets: Vec<String>,
+    /// 访客分配的 TURN relay 地址（配置了 TURN 供应商时）
+    #[serde(default)]
+    pub guest_turn_relay: Option<SocketAddr>,
     /// 全部访客（网格模式多访客）
     #[serde(default)]
     pub guests: Vec<GuestInfo>,
