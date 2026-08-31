@@ -1478,6 +1478,10 @@ pub async fn guest_session(
     // 对端收不到我们，典型于对端防火墙拦入站）。下一轮跳过打洞直接走中继，
     // 避免每个重连轮都复现同样的 3s 死链、无限循环。
     let mut direct_broke = false;
+    // TURN 链路异常断开的标记：TURN 建立（对端 relay 也在）但对端没在同一通道上
+    // 收发（典型：房主端超时先走了 TCP 中继等配对，两端会师失败）时，访客若每轮
+    // 固执重试 TURN 就会死循环。置位后后续轮次跳过 TURN，直走 TCP 中继与房主会师。
+    let mut turn_broke = false;
     // TURN 中继上下文（配置了供应商时分配一次，直连失败回退用）
     let mut turn_client: Option<crate::p2p::turn::TurnClient> = None;
 
@@ -1567,9 +1571,10 @@ pub async fn guest_session(
             Vec::new()
         };
         // TURN：客户端自配供应商优先，否则用信令服务器下发的内置 TURN；
-        // 加入时通告本端 relay 地址（房主据此建立 TURN 链路）
+        // 加入时通告本端 relay 地址（房主据此建立 TURN 链路）。
+        // turn_broke 置位后不再分配/尝试 TURN，直走 TCP 中继会师。
         let mut turn_relay: Option<SocketAddr> = None;
-        if turn_client.is_none() {
+        if turn_client.is_none() && !turn_broke {
             if let Ok(Some(c)) = try_turn_connect_with_offer(cfg, info.server_turn).await {
                 turn_relay = Some(c.relay);
                 turn_client = Some(c);
@@ -1667,8 +1672,10 @@ pub async fn guest_session(
             }
             PunchOutcome::TimedOut => {
                 state.relay_mode = true;
-                // 1) 优先尝试 TURN 中继（配置了供应商时；轮询等待房主通告 relay，最多 5s）
-                let host_relay = if turn_client.is_some() {
+                // 1) 优先尝试 TURN 中继（配置了供应商时；轮询等待房主通告 relay，最多 5s）。
+                //    turn_broke（上一轮 TURN 链路异常断开）后跳过 TURN，直走 TCP 中继与
+                //    房主会师——房主端可能已改走 TCP 中继等待配对，固执重试 TURN 会死循环。
+                let host_relay = if turn_client.is_some() && !turn_broke {
                     let mut hr = None;
                     for _ in 0..20 {
                         if let Ok(r) = signaling.get_room(room_id).await {
@@ -1699,6 +1706,9 @@ pub async fn guest_session(
                             .await;
                             if let Err(e) = &r {
                                 log::warn!("session ended abnormally: {e}");
+                                // TURN 链路建立过但对端不在通道上（心跳超时等异常）→
+                                // 下一轮跳过 TURN，直走 TCP 中继会师
+                                turn_broke = true;
                             }
                             if let Some(n) = max_rounds {
                                 if attempt >= n {
@@ -2182,6 +2192,9 @@ async fn mesh_host_loop(
 ) -> anyhow::Result<()> {
     let mut pending: HashMap<String, PendingHost> = HashMap::new();
     let mut established: HashMap<String, String> = HashMap::new();
+    // TCP 中继已 spawn 但仍在等配对的访客（uuid → 上次 TURN 重试时间）：
+    // 等待期间周期性重试 TURN，访客通告 relay 地址后立即切换（UDP 中继延迟更优）
+    let mut turn_retry: HashMap<String, Instant> = HashMap::new();
     // 直连链路的规范对端地址（uuid → 建链时观察到的来源）：后续信号从其他通告地址
     // 到达时登记别名，保证数据帧从任一路径都能路由到同一条流
     let mut established_peer: HashMap<String, SocketAddr> = HashMap::new();
@@ -2348,6 +2361,9 @@ async fn mesh_host_loop(
                 }
                 p.relay_attempted = true;
                 p.relay_at = Some(now);
+                if turn_client.is_some() {
+                    turn_retry.insert(uuid.clone(), now);
+                }
                 let uuid_c = uuid.clone();
                 let room_c = room_id.to_string();
                 let tx = relay_tx.clone();
@@ -2416,6 +2432,62 @@ async fn mesh_host_loop(
             if let Some(p) = pending.get_mut(&uuid) {
                 p.relay_attempted = false;
                 p.relay_at = None;
+            }
+        }
+        // 4.6) TURN 重试：TCP 中继已 spawn 等待配对时，仍每 5s 重试一次 TURN——
+        // 访客通告 relay 地址后立即切到 TURN（UDP 中继延迟更优）；TURN 建立后，
+        // 迟到的 TCP 中继配对结果会在第 5 节因 pending 已移除而被丢弃。
+        if turn_client.is_some() {
+            let mut retry: Option<String> = None;
+            for (uuid, t) in turn_retry.iter() {
+                if pending.contains_key(uuid)
+                    && !established.contains_key(uuid)
+                    && now.duration_since(*t) >= Duration::from_secs(5)
+                {
+                    retry = Some(uuid.clone());
+                    break;
+                }
+            }
+            if let Some(uuid) = retry {
+                turn_retry.insert(uuid.clone(), now);
+                let mut gr = None;
+                for _ in 0..8 {
+                    if let Ok(r) = signaling.get_room(room_id).await {
+                        if let Some(g) = r.guests.iter().find(|g| g.uuid == uuid) {
+                            if let Some(x) = g.turn_relay {
+                                gr = Some(x);
+                                break;
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                if let (Some(gr), Some(tc)) = (gr, turn_client.take()) {
+                    println!("  {}", warn("switching to TURN relay"));
+                    match turn_data_plane(tc, gr, key_bytes).await {
+                        Ok(stream) => {
+                            if let Some(p) = pending.remove(&uuid) {
+                                log::info!(
+                                    "TURN link with {uuid} established (replacing pending TCP relay)"
+                                );
+                                established_peer.remove(&uuid);
+                                if established.contains_key(&uuid) {
+                                    plane.unregister(&uuid);
+                                }
+                                plane.register(
+                                    &uuid,
+                                    mesh_routes_for(&p.info),
+                                    Box::new(stream),
+                                    dispatch_tx.clone(),
+                                );
+                                established.insert(uuid, "turn".into());
+                            } else {
+                                drop(stream);
+                            }
+                        }
+                        Err(e) => log::warn!("TURN retry for {uuid} failed: {e}"),
+                    }
+                }
             }
         }
         // 5) 中继结果 → 注册链路
