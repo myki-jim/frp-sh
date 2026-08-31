@@ -494,6 +494,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         uuid: None, // 设备 UUID 存于独立 identity 文件
         password,
         stun_addr,
+        turn_providers: Vec::new(),
     };
 
     // 保存
@@ -652,6 +653,66 @@ async fn relay_auth_info(signaling: &SignalingClient, cfg: &Config) -> (bool, Op
     (auth, token)
 }
 
+// ---------- TURN 中继回退 ----------
+
+/// 并行连接所有配置的 TURN 供应商（测速），选 RTT 最快成功者。
+///
+/// 全部失败返回 `Ok(None)`（调用方回退私有 TCP 中继）。
+async fn try_turn_connect(cfg: &Config) -> anyhow::Result<Option<crate::p2p::turn::TurnClient>> {
+    let creds = cfg.turn_credentials();
+    if creds.is_empty() {
+        return Ok(None);
+    }
+    let mut handles = Vec::new();
+    for cred in creds {
+        handles.push(tokio::spawn(async move {
+            let start = Instant::now();
+            let sock = match UdpSocket::bind("0.0.0.0:0").await {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!("TURN bind failed: {e}");
+                    return None;
+                }
+            };
+            match crate::p2p::turn::TurnClient::connect(sock, &cred).await {
+                Ok(c) => Some((start.elapsed(), c)),
+                Err(e) => {
+                    log::warn!("TURN {} unreachable: {e}", cred.server);
+                    None
+                }
+            }
+        }));
+    }
+    let mut best: Option<(Duration, crate::p2p::turn::TurnClient)> = None;
+    for h in handles {
+        if let Ok(Some((dt, c))) = h.await {
+            if best.as_ref().map(|(d, _)| dt < *d).unwrap_or(true) {
+                best = Some((dt, c));
+            }
+        }
+    }
+    if let Some((dt, _)) = &best {
+        log::info!("best TURN provider selected in {dt:?}");
+    }
+    Ok(best.map(|(_, c)| c))
+}
+
+/// 用本端 TURN 客户端与对端 relay 地址建立 FRS1 数据面（授权 + 流）。
+async fn turn_data_plane(
+    client: crate::p2p::turn::TurnClient,
+    peer_relay: SocketAddr,
+    key_bytes: Option<[u8; 32]>,
+) -> anyhow::Result<crate::p2p::stream::UdpStream> {
+    client
+        .create_permission(peer_relay)
+        .await
+        .map_err(|e| anyhow::anyhow!("TURN create-permission failed: {e}"))?;
+    log::info!("TURN relay link established via {peer_relay}");
+    Ok(crate::p2p::stream::UdpStream::new(
+        client, peer_relay, None, key_bytes,
+    ))
+}
+
 /// `game create`：注册房间，进入房主会话；返回房间号。
 ///
 /// - `guest_ips`：房主预留的访客虚拟 IP 池（lan 系列 `--guest-ips`；转发系列为空）
@@ -703,6 +764,7 @@ pub async fn run_create(
             lan_subnets.clone(),
             guest_ips.clone(),
             crate::version::VERSION.to_string(),
+            None, // host 的 TURN relay 在 refresh 时通告（此时尚未分配）
         )
         .await?;
     let room_id = resp.room_id.clone();
@@ -789,6 +851,8 @@ pub async fn host_session(
     let mut state = RoomState::new(room_id.to_string(), Role::Host, service_addr);
     let key_bytes = derive_key(key.as_deref());
     let mut attempt: u64 = 0;
+    // TURN 中继上下文（配置了供应商时分配一次，直连失败回退用）
+    let mut turn_client: Option<crate::p2p::turn::TurnClient> = None;
 
     // lan 模式（虚拟网卡）→ 网格会话：多访客全互联
     if let Some(t) = &tun {
@@ -836,8 +900,15 @@ pub async fn host_session(
         } else {
             Vec::new()
         };
+        // TURN：配置了供应商且尚未分配时连接（测速选优），refresh 时通告 relay 地址
+        if !cfg.turn_providers.is_empty() && turn_client.is_none() {
+            if let Ok(Some(c)) = try_turn_connect(cfg).await {
+                turn_client = Some(c);
+            }
+        }
+        let turn_relay = turn_client.as_ref().map(|c| c.relay);
         if let Err(e) = signaling
-            .refresh_room(room_id, my_ext, lan_addrs, lan_subnets)
+            .refresh_room(room_id, my_ext, lan_addrs, lan_subnets, turn_relay)
             .await
         {
             // 房间已失效（过期/被删）→ 无法继续，结束
@@ -878,6 +949,52 @@ pub async fn host_session(
             }
             PunchOutcome::TimedOut => {
                 state.relay_mode = true;
+                // 1) 优先尝试 TURN 中继（配置了供应商时；轮询等待访客通告 relay，最多 5s）
+                let guest_relay = if turn_client.is_some() {
+                    let mut gr = None;
+                    for _ in 0..20 {
+                        if let Ok(r) = signaling.get_room(room_id).await {
+                            if let Some(x) = r.guest_turn_relay {
+                                gr = Some(x);
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    gr
+                } else {
+                    None
+                };
+                if let (Some(tc), Some(gr)) = (turn_client.take(), guest_relay) {
+                    println!(
+                        ">>> {} ...",
+                        warn("UDP hole punching failed, trying TURN relay")
+                    );
+                    match turn_data_plane(tc, gr, key_bytes).await {
+                        Ok(stream) => {
+                            let r = run_data_plane(
+                                stream,
+                                tun.as_ref(),
+                                ForwardMode::Host {
+                                    service: service_addr,
+                                    max_conns,
+                                },
+                                &guest_subnets,
+                            )
+                            .await;
+                            if let Err(e) = &r {
+                                log::warn!("session ended abnormally: {e}");
+                            }
+                            if let Some(n) = max_rounds {
+                                if attempt >= n {
+                                    return Ok(());
+                                }
+                            }
+                            continue; // 重连（下一轮先尝试直连）
+                        }
+                        Err(e) => log::warn!("TURN relay failed: {e}"),
+                    }
+                }
                 println!(
                     ">>> {} ...",
                     warn("UDP hole punching failed, falling back to relay")
@@ -1130,6 +1247,8 @@ pub async fn guest_session(
     let mut state = RoomState::new(room_id.to_string(), Role::Guest, listen_addr);
     let mut attempt: u64 = 0;
     let mut first = true;
+    // TURN 中继上下文（配置了供应商时分配一次，直连失败回退用）
+    let mut turn_client: Option<crate::p2p::turn::TurnClient> = None;
 
     loop {
         attempt += 1;
@@ -1213,6 +1332,16 @@ pub async fn guest_session(
         } else {
             Vec::new()
         };
+        // TURN：配置了供应商且尚未分配时连接（测速选优），加入时通告 relay 地址
+        let mut turn_relay: Option<SocketAddr> = None;
+        if !cfg.turn_providers.is_empty() && turn_client.is_none() {
+            if let Ok(Some(c)) = try_turn_connect(cfg).await {
+                turn_relay = Some(c.relay);
+                turn_client = Some(c);
+            }
+        } else if let Some(t) = &turn_client {
+            turn_relay = Some(t.relay);
+        }
         match signaling
             .join_room(
                 room_id,
@@ -1221,6 +1350,7 @@ pub async fn guest_session(
                 cfg.uuid.clone(),
                 requested_ip.clone(),
                 guest_subnets,
+                turn_relay,
             )
             .await
         {
@@ -1292,6 +1422,53 @@ pub async fn guest_session(
             }
             PunchOutcome::TimedOut => {
                 state.relay_mode = true;
+                // 1) 优先尝试 TURN 中继（配置了供应商时；轮询等待房主通告 relay，最多 5s）
+                let host_relay = if turn_client.is_some() {
+                    let mut hr = None;
+                    for _ in 0..20 {
+                        if let Ok(r) = signaling.get_room(room_id).await {
+                            if let Some(x) = r.host_turn_relay {
+                                hr = Some(x);
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    hr
+                } else {
+                    None
+                };
+                if let (Some(tc), Some(hr)) = (turn_client.take(), host_relay) {
+                    println!(
+                        ">>> {} ...",
+                        warn("UDP hole punching failed, trying TURN relay")
+                    );
+                    match turn_data_plane(tc, hr, key_bytes).await {
+                        Ok(stream) => {
+                            let r = run_data_plane(
+                                stream,
+                                tun.as_ref(),
+                                ForwardMode::Guest {
+                                    listen: listen_addr,
+                                    max_conns,
+                                },
+                                &[],
+                            )
+                            .await;
+                            if let Err(e) = &r {
+                                log::warn!("session ended abnormally: {e}");
+                            }
+                            if let Some(n) = max_rounds {
+                                if attempt >= n {
+                                    return Ok(());
+                                }
+                            }
+                            continue; // 重连（下一轮先尝试直连）
+                        }
+                        Err(e) => log::warn!("TURN relay failed: {e}"),
+                    }
+                }
+                // 2) 私有 TCP 中继（现状）
                 println!(">>> {} ...", warn("UDP hole punching failed, trying relay"));
                 let relay_addr = match cfg.relay_addr.parse() {
                     Ok(a) => a,
@@ -1667,7 +1844,7 @@ pub async fn host_mesh_session(
             Vec::new()
         };
         if let Err(e) = signaling
-            .refresh_room(room_id, my_ext, lan_addrs, lan_subnets)
+            .refresh_room(room_id, my_ext, lan_addrs, lan_subnets, None)
             .await
         {
             return Err(e.into()); // 房间失效（过期/被删）
@@ -1968,7 +2145,7 @@ async fn mesh_host_loop(
                 };
                 log::info!("host public address changed to {ext}, refreshing room ...");
                 let _ = signaling
-                    .refresh_room(room_id, ext, lan_addrs, lan_subnets)
+                    .refresh_room(room_id, ext, lan_addrs, lan_subnets, None)
                     .await;
             }
         }
