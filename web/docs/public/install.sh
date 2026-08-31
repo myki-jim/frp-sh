@@ -49,9 +49,22 @@ case "${uname_s}" in
   *) fail "unsupported platform ${uname_s} (Windows: irm https://frp.sh/install.ps1 | iex)" ;;
 esac
 uname_m="$(uname -m)"
+# musl libc（OpenWrt / Alpine / 静态系统）优先选静态 musl 构建（若存在）
+musl=""
+case "${os}" in
+  linux)
+    case "${uname_m}" in
+      x86_64|aarch64|arm64)
+        if ls /lib/ld-musl-* >/dev/null 2>&1; then
+          musl="-musl"
+        fi
+        ;;
+    esac
+    ;;
+esac
 case "${os}-${uname_m}" in
-  linux-x86_64|linux-amd64)  asset="frp-sh-linux-x86_64" ;;
-  linux-aarch64|linux-arm64) asset="frp-sh-linux-aarch64" ;;
+  linux-x86_64|linux-amd64)  asset="frp-sh-linux-x86_64${musl}" ;;
+  linux-aarch64|linux-arm64) asset="frp-sh-linux-aarch64${musl}" ;;
   macos-x86_64|macos-amd64)  asset="frp-sh-macos-x86_64" ;;
   macos-arm64|macos-aarch64) asset="frp-sh-macos-arm64" ;;
   *) fail "unsupported platform/architecture ${os}/${uname_m}" ;;
