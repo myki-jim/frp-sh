@@ -115,6 +115,81 @@ pub fn needs_elevation(command: &Option<crate::cli::Commands>) -> bool {
     matches!(command, Some(crate::cli::Commands::Lan { .. }))
 }
 
+/// 会话角色（用于单实例锁）：同一角色同机只允许一个实例。
+pub fn session_role(command: &Option<crate::cli::Commands>) -> Option<&'static str> {
+    use crate::cli::{Commands, DevCmd, GameCmd, LanCmd};
+    match command {
+        Some(Commands::Serve { .. }) => Some("serve"),
+        Some(Commands::Game {
+            cmd: GameCmd::Create(_),
+        }) => Some("host"),
+        Some(Commands::Game {
+            cmd: GameCmd::Join(_),
+        }) => Some("guest"),
+        Some(Commands::Dev {
+            cmd: DevCmd::Create(_),
+        }) => Some("host"),
+        Some(Commands::Dev {
+            cmd: DevCmd::Join(_),
+        }) => Some("guest"),
+        Some(Commands::Lan {
+            cmd: LanCmd::Create(_),
+        }) => Some("host"),
+        Some(Commands::Lan {
+            cmd: LanCmd::Join(_),
+        }) => Some("guest"),
+        _ => None,
+    }
+}
+
+/// 单实例锁（按角色）：同一台机器同时只允许一个"房主会话"、一个"访客会话"。
+///
+/// - 防止误开多个房间（重复 `lan create` 会创建多个房间，令人混淆）；
+/// - 双端同机（host + guest）是支持的场景，因此两种角色使用不同的锁；
+/// - 锁是内核持有的文件锁：进程退出（含崩溃/被杀）自动释放，不会留死锁。
+///
+/// 失败返回 Err（已有同角色实例在运行），调用方应打印并退出。
+pub fn acquire_role_lock(role: &str) -> anyhow::Result<()> {
+    use std::fs::OpenOptions;
+    #[cfg(unix)]
+    let path = std::path::PathBuf::from(format!("/tmp/frp-sh-{role}.lock"));
+    #[cfg(not(unix))]
+    let path = std::env::var("LOCALAPPDATA")
+        .map(|d| {
+            std::path::PathBuf::from(d)
+                .join("frp-sh")
+                .join(format!("{role}.lock"))
+        })
+        .unwrap_or_else(|_| std::env::temp_dir().join(format!("frp-sh-{role}.lock")));
+    if let Some(p) = path.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| anyhow::anyhow!("cannot open lock file {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        // 允许不同用户（sudo / 普通用户）竞争同一把锁
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666));
+    }
+    match file.try_lock() {
+        Ok(()) => {
+            // 故意泄漏文件句柄：锁保持到进程退出，由内核释放
+            std::mem::forget(file);
+            Ok(())
+        }
+        Err(e) => Err(anyhow::anyhow!(
+            "another frp-sh {role} session is already running (single-instance lock).\n  \
+             close it first (Ctrl-C or kill the frp-sh process), then retry. [{e}]"
+        )),
+    }
+}
+
 /// 当前进程是否已具备管理员/root 权限。
 pub fn is_elevated() -> bool {
     #[cfg(target_os = "windows")]
@@ -2228,4 +2303,44 @@ fn mesh_establish_link(
         dispatch_tx.clone(),
     );
     established.insert(uuid.to_string(), "direct".into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 同角色二次加锁必须失败（单实例）；不同角色互不影响。
+    #[test]
+    fn role_lock_is_exclusive_per_role() {
+        acquire_role_lock("test-host").expect("first host lock should succeed");
+        assert!(
+            acquire_role_lock("test-host").is_err(),
+            "second host lock must be rejected"
+        );
+        acquire_role_lock("test-guest").expect("guest lock is independent of host lock");
+        assert!(
+            acquire_role_lock("test-guest").is_err(),
+            "second guest lock must be rejected"
+        );
+    }
+
+    #[test]
+    fn session_role_mapping() {
+        use crate::cli::Cli;
+        use clap::Parser as _;
+        let role = |args: &[&str]| {
+            let cli =
+                Cli::try_parse_from(std::iter::once("frp-sh").chain(args.iter().copied())).unwrap();
+            session_role(&cli.command)
+        };
+        assert_eq!(role(&[]), None); // 配置向导不锁
+        assert_eq!(role(&["config"]), None);
+        assert_eq!(role(&["serve"]), Some("serve"));
+        assert_eq!(role(&["lan", "create"]), Some("host"));
+        assert_eq!(role(&["lan", "join", "r"]), Some("guest"));
+        assert_eq!(role(&["dev", "create"]), Some("host"));
+        assert_eq!(role(&["dev", "join", "r"]), Some("guest"));
+        assert_eq!(role(&["game", "create"]), Some("host"));
+        assert_eq!(role(&["game", "join", "r"]), Some("guest"));
+    }
 }
