@@ -1,13 +1,28 @@
 //! 命令行定义（clap derive）。
 
+use clap::builder::styling::{AnsiColor, Effects};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+/// 彩色 help 配色（clap Styles）：标题黄、命令/参数绿、占位符青、错误红。
+/// `--help` / `--version` 输出自动套用，无需逐处修改。
+fn cli_styles() -> clap::builder::Styles {
+    clap::builder::Styles::styled()
+        .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
+        .usage(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
+        .literal(AnsiColor::Green.on_default())
+        .placeholder(AnsiColor::Cyan.on_default())
+        .error(AnsiColor::Red.on_default().effects(Effects::BOLD))
+        .valid(AnsiColor::Green.on_default())
+        .invalid(AnsiColor::Red.on_default())
+}
 
 #[derive(Parser, Debug)]
 #[command(
     name = "frp-sh",
     version,
-    about = "Social P2P tunnel: room-based UDP hole punching with relay fallback"
+    about = "Social P2P tunnel: room-based UDP hole punching with relay fallback",
+    styles = cli_styles()
 )]
 pub struct Cli {
     /// Path to the config file (TOML, see config/default.toml)

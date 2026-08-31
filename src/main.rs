@@ -43,10 +43,13 @@ async fn real_main() -> anyhow::Result<()> {
             .green()
     );
     println!(
-        "  frp-sh v{} ({})\n",
-        frp_sh::version::VERSION,
+        "  {} {}",
+        format!("frp-sh v{}", frp_sh::version::VERSION)
+            .cyan()
+            .bold(),
         format!("protocol v{}", frp_sh::version::PROTOCOL_VERSION).dimmed()
     );
+    println!();
 
     // lan 组网需要管理员/root（创建虚拟网卡、设 IP、加路由）。
     // 未提权时：Windows 自动弹 UAC 以管理员重启自身（用户点一次"是"）；
@@ -248,26 +251,41 @@ async fn real_main() -> anyhow::Result<()> {
                 frp_sh::commands::run_config(config).await?;
             } else {
                 let cfg = Config::load_auto(config.as_deref())?;
-                println!("frp-sh - social P2P mesh tool\n");
-                println!("  Current config:");
-                println!("    Signaling server: {}", cfg.signaling_addr);
-                println!("    Relay server: {}", cfg.relay_addr);
+                println!("{}", "frp-sh - social P2P mesh tool".cyan().bold());
+                println!(
+                    "{}",
+                    frp_sh::commands::kv("Signaling", cfg.signaling_addr.clone())
+                );
+                println!("{}", frp_sh::commands::kv("Relay", cfg.relay_addr.clone()));
                 if let Some(u) = &cfg.signaling_udp {
-                    println!("    UDP probe   : {u}");
+                    println!("{}", frp_sh::commands::kv("UDP probe", u));
                 }
                 if let Some(id) = &cfg.uuid {
-                    println!("    Your ID    : {id}");
+                    println!("{}", frp_sh::commands::kv("Your ID", id));
                 }
-                println!("\n  Common commands:");
-                println!("    frp-sh lan create              # mesh: create a room (virtual NIC puts the whole machine on the mesh)");
+                println!("\n  {}", "Common commands:".cyan());
                 println!(
-                    "    frp-sh lan join lan-xxxxxx    # mesh: join a room (reach the peer's whole LAN)"
+                    "    {}  mesh: create a room (virtual NIC puts the whole machine on the mesh)",
+                    "frp-sh lan create".dimmed()
                 );
-                println!("    frp-sh dev create              # development: application-layer port forwarding");
-                println!("    frp-sh game create             # game: pure port forwarding (default 25565)");
-                println!("    frp-sh serve                   # start the signaling server");
-                println!("    frp-sh config                  # reconfigure");
-                println!("    frp-sh --help                  # show all commands\n");
+                println!(
+                    "    {}  mesh: join a room (reach the peer's whole LAN)",
+                    "frp-sh lan join 1234".dimmed()
+                );
+                println!(
+                    "    {}  development: application-layer port forwarding",
+                    "frp-sh dev create".dimmed()
+                );
+                println!(
+                    "    {}  game: pure port forwarding (default 25565)",
+                    "frp-sh game create".dimmed()
+                );
+                println!(
+                    "    {}  start the signaling server",
+                    "frp-sh serve".dimmed()
+                );
+                println!("    {}  reconfigure", "frp-sh config".dimmed());
+                println!("    {}  show all commands\n", "frp-sh --help".dimmed());
             }
         }
     }

@@ -1,6 +1,6 @@
 ﻿[package]
 name = "frp-sh"
-version = "0.2.6"
+version = "0.2.7"
 edition = "2021"
 description = "Social P2P tunnel: room-based UDP hole punching with relay fallback"
 license = "MIT"
@@ -26,6 +26,7 @@ tun = { version = "0.8", features = ["async"] }
 uuid = { version = "1", features = ["v4"] }
 if-addrs = "0.13"
 colored = "2"
+indicatif = "0.17"
 socket2 = "0.5"
 hmac = "0.12"
 sha1 = "0.10"
