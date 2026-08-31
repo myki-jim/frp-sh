@@ -245,16 +245,23 @@ impl Drop for UdpStream {
 /// 网格对端注册表：来源地址 → (流状态, 关闭通知)。
 type PeerRegistry = Arc<std::sync::Mutex<HashMap<SocketAddr, (Arc<Mutex<Shared>>, Arc<Notify>)>>>;
 
+/// 别名注册表：对端的通告地址（公网映射 / 局域网）→ 注册流时观察到的规范地址。
+///
+/// 同一对端的数据帧可能从任一已知地址到达（LAN 直达 vs NAT 回环 hairpin），
+/// 两者可能是不同的来源地址；别名表保证任一路径的帧都能路由到同一条对端流。
+type AliasRegistry = Arc<std::sync::Mutex<HashMap<SocketAddr, SocketAddr>>>;
+
 /// 共享 socket 的多对端网格流：一个 UDP socket 承载多个对端流（host 侧网格模式）。
 ///
 /// 路由器任务统一收包：
-/// - FRS1 数据帧 → 按来源地址路由到对应对端流（未注册对端的数据帧丢弃，发送方会重传）；
+/// - FRS1 数据帧 → 按来源地址（经别名表解析）路由到对应对端流（未注册对端的数据帧丢弃，发送方会重传）；
 /// - 其他文本数据报（PUNCH/ACK/探测回复）→ 进入事件通道，交由上层打洞编排处理。
 ///
 /// 每个对端流有独立的定时任务（flush/重传/keepalive/存活检测），发送共用同一 socket。
 pub struct UdpMesh {
     socket: Arc<UdpSocket>,
     peers: PeerRegistry,
+    aliases: AliasRegistry,
 }
 
 impl UdpMesh {
@@ -267,18 +274,39 @@ impl UdpMesh {
     ) {
         let socket = Arc::new(socket);
         let peers = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let aliases: AliasRegistry = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let (punch_tx, punch_rx) = tokio::sync::mpsc::unbounded_channel();
         let s = socket.clone();
         let p = peers.clone();
+        let a = aliases.clone();
         tokio::spawn(async move {
-            mesh_router(s, p, punch_tx).await;
+            mesh_router(s, p, a, punch_tx).await;
         });
-        (Self { socket, peers }, punch_rx)
+        (Self {
+            socket,
+            peers,
+            aliases,
+        }, punch_rx)
+    }
+
+    /// 登记别名：`advertised`（对端通告的地址）与 `canonical`（注册流的观察地址）指向同一条流。
+    ///
+    /// 用于打洞信号从多个路径先后到达的场景：无论哪个来源先注册，
+    /// 其余路径的帧都能路由到同一条流；流本身会从收到的帧动态学习发送地址。
+    pub fn map_alias(&self, advertised: SocketAddr, canonical: SocketAddr) {
+        if advertised != canonical {
+            self.aliases.lock().unwrap().insert(advertised, canonical);
+        }
     }
 
     /// 供打洞阶段使用的数据报发送（PUNCH/ACK）。
     pub async fn send(&self, data: &[u8], target: SocketAddr) -> io::Result<usize> {
         self.socket.send_to(data, target).await
+    }
+
+    /// 本网格 socket 的绑定地址。
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.socket.local_addr()
     }
 
     /// 注册一个对端流（直连打洞成功后调用）。同一地址重复注册时先关闭旧流。
@@ -320,6 +348,7 @@ impl UdpMesh {
 async fn mesh_router(
     socket: Arc<UdpSocket>,
     peers: PeerRegistry,
+    aliases: AliasRegistry,
     punch_tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>,
 ) {
     let mut buf = [0u8; 2048];
@@ -328,7 +357,9 @@ async fn mesh_router(
             Ok((len, src)) => {
                 let data = buf[..len].to_vec();
                 if is_data_frame(&data) {
-                    let entry = peers.lock().unwrap().get(&src).cloned();
+                    // 别名解析：帧可能来自对端的任一已知地址（LAN 直达 / NAT 回环）
+                    let canonical = aliases.lock().unwrap().get(&src).copied().unwrap_or(src);
+                    let entry = peers.lock().unwrap().get(&canonical).cloned();
                     if let Some((shared, _)) = entry {
                         handle_incoming(&socket, &shared, &data, Some(src)).await;
                     }
@@ -836,6 +867,40 @@ mod tests {
         b.read_to_end(&mut got).await.unwrap();
         writer.await.unwrap();
         assert_eq!(got, payload);
+    }
+
+    /// 数据帧从对端的"别名"地址（如 NAT 回环映射地址）到达时，也应路由到
+    /// 按"规范地址"（如局域网直达地址）注册的那条流——回归测试：
+    /// 无别名路由时，公网映射来源的帧会被丢弃，造成单通死链。
+    #[tokio::test]
+    async fn mesh_alias_routes_frames_from_other_addr() {
+        let mesh_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (mesh, _punch_rx) = UdpMesh::new(mesh_sock);
+        let peer_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let canonical = peer_sock.local_addr().unwrap(); // LAN 直达来源
+        let alias_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let alias_addr = alias_sock.local_addr().unwrap(); // NAT 回环来源
+
+        let _stream = mesh.add_peer(canonical, None);
+        mesh.map_alias(alias_addr, canonical);
+
+        // 从别名地址发一帧数据 → 应被路由到规范流，且回 ACK 到别名地址
+        // （流从收到的帧动态学习发送地址）
+        let frame = encode_frame(FrameKind::Data, 1, 0, b"hello");
+        alias_sock
+            .send_to(&frame, mesh.local_addr().unwrap())
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 128];
+        let (n, from) = tokio::time::timeout(Duration::from_secs(2), alias_sock.recv_from(&mut buf))
+            .await
+            .expect("no ACK from mesh (alias frame was dropped)")
+            .unwrap();
+        assert_eq!(from, mesh.local_addr().unwrap());
+        let (kind, _seq, ack, _) = parse_frame(&buf[..n]).expect("not an FRS1 frame");
+        assert_eq!(kind, FrameKind::Ack);
+        assert_eq!(ack, 2, "receiver should advance next_expected past seq=1");
     }
 
     #[tokio::test]
