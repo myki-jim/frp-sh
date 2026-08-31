@@ -1706,10 +1706,10 @@ pub async fn guest_session(
                             .await;
                             if let Err(e) = &r {
                                 log::warn!("session ended abnormally: {e}");
-                                // TURN 链路建立过但对端不在通道上（心跳超时等异常）→
-                                // 下一轮跳过 TURN，直走 TCP 中继会师
-                                turn_broke = true;
                             }
+                            // TURN 链路结束（无论 Ok/Err——mesh 数据面断开也返回 Ok）
+                            // 都置位：下一轮跳过 TURN 直走 TCP 中继，与房主会师。
+                            turn_broke = true;
                             if let Some(n) = max_rounds {
                                 if attempt >= n {
                                     return Ok(());
@@ -2154,6 +2154,7 @@ pub async fn host_mesh_session(
             my_ext,
             mesh_port,
             turn_client,
+            cfg,
         )
         .await;
         // 测试用完成条件：达到目标访客数后 mesh_host_loop 正常返回 → 整个会话结束
@@ -2189,12 +2190,17 @@ async fn mesh_host_loop(
     mut current_ext: SocketAddr,
     mesh_local_port: u16,
     mut turn_client: Option<crate::p2p::turn::TurnClient>,
+    cfg: &Config,
 ) -> anyhow::Result<()> {
     let mut pending: HashMap<String, PendingHost> = HashMap::new();
     let mut established: HashMap<String, String> = HashMap::new();
     // TCP 中继已 spawn 但仍在等配对的访客（uuid → 上次 TURN 重试时间）：
     // 等待期间周期性重试 TURN，访客通告 relay 地址后立即切换（UDP 中继延迟更优）
     let mut turn_retry: HashMap<String, Instant> = HashMap::new();
+    // TURN 客户端重建节流（链路建立 take 掉后为后续访客静默补配）
+    let mut turn_rebuild_at = Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .unwrap_or_else(Instant::now);
     // 直连链路的规范对端地址（uuid → 建链时观察到的来源）：后续信号从其他通告地址
     // 到达时登记别名，保证数据帧从任一路径都能路由到同一条流
     let mut established_peer: HashMap<String, SocketAddr> = HashMap::new();
@@ -2437,6 +2443,20 @@ async fn mesh_host_loop(
         // 4.6) TURN 重试：TCP 中继已 spawn 等待配对时，仍每 5s 重试一次 TURN——
         // 访客通告 relay 地址后立即切到 TURN（UDP 中继延迟更优）；TURN 建立后，
         // 迟到的 TCP 中继配对结果会在第 5 节因 pending 已移除而被丢弃。
+        // 另外：TURN 链路建立会 take 掉 turn_client——为后续（重）连访客保留
+        // TURN 逃生能力，客户端为空且距上次尝试 ≥5s 时静默重建一个。
+        if turn_client.is_none() && now.duration_since(turn_rebuild_at) >= Duration::from_secs(5) {
+            turn_rebuild_at = now;
+            let offer = signaling
+                .get_room(room_id)
+                .await
+                .ok()
+                .and_then(|i| i.server_turn);
+            if let Ok(Some(c)) = try_turn_connect_with_offer(cfg, offer).await {
+                log::info!("TURN client re-allocated (relay {})", c.relay);
+                turn_client = Some(c);
+            }
+        }
         if turn_client.is_some() {
             let mut retry: Option<String> = None;
             for (uuid, t) in turn_retry.iter() {
