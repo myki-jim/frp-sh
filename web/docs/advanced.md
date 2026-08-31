@@ -13,7 +13,9 @@ frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565 --key "我们的暗号"
 ```
 
 - 口令不匹配时会话报 `decryption failed (wrong --key?)` 并退出
-- 加密仅作用于 **P2P 直连**数据帧（中继通道为明文中转，见安全说明）
+- `--key` 为端到端加密，作用于 **UDP 数据面**的 FRS1 负载：P2P 直连与 TURN 中继
+  路径都会加密（对端可见明文，服务器不可见）；**私有 TCP 中继**不应用 `--key`，
+  但服务器设了 `--password` 时该通道另有密码级流加密
 - 口令通过命令行传入，注意 shell 历史记录；敏感环境可用 `--config` 之外的方式自行包装
 
 ## 多连接复用
@@ -37,8 +39,28 @@ frp-sh game create --relay
 frp-sh game join game-xxxx --relay
 ```
 
-- 跳过打洞，直接走服务器中继
+- 跳过打洞，直接进中继回退链：**TURN 中继**（配置了 `turn_providers` 时）→ 私有 TCP 中继
 - 适合：已知双方 NAT 无法打洞、需要服务器记录流量、快速验证链路
+
+## 配置 TURN 供应商
+
+打洞失败时默认走私有 TCP 中继；配置 `turn_providers` 后可优先走 **TURN 中继**（UDP，
+标准 RFC 5766，可与 coturn/Cloudflare TURN 等互操作）。在 `config.toml` 中：
+
+```toml
+# 单个供应商（内置 TURN 服务器：serve --turn 0.0.0.0:3478）
+turn_providers = ["turn://frp-sh:你的密码@服务器IP:3478"]
+
+# 多个供应商：并行测速，自动选 RTT 最快者
+turn_providers = [
+  "turn://frp-sh:你的密码@101.43.41.195:3478",   # 自己的 VPS
+  "turn://user:pass@turn.example.com:3478",       # 第三方 TURN
+]
+```
+
+- 打洞失败（含 `--relay`）时顺序尝试：TURN 中继 → 私有 TCP 兜底
+- 无需为每个房间配置，属于全局配置；`frp-sh config` 向导暂不询问 TURN，需手改配置
+- 内置 TURN 的部署方式见[服务器部署](./server.md#内置-turn-中继可选)
 
 ## 打洞散布调优
 

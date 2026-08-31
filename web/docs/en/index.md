@@ -24,7 +24,9 @@ features:
   - title:  End-to-end encryption
     details: A matching --key passphrase enables ChaCha20-Poly1305 transport
   - title:  Relay fallback
-    details: Automatic TCP relay when punching fails; late-direct re-check heals asymmetric cases
+    details: Falls back to TURN relay (optional) or server TCP relay when punching fails; late-direct re-check heals asymmetric cases
+  - title:  Built-in TURN
+    details: serve --turn — the single binary provides standard RFC 5766 TURN; clients auto-pick the best among multiple providers
   - title:  Multi-connection reuse
     details: One session carries sequential TCP connections; reconnect in seconds
   - title:  Single static binary
@@ -33,7 +35,7 @@ features:
 
 ::: warning Development stage (0.x)
 
-frp-sh is currently in **development** (`v0.1.x`): **features and the protocol may
+frp-sh is currently in **development** (`v0.2.x`): **features and the protocol may
 change before 1.0**, and backward compatibility is not promised. Versions ship
 fast — keep up with updates, and if you deploy in production watch update notices
 and big-gap warnings. See the [versioning policy](./versioning).

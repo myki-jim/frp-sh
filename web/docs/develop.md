@@ -9,18 +9,22 @@ src/
 ├── main.rs            # 入口：解析子命令，分发到 commands
 ├── lib.rs             # 库入口（供集成测试引用）
 ├── cli.rs             # clap 子命令定义
-├── commands.rs        # create/join/serve 流程编排（打洞/中继/加密接线）
-├── config.rs          # TOML 配置加载（信令/中继/独立 UDP 探测）
+├── commands.rs        # create/join/serve 流程编排（打洞/TURN/中继/加密接线）
+├── config.rs          # TOML 配置加载（信令/中继/STUN/TURN 供应商）
 ├── error.rs           # thiserror 错误类型（FrpError）
 ├── utils.rs           # 房间号/token/时间戳/校验
 ├── room/state.rs      # 会话状态（角色、对端、中继标记）
 ├── signaling/
-│   ├── client.rs      # REST 客户端 + UDP 公网地址探测
+│   ├── client.rs      # REST 客户端 + STUN/UDP 公网地址探测
 │   └── server.rs      # axum 服务端 + UDP echo + TCP 中继配对
 └── p2p/
     ├── hole_punch.rs  # PUNCH/ACK 同时握手 + 端口散布 + 自我打洞防护
     ├── stream.rs      # FRS1 可靠 UDP 流（窗口/重传/保活/加密）
-    └── relay.rs       # 中继客户端传输
+    ├── stun.rs        # RFC 5389 STUN 编解码（XOR 地址/认证/探测）
+    ├── turn.rs        # RFC 5766 TURN 客户端（Allocate/权限/Send-Data/Refresh）
+    ├── turn_server.rs # 内置 TURN 服务器（serve --turn）
+    ├── relay.rs       # 私有 TCP 中继客户端传输
+    └── tun.rs         # 虚拟网卡组网（MeshPlane 路由）
 tests/e2e.rs           # 进程内信令服务器端到端测试
 config/default.toml    # 默认配置（127.0.0.1）
 docs/                  # 本文档站源码（mdBook）
@@ -42,16 +46,18 @@ cargo run -- game join game-xxxx
 cargo test
 ```
 
-### 单元测试（10 个）
+### 单元测试（28 个）
 
 | 模块 | 覆盖 |
 |------|------|
 | `utils` | 房间号格式、token 长度、前缀清洗 |
-| `config` | 默认值、TOML 解析、缺省字段 |
+| `config` | 默认值、TOML 解析、缺省字段、TURN URL 解析 |
 | `hole_punch` | PUNCH/ACK 报文解析 |
+| `stun` | 消息编解码、XOR 地址（v4/v6）、认证密钥、探测往返 |
+| `turn_server` | MESSAGE-INTEGRITY 校验偏移 |
 | `stream` | 帧编解码、64KB 往返、20% 丢包重传、加密往返、双向优雅关闭 |
 
-### 端到端测试（5 个）
+### 端到端测试（14 个）
 
 测试在**进程内**启动完整信令服务器（HTTP + UDP echo + 中继），跑真实会话：
 
@@ -61,9 +67,20 @@ cargo test
 | `e2e_direct_multiconn` | 同一会话 3 个顺序连接各自 echo |
 | `e2e_direct_encrypted` | `--key` 加密隧道往返 |
 | `e2e_relay_fallback` | 强制中继配对 + 隧道往返 |
+| `e2e_relay_with_server_password_encrypted` | 服务器设密码时中继认证 + 流加密 |
+| `server_auth_rejects_wrong_password` | 错误密码 401 拒绝 |
+| `e2e_turn_builtin_no_auth` | 内置 TURN（无密码）中继往返 |
+| `e2e_turn_builtin_password_auth` | 内置 TURN（密码认证）中继往返 |
+| `e2e_turn_builtin_frs1_stream` | FRS1 可靠流跑在 TURN 上 |
+| `e2e_turn_chain_relay` | 多供应商链：打洞失败 → TURN 中继 |
+| `e2e_mesh_multi_guest_links` | 多访客组网：每访客与房主建链全互联 |
+| `e2e_mesh_relay_pairing` | mesh 中继配对（UUID 键控） |
+| `guest_ip_pool_assigns_stable_ips` | 房主 IP 池分配 + 重连复用稳定地址 |
 | `room_lifecycle_api` | 房间创建/查询/加入/删除 API 生命周期 |
 
-测试服务器使用**独立 UDP 端口**（通过 `signaling_udp` 配置），避免 Windows 上同端口 TCP/UDP 绑定的时序问题。
+另有 `tests/turn_live.rs`（默认 `#[ignore]`）：针对真实 coturn / 公网 STUN 的现场测试（Allocate、权限、relay 往返、FRS1 over TURN），本地需 TURN 服务器时用 `cargo test -- --ignored --test-threads=1` 运行。
+
+测试服务器使用**独立 UDP 端口**（通过 `signaling_udp` 配置），避免 Windows 上同端口 TCP/UDP 绑定的时序问题；并行跑 e2e 时打洞 `spread` 设为 0，防止 127.0.0.1 上的测试互相误打。
 
 ## 设计约定
 

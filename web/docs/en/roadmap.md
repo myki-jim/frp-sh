@@ -16,7 +16,9 @@ The current version focuses on "simple, robust, good enough". Planned capabiliti
 ## Mid term
 
 - [ ] **x25519 key exchange**: automatic per-session key agreement (replacing manual `--key`)
-- [ ] **Encrypted relay**: confidentiality on the relay path too (currently `--key` applies to P2P direct only)
+- [ ] **Encrypted relay path**: end-to-end confidentiality on the private TCP relay path
+  (currently the TCP relay only has password-grade stream encryption; `--key` applies to
+  the UDP data plane: direct and TURN)
 - [ ] **Adaptive transport parameters**: auto-tune window, retransmit interval, and MTU from loss/latency
 
 ## Long term

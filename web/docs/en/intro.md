@@ -18,7 +18,8 @@ frp-sh ships three usage series:
 | **Dev** | `frp-sh dev` | development, application-level port forwarding |
 
 When NAT is too strict and punching fails, traffic automatically falls back to relay
-through the signaling server.
+(preferring standard TURN UDP relay when TURN providers are configured, otherwise the
+signaling server's private TCP relay), so connectivity is preserved.
 
 ## Key Features
 
@@ -27,11 +28,12 @@ through the signaling server.
 | Room-based social networking | A `lan-xxxxxx` code is all a friend needs — no IP configuration |
 | Virtual-NIC mesh | `lan` series: layer-2 tunnel into the peer's whole machine and LAN (Tailscale-like) |
 | Same-LAN direct link | LAN addresses auto-advertised; instant direct link on the same WiFi, no server |
-| UDP hole punching | STUN-lite public probing + simultaneous PUNCH/ACK handshake, works through restricted cone NAT |
+| UDP hole punching | STUN-first public probing + simultaneous PUNCH/ACK handshake, works through restricted cone NAT |
 | Port spread | `--spread` lightweight port prediction to improve symmetric-NAT hit rate |
-| End-to-end encryption | `--key <passphrase>` enables ChaCha20-Poly1305 on both sides |
+| End-to-end encryption | `--key <passphrase>` enables ChaCha20-Poly1305 on both sides (direct and TURN paths) |
 | Multi-connection reuse | One session sequentially carries multiple TCP connections |
-| Relay fallback | Automatic TCP relay when punching fails, plus a late-direct re-check that heals asymmetric cases |
+| Relay fallback | Falls back to TURN relay (optional) or server TCP relay when punching fails, plus a late-direct re-check that heals asymmetric cases |
+| Built-in TURN | `serve --turn` — the single binary provides standard RFC 5766 TURN; clients auto-pick the best among multiple providers |
 | Single binary | No frp / libp2p / webrtc dependencies; everything is self-contained |
 
 ## Use Cases
@@ -69,7 +71,8 @@ sequenceDiagram
     end
     Note over G,H: Direct link → FRS1 reliable stream → CNEW tunnel framing
     alt Punch timeout
-        G->>S: Relay HELLO GUEST
+        G->>S: TURN relay (UDP, when turn_providers configured) or
+        G->>S: Relay HELLO GUEST (private TCP fallback)
         H->>S: Relay HELLO HOST
         S-->>G,H: Paired, server copies both ways
     end
