@@ -16,7 +16,7 @@
 #   $env:FRPSH_SKIP_INIT='1'  skip the interactive config prompt
 $ErrorActionPreference = 'Stop'
 
-# ---- colors ----
+# ---- colors & symbols ----
 $C = @{
   Green  = [char]27 + '[32m'
   Cyan   = [char]27 + '[36m'
@@ -26,11 +26,11 @@ $C = @{
   Bold   = [char]27 + '[1m'
   Reset  = [char]27 + '[0m'
 }
-function Say  { Write-Host "$($C.Green)$args$($C.Reset)" }
-function Info { Write-Host "$($C.Cyan)$args$($C.Reset)" }
-function Warn { Write-Host "$($C.Yellow)$args$($C.Reset)" }
-function Fail { Write-Host "$($C.Red)$args$($C.Reset)"; exit 1 }
-function Step { Write-Host "`n$($C.Bold)$args$($C.Reset)"; Write-Host "$($C.Dim)----------------------------------------$($C.Reset)" }
+function Say  { Write-Host "  $($C.Green)✓ $args$($C.Reset)" }
+function Info { Write-Host "  $($C.Dim)$args$($C.Reset)" }
+function Warn { Write-Host "  $($C.Yellow)⚠ $args$($C.Reset)" }
+function Fail { Write-Host "  $($C.Red)✗ $args$($C.Reset)"; exit 1 }
+function Step { Write-Host "`n  $($C.Bold)$($C.Cyan)→ $args$($C.Reset)" }
 
 # ---- banner ----
 Write-Host "$($C.Green)"
@@ -48,17 +48,16 @@ $exe = Join-Path $destDir 'frp-sh.exe'
 $asset = 'frp-sh-windows-x86_64.exe'
 $bases = @("https://frp.sh/downloads", "https://github.com/$repo/releases/latest/download")
 
-Write-Host "  $($C.Bold)frp-sh installer$($C.Reset)  (windows/x86_64)"
-Write-Host ""
+Write-Host "  $($C.Bold)frp-sh installer$($C.Reset) $($C.Dim)(windows/x86_64)$($C.Reset)"
 
-# ---- 1/3 download ----
-Step '  [1/3] Downloading frp-sh-windows-x86_64.exe'
+# ---- download ----
+Step 'Downloading frp-sh-windows-x86_64.exe'
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 $tmp = Join-Path $destDir 'frp-sh.exe.tmp'
 $downloaded = $false
 foreach ($b in $bases) {
   try {
-    Info "    trying $b/$asset ..."
+    Info "source $b"
     Invoke-WebRequest -Uri "$b/$asset" -OutFile $tmp -UseBasicParsing -ErrorAction Stop
     $downloaded = $true
     break
@@ -67,68 +66,71 @@ foreach ($b in $bases) {
   }
 }
 if (-not $downloaded) {
-  Fail "error: download failed $asset (tried frp.sh and GitHub Releases; check your network)"
+  Fail "download failed $asset (tried frp.sh and GitHub Releases; check your network)"
 }
-Say "    [OK] downloaded $([math]::Round((Get-Item $tmp).Length / 1MB, 1)) MB"
+Say "downloaded $([math]::Round((Get-Item $tmp).Length / 1MB, 1)) MB"
 Move-Item -Force $tmp $exe
 
-# ---- 2/3 install ----
-Step "  [2/3] Installing to $exe"
+# ---- install ----
+Step "Installing to $exe"
 
 # Wintun driver for lan (mesh) mode: put wintun.dll next to the exe
 $dll = Join-Path $destDir 'wintun.dll'
 if (-not (Test-Path $dll)) {
   try {
-    Info '    installing wintun.dll (required for lan mesh mode) ...'
+    Info 'installing wintun.dll (required for lan mesh mode) ...'
     $wz = Join-Path $destDir 'wintun.zip'
     Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $wz -UseBasicParsing -ErrorAction Stop
     Expand-Archive -Path $wz -DestinationPath (Join-Path $destDir '_wintun_tmp') -Force
     Copy-Item (Join-Path $destDir '_wintun_tmp\wintun\bin\amd64\wintun.dll') $dll -Force
     Remove-Item -Recurse -Force (Join-Path $destDir '_wintun_tmp'), $wz -ErrorAction SilentlyContinue
-    Say '    [OK] wintun.dll installed'
+    Say 'wintun.dll installed'
   } catch {
-    Warn '    [WARN] wintun.dll download failed: lan mesh mode unavailable (game/dev forwarding still work)'
+    Warn 'wintun.dll download failed: lan mesh mode unavailable (game/dev forwarding still work)'
   }
 }
 
 $ver = & $exe --version 2>$null | Select-Object -First 1
-Say "    [OK] installed: $exe ($ver)"
+Say "installed $exe ($ver)"
 
 # add to user PATH (if not already there)
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$destDir*") {
   $newPath = if ([string]::IsNullOrEmpty($userPath)) { $destDir } else { "$userPath;$destDir" }
   [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-  Info "    added $destDir to the user PATH (effective in new terminals)"
+  Info "added $destDir to the user PATH (effective in new terminals)"
 }
 
-# ---- 3/3 first-run setup ----
+# ---- first-run setup ----
 $cfgDir = Join-Path $env:APPDATA 'frp-sh'
 $cfg = Join-Path $cfgDir 'config.toml'
 $skipInit = $env:FRPSH_SKIP_INIT -eq '1'
 if (-not (Test-Path $cfg) -and -not $skipInit) {
   try {
-    Step '  [3/3] First-run setup'
-    Write-Host '    Which signaling server should frp-sh use?'
-    Write-Host "    (the public VPS running 'frp-sh serve'; relay is derived as host:8081)"
-    $sig = Read-Host "    $($C.Cyan)Signaling server address$($C.Reset) (e.g. 101.43.41.195:8080) [Enter to skip]"
+    Step 'First-run setup'
+    Write-Host '  Which signaling server should frp-sh use?'
+    Write-Host "  (the public VPS running 'frp-sh serve'; relay is derived as host:8081)"
+    $sig = Read-Host "  $($C.Cyan)Signaling server address$($C.Reset) $($C.Dim)(e.g. 101.43.41.195:8080, Enter to skip)$($C.Reset)"
     if (-not [string]::IsNullOrWhiteSpace($sig)) {
       if ($sig -notmatch '^https?://') { $sig = "http://$sig" }
       $hostOnly = (($sig -replace '^https?://','') -split ':')[0]
       New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
       "signaling_addr = `"$sig`"`nrelay_addr = `"${hostOnly}:8081`"" | Set-Content $cfg -Encoding utf8
-      Say "    [OK] config saved: $cfg"
-      Say '    ready to go. Run frp-sh to get started.'
+      Say "config saved: $cfg"
     } else {
-      Warn "    skipped. Run 'frp-sh config' later to set up your server."
+      Warn "skipped. Run 'frp-sh config' later to set up your server."
     }
   } catch {
-    Warn "    [WARN] interactive setup failed; run 'frp-sh config' manually."
+    Warn "interactive setup failed; run 'frp-sh config' manually."
   }
 } elseif (-not (Test-Path $cfg)) {
-  Info '    (config setup skipped: FRPSH_SKIP_INIT=1)'
+  Info '(config setup skipped: FRPSH_SKIP_INIT=1)'
 }
 
+# ---- done ----
 Write-Host ""
-Say "  All done. Run 'frp-sh --help' to get started."
-Info '  tip: lan mesh mode needs to run as administrator (creates a virtual NIC).'
+Write-Host "  $($C.Bold)$($C.Green)All done.$($C.Reset) Next steps:"
+Write-Host "    $($C.Dim)frp-sh --help$($C.Reset)        see all commands"
+Write-Host "    $($C.Dim)frp-sh lan create$($C.Reset)    host a room (needs admin: creates a virtual NIC)"
+Write-Host "    $($C.Dim)frp-sh lan join 1234$($C.Reset)  join a friend's room"
+Write-Host ""

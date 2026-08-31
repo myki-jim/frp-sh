@@ -86,26 +86,61 @@ fn reconnect_delay(attempt: u64) -> u64 {
     exp.min(8)
 }
 
-// ---------- 输出着色 ----------
+// ---------- 输出着色与排版 ----------
+//
+// 统一符号语言：
+//   ✓ 成功    ⚠ 警告    ✗ 错误    → 步骤    ↳ 提示/建议
+// 状态信息一律走 `kv()`，标签列对齐（冒号在同一列），保证排版整齐。
 
-/// 成功信息（绿色）。
+/// 成功信息：`✓ ...`（绿色）。
 fn ok(msg: impl AsRef<str>) -> String {
-    msg.as_ref().green().to_string()
+    format!("✓ {}", msg.as_ref()).green().to_string()
 }
 
-/// 警告信息（黄色）。
+/// 警告信息：`⚠ ...`（黄色）。
 fn warn(msg: impl AsRef<str>) -> String {
-    msg.as_ref().yellow().to_string()
+    format!("⚠ {}", msg.as_ref()).yellow().to_string()
 }
 
-/// 错误信息（红色）。
+/// 错误信息：`✗ ...`（红色）。
 fn err(msg: impl AsRef<str>) -> String {
-    msg.as_ref().red().to_string()
+    format!("✗ {}", msg.as_ref()).red().to_string()
 }
 
 /// 次要信息（暗色）。
 fn dim(msg: impl AsRef<str>) -> String {
     msg.as_ref().dimmed().to_string()
+}
+
+/// 步骤提示：`→ ...`（青色）。
+fn step(msg: impl AsRef<str>) -> String {
+    format!("→ {}", msg.as_ref()).cyan().to_string()
+}
+
+/// 提示/建议行：`↳ ...`（暗色）。
+fn hint(msg: impl AsRef<str>) -> String {
+    format!("↳ {}", msg.as_ref()).dimmed().to_string()
+}
+
+/// 对齐的键值行：`  {label:<13} {value}`（标签青色，值列对齐）。
+/// 标签先补齐宽度再着色，ANSI 转义不影响列宽计算。
+pub fn kv(label: &str, value: impl std::fmt::Display) -> String {
+    let tag = format!("{:<13}", format!("{}:", label));
+    format!("  {} {}", tag.cyan(), value)
+}
+
+/// 起一个步骤 spinner（`⣾ msg` 动画）。仅作过程动画：结束时用
+/// `finish_and_clear()` 清除本行，随后用 `println!("  {}", ok(..))` 输出结果——
+/// 管道/重定向下 indicatif 自动隐藏，结果行不受影响。
+fn spin(msg: impl Into<String>) -> indicatif::ProgressBar {
+    let pb = indicatif::ProgressBar::new_spinner();
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    pb.set_style(
+        indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .expect("static spinner template"),
+    );
+    pb.set_message(msg.into());
+    pb
 }
 
 // ---------- 权限处理：lan 组网需要管理员/root ----------
@@ -283,9 +318,12 @@ fn relaunch_elevated() -> anyhow::Result<bool> {
 /// 打印直连建立信息，并区分本地局域网直连（同 WiFi/网线）与公网打洞直连。
 fn announce_direct(peer: SocketAddr) {
     if utils::is_local_ip(peer.ip()) {
-        println!(">>> {} with {peer}", ok("LAN direct"));
+        println!("  {}", ok(format!("LAN direct with {peer}")));
     } else {
-        println!(">>> {} with {peer}", ok("P2P direct link established"));
+        println!(
+            "  {}",
+            ok(format!("P2P direct link established with {peer}"))
+        );
     }
 }
 
@@ -313,16 +351,24 @@ async fn run_data_plane(
         // 实际设备名（macOS 为系统分配的 utunN；Linux 为自定义名；Windows 为 wintun 适配器名）
         let real_name = crate::p2p::tun::device_name(&dev).unwrap_or_else(|| dev_name.to_string());
         println!(
-            ">>> virtual NIC mode: IP {} / {} (MTU {}, device {real_name})",
-            o.ip, o.netmask, o.mtu
+            "  {} IP {} / {} (MTU {}, device {real_name})",
+            step("virtual NIC mode"),
+            o.ip,
+            o.netmask,
+            o.mtu
         );
         // Windows：放行虚拟网卡入站流量（否则对端 ping / 访问本机被防火墙拦截）
         match crate::p2p::tun::allow_firewall(&real_name) {
             Ok(()) => {
-                println!("    firewall opened for {real_name} (peer can ping/access this host)")
+                println!(
+                    "    {}",
+                    hint(format!(
+                        "firewall opened for {real_name} (peer can ping/access this host)"
+                    ))
+                )
             }
             Err(e) => {
-                println!("    firewall rule failed (peer may not ping/access this host): {e}")
+                println!("    {}", warn(format!("firewall rule failed: {e}")))
             }
         }
         // macOS：utun 点对点，需显式添加虚拟网段路由，否则对端回包路由失败（ping 不通）
@@ -410,10 +456,10 @@ pub async fn run_serve(
     let relay_listener = TcpListener::bind(&relay_addr).await?;
     let relay_sock: SocketAddr = relay_listener.local_addr()?;
 
-    println!("frp-sh signaling server");
-    println!("  HTTP REST : {http_sock}");
-    println!("  UDP echo  : {}", udp.local_addr()?);
-    println!("  TCP relay : {relay_sock}");
+    println!("{}", step("frp-sh signaling server"));
+    println!("{}", kv("HTTP REST", http_sock));
+    println!("{}", kv("UDP echo", udp.local_addr()?));
+    println!("{}", kv("TCP relay", relay_sock));
     let turn_task = match &turn {
         Some(t) => {
             let srv = crate::p2p::turn_server::TurnServer::start(
@@ -423,19 +469,31 @@ pub async fn run_serve(
                 external_ip,
             )
             .await?;
-            println!("  TURN relay : {t} (RFC 5766, built-in)");
+            println!("{}", kv("TURN relay", format!("{t} (RFC 5766, built-in)")));
             Some(tokio::spawn(async move { srv.run().await }))
         }
         None => {
-            println!("  TURN relay : disabled (use --turn 0.0.0.0:3478 to enable)");
+            println!(
+                "{}",
+                kv(
+                    "TURN relay",
+                    dim("disabled (use --turn 0.0.0.0:3478 to enable)")
+                )
+            );
             None
         }
     };
     match &password {
-        Some(_) => println!("  Auth       : enabled (--password) — clients must set the same password; relay traffic encrypted"),
-        None => println!("  Auth       : disabled (no password)"),
+        Some(_) => println!(
+            "{}",
+            kv(
+                "Auth",
+                "enabled — clients must set the same password; relay traffic encrypted"
+            )
+        ),
+        None => println!("{}", kv("Auth", dim("disabled (no password)"))),
     }
-    println!("  (Ctrl-C to stop)");
+    println!("  {}", dim("(Ctrl-C to stop)"));
 
     let state = server::new_state();
     // 对客户端通告的内置 TURN 公网地址：仅在 `--turn` 且启用密码认证时下发。
@@ -604,21 +662,37 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         })?,
     };
     cfg.save(&path)?;
-    println!("\n  {}: {}", ok("config saved"), path.display());
-    println!("    signaling server: {}", cfg.signaling_addr);
-    println!("    relay server: {}", cfg.relay_addr);
+    println!(
+        "\n  {} {}",
+        ok("config saved"),
+        dim(path.display().to_string())
+    );
+    println!("{}", kv("Signaling", cfg.signaling_addr.clone()));
+    println!("{}", kv("Relay", cfg.relay_addr.clone()));
     if let Some(u) = &cfg.signaling_udp {
-        println!("    UDP probe   : {u}");
+        println!("{}", kv("UDP probe", u));
     }
     if cfg.password.is_some() {
-        println!("    password    : configured (requests authenticated, relay encrypted)");
+        println!(
+            "{}",
+            kv(
+                "Password",
+                "configured (requests authenticated, relay encrypted)"
+            )
+        );
     }
     if let Some(s) = &cfg.stun_addr {
-        println!("    STUN        : {s} (public-address learning via STUN first)");
+        println!(
+            "{}",
+            kv(
+                "STUN",
+                format!("{s} (public-address learning via STUN first)")
+            )
+        );
     }
 
     // 软连通性检查（不阻塞）
-    println!("\n  checking server connectivity ...");
+    println!("\n  {}", step("checking server connectivity ..."));
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()?;
@@ -628,19 +702,21 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         .await
     {
         Ok(r) if r.status().is_success() => {
-            println!("  {} signaling server reachable", ok("[OK]"));
+            println!("  {}", ok("signaling server reachable"));
         }
-        Ok(_) => println!("  {} server returned an abnormal status", warn("[WARN]")),
+        Ok(_) => println!("  {}", warn("server returned an abnormal status")),
         Err(_) => println!(
-            "  {} cannot reach the signaling server (check the address and firewall; run frp-sh config again later)",
-            warn("[WARN]")
+            "  {} {}",
+            warn("cannot reach the signaling server"),
+            dim("(check the address and firewall; run frp-sh config again later)")
         ),
     }
 
-    println!("\n  next steps:");
-    println!("    frp-sh game create             # host: create a room");
-    println!("    frp-sh game join game-xxxxxx   # guest: join a room");
-    println!("  re-configure: frp-sh config\n");
+    println!("\n  {}", step("next steps"));
+    println!("    {}  host: create a room", dim("frp-sh game create"));
+    println!("    {}  guest: join a room", dim("frp-sh game join 1234"));
+    println!("    {}", dim("frp-sh config  (re-configure)"));
+    println!();
     Ok(())
 }
 
@@ -654,61 +730,53 @@ async fn check_server_protocol(signaling: &SignalingClient) -> anyhow::Result<()
     match signaling.get_version().await {
         Ok(Some((server_ver, server_proto, auth))) => {
             if server_proto != crate::version::PROTOCOL_VERSION {
-                return Err(anyhow::anyhow!(
-                    "{} {}",
-                    err("[error]"),
-                    err(format!(
-                        "version conflict: server v{server_ver} (protocol v{server_proto}), \
-                         local v{} (protocol v{}). Please upgrade frp-sh or the server.",
-                        crate::version::VERSION,
-                        crate::version::PROTOCOL_VERSION
-                    ))
-                ));
+                return Err(anyhow::anyhow!(err(format!(
+                    "version conflict: server v{server_ver} (protocol v{server_proto}), \
+                     local v{} (protocol v{}). Please upgrade frp-sh or the server.",
+                    crate::version::VERSION,
+                    crate::version::PROTOCOL_VERSION
+                ))));
             }
             if server_ver != crate::version::VERSION {
                 println!(
-                    "  {} server v{server_ver} differs from local v{} ({} compatible)",
-                    warn("[warn]"),
-                    crate::version::VERSION,
-                    dim("protocol")
+                    "  {}",
+                    warn(format!(
+                        "server v{server_ver} differs from local v{} (protocol compatible)",
+                        crate::version::VERSION
+                    ))
                 );
             } else {
                 println!(
-                    "  Server version: v{server_ver} ({})",
-                    dim(format!("protocol v{server_proto}"))
+                    "{}",
+                    kv(
+                        "Server",
+                        format!(
+                            "v{server_ver} ({})",
+                            dim(format!("protocol v{server_proto}"))
+                        )
+                    )
                 );
             }
             if auth {
                 if signaling.has_password() {
                     println!(
-                        "  {} server requires a password — {}",
-                        ok("[OK]"),
-                        dim("authenticated")
+                        "{}",
+                        kv("Auth", ok("server requires a password — authenticated"))
                     );
                 } else {
-                    return Err(anyhow::anyhow!(
-                        "{} {}",
-                        err("[error]"),
-                        err(
-                            "server requires a password (configure 'password' in config, or run `frp-sh config`)"
-                        )
-                    ));
+                    return Err(anyhow::anyhow!(err(
+                        "server requires a password (configure 'password' in config, or run `frp-sh config`)"
+                    )));
                 }
             }
         }
         Ok(None) => {
-            println!(
-                "  Server version: {} ({})",
-                dim("legacy"),
-                dim("protocol v1 assumed")
-            );
+            println!("{}", kv("Server", dim("legacy (protocol v1 assumed)")));
         }
         Err(e) => {
-            return Err(anyhow::anyhow!(
-                "{} {}",
-                err("[error]"),
-                err(format!("cannot reach signaling server: {e}"))
-            ));
+            return Err(anyhow::anyhow!(err(format!(
+                "cannot reach signaling server: {e}"
+            ))));
         }
     }
     Ok(())
@@ -721,18 +789,21 @@ fn show_host_version(host_version: &str) {
     }
     let local = crate::version::VERSION;
     if host_version == local {
-        println!("  Host version  : v{host_version}");
+        println!("{}", kv("Host version", format!("v{host_version}")));
     } else if crate::version::is_breaking_gap(local, host_version) {
         println!(
-            "  {} host v{host_version} vs local v{local} ({})",
-            warn("[warn]"),
-            err("possible conflict, please align versions")
+            "  {}",
+            warn(format!(
+                "host v{host_version} vs local v{local} (possible conflict, please align versions)"
+            ))
         );
     } else {
         println!(
-            "  {} host v{host_version} vs local v{local} ({})",
-            warn("[warn]"),
-            dim("compatible")
+            "  {}",
+            warn(format!(
+                "host v{host_version} vs local v{local} ({})",
+                dim("compatible")
+            ))
         );
     }
 }
@@ -762,6 +833,7 @@ async fn try_turn_connect(cfg: &Config) -> anyhow::Result<Option<crate::p2p::tur
     if creds.is_empty() {
         return Ok(None);
     }
+    let turn_sp = spin("allocating TURN relay ...");
     let mut handles = Vec::new();
     for cred in creds {
         handles.push(tokio::spawn(async move {
@@ -790,6 +862,7 @@ async fn try_turn_connect(cfg: &Config) -> anyhow::Result<Option<crate::p2p::tur
             }
         }
     }
+    turn_sp.finish_and_clear();
     if let Some((dt, _)) = &best {
         log::info!("best TURN provider selected in {dt:?}");
     }
@@ -823,7 +896,10 @@ async fn try_turn_connect_with_offer(
         password: password.to_string(),
     };
     let sock = UdpSocket::bind("0.0.0.0:0").await?;
-    match crate::p2p::turn::TurnClient::connect(sock, &cred).await {
+    let offer_sp = spin(format!("allocating TURN relay at {addr} ..."));
+    let result = crate::p2p::turn::TurnClient::connect(sock, &cred).await;
+    offer_sp.finish_and_clear();
+    match result {
         Ok(c) => {
             log::info!("using server-provided TURN at {addr} (relay {})", c.relay);
             Ok(Some(c))
@@ -875,6 +951,7 @@ pub async fn run_create(
     check_server_protocol(&signaling).await?;
     let engine = PunchEngine::bind().await?;
     let token = utils::rand_token();
+    let probe_sp = spin("probing public address ...");
     let my_ext = signaling
         .learn_public_addr_auto(
             engine.socket(),
@@ -883,6 +960,7 @@ pub async fn run_create(
             cfg.stun_addr_opt().ok().flatten(),
         )
         .await?;
+    probe_sp.finish_and_clear();
     log::info!("public address: {my_ext}");
     let tun_ip = tun.as_ref().map(|t| t.ip.clone());
     let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
@@ -906,41 +984,53 @@ pub async fn run_create(
         )
         .await?;
     let room_id = resp.room_id.clone();
-    println!("\n  {} : {room_id}", ok("Room created"));
-    println!("  Signaling    : {}", cfg.signaling_addr);
+    println!("\n  {}", ok(format!("Room created : {room_id}")));
+    println!("{}", kv("Signaling", cfg.signaling_addr.clone()));
     if let Some(u) = &cfg.uuid {
-        println!("  Your ID      : {u}");
+        println!("{}", kv("Your ID", u));
     }
     let lan_list: Vec<String> = lan_addrs.iter().map(|a| a.to_string()).collect();
     if !lan_list.is_empty() {
-        println!("  LAN addrs    : {}", lan_list.join(", "));
+        println!("{}", kv("LAN addrs", lan_list.join(", ")));
     }
     if let Some(t) = &tun {
         println!(
-            "  Vnet IP      : {} (peer can ping/connect directly to this IP)",
-            t.ip
+            "{}",
+            kv(
+                "Vnet IP",
+                format!("{} (peer can ping/connect directly to this IP)", t.ip)
+            )
         );
-        println!("  Mode         : LAN mesh (virtual NIC)");
+        println!("{}", kv("Mode", "LAN mesh (virtual NIC)"));
         if !lan_subnets.is_empty() {
             println!(
-                "  LAN subnets  : {} (--expose-lan: accessible by guest)",
-                lan_subnets.join(", ")
+                "{}",
+                kv(
+                    "LAN subnets",
+                    format!(
+                        "{} (--expose-lan: accessible by guest)",
+                        lan_subnets.join(", ")
+                    )
+                )
             );
         }
         if !guest_ips.is_empty() {
             println!(
-                "  Guest IPs    : {} (assigned in join order)",
-                guest_ips.join(", ")
+                "{}",
+                kv(
+                    "Guest IPs",
+                    format!("{} (assigned in join order)", guest_ips.join(", "))
+                )
             );
         }
     } else {
-        println!("  Local service: {service}");
-        println!("  Mode         : port forwarding");
+        println!("{}", kv("Local service", service.clone()));
+        println!("{}", kv("Mode", "port forwarding"));
     }
     if key.is_some() {
-        println!("  Encryption   : on (--key)");
+        println!("{}", kv("Encryption", "on (--key)"));
     }
-    println!("  Waiting for a guest to join ...\n");
+    println!("\n  {}", dim("Waiting for a guest to join ..."));
 
     let session = host_session(
         &cfg,
@@ -1012,7 +1102,7 @@ pub async fn host_session(
         if attempt > 1 {
             let wait = reconnect_delay(attempt);
             println!(
-                "\n>>> {} ...",
+                "\n  {}",
                 warn(format!(
                     "connection lost, reconnecting in {wait} seconds (Ctrl-C to exit)"
                 ))
@@ -1022,6 +1112,7 @@ pub async fn host_session(
         // 每次（重）连接绑定新 socket 并刷新公网地址（NAT 映射可能已过期）
         let engine = PunchEngine::bind().await?;
         let token = utils::rand_token();
+        let probe_sp = spin("probing public address ...");
         let my_ext = signaling
             .learn_public_addr_auto(
                 engine.socket(),
@@ -1030,6 +1121,7 @@ pub async fn host_session(
                 cfg.stun_addr_opt().ok().flatten(),
             )
             .await?;
+        probe_sp.finish_and_clear();
         log::info!("public address: {my_ext}");
         let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
         // 默认不暴露本地局域网；仅 --expose-lan 时通告子网
@@ -1058,15 +1150,17 @@ pub async fn host_session(
             return Err(e.into());
         }
 
-        let outcome =
-            match host_punch_phase(&engine, &signaling, room_id, &token, force_relay, spread).await
-            {
-                Ok(o) => o,
-                Err(e) => {
-                    log::warn!("punch phase error: {e}");
-                    continue;
-                }
-            };
+        let punch_sp = spin("punching to guest ...");
+        let punch_result =
+            host_punch_phase(&engine, &signaling, room_id, &token, force_relay, spread).await;
+        punch_sp.finish_and_clear();
+        let outcome = match punch_result {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("punch phase error: {e}");
+                continue;
+            }
+        };
         // 访客若 --expose-lan，取其通告的局域网子网（房主据此加路由访问访客局域网）
         let guest_subnets: Vec<String> = signaling
             .get_room(room_id)
@@ -1109,10 +1203,7 @@ pub async fn host_session(
                     None
                 };
                 if let (Some(tc), Some(gr)) = (turn_client.take(), guest_relay) {
-                    println!(
-                        ">>> {} ...",
-                        warn("UDP hole punching failed, trying TURN relay")
-                    );
+                    println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, gr, key_bytes).await {
                         Ok(stream) => {
                             let r = run_data_plane(
@@ -1139,7 +1230,7 @@ pub async fn host_session(
                     }
                 }
                 println!(
-                    ">>> {} ...",
+                    "  {}",
                     warn("UDP hole punching failed, falling back to relay")
                 );
                 let relay_addr = match cfg.relay_addr.parse() {
@@ -1167,7 +1258,7 @@ pub async fn host_session(
                         continue;
                     }
                 };
-                println!(">>> {} ...", warn("relay connected, waiting for guest"));
+                println!("  {}", ok("relay connected, waiting for guest"));
                 run_data_plane(
                     stream,
                     tun.as_ref(),
@@ -1183,7 +1274,7 @@ pub async fn host_session(
         if let Err(e) = run_result {
             log::warn!("session ended abnormally: {e}");
         } else {
-            println!(">>> session ended, preparing to reconnect ...");
+            println!("\n  {}", warn("session ended, preparing to reconnect ..."));
         }
         if let Some(n) = max_rounds {
             if attempt >= n {
@@ -1331,12 +1422,18 @@ pub async fn run_join(
         anyhow::bail!("invalid room id: {room_id} (expected format like game-a3f9c2)");
     }
     if let Some(u) = &cfg.uuid {
-        println!("  Your ID      : {u}");
+        println!("{}", kv("Your ID", u));
     }
     if let Some(t) = &tun {
         println!(
-            "  Vnet IP      : {} (mesh virtual IP, friends can connect directly to your whole machine)",
-            t.ip
+            "{}",
+            kv(
+                "Vnet IP",
+                format!(
+                    "{} (mesh virtual IP, friends can connect directly to your whole machine)",
+                    t.ip
+                )
+            )
         );
     }
     let session = guest_session(
@@ -1402,7 +1499,7 @@ pub async fn guest_session(
         if !first {
             let wait = reconnect_delay(attempt);
             println!(
-                "\n>>> {} ...",
+                "\n  {}",
                 warn(format!(
                     "connection lost, reconnecting in {wait} seconds (Ctrl-C to exit)"
                 ))
@@ -1457,6 +1554,7 @@ pub async fn guest_session(
 
         // 刷新本机公网地址并登记（NAT 映射可能已过期）
         let token = utils::rand_token();
+        let probe_sp = spin("probing public address ...");
         let my_ext = match signaling
             .learn_public_addr_auto(
                 engine.socket(),
@@ -1468,10 +1566,12 @@ pub async fn guest_session(
         {
             Ok(a) => a,
             Err(e) => {
+                probe_sp.finish_and_clear();
                 log::warn!("public address probe failed: {e}");
                 continue;
             }
         };
+        probe_sp.finish_and_clear();
         let my_lan = utils::lan_socket_addrs(engine.local_addr()?.port());
         // 默认不暴露本地局域网；仅 --expose-lan 时通告子网
         let guest_subnets = if expose_lan {
@@ -1506,32 +1606,32 @@ pub async fn guest_session(
             .await
         {
             Ok(join) => {
-                println!("\n  Joined room : {}", ok(&join.room_id));
-                println!("  Host address: {}", join.host_addr);
+                println!("\n  {}", ok(format!("Joined room : {}", join.room_id)));
+                println!("{}", kv("Host address", join.host_addr));
                 if let Some(ip) = &host_tun_ip {
-                    println!("  Host vnet IP: {ip}");
+                    println!("{}", kv("Host vnet IP", ip));
                 }
                 show_host_version(&info.host_version);
                 // 服务器从房主预留 IP 池分配虚拟 IP（访客未指定 --ip 时）
                 if let (Some(t), Some(ip)) = (tun.as_mut(), &join.assigned_ip) {
                     if t.ip != *ip {
-                        println!("  Assigned IP  : {ip} (host-assigned)");
+                        println!("{}", kv("Assigned IP", format!("{ip} (host-assigned)")));
                         t.ip = ip.clone();
                     }
                 }
                 if !info.host_subnets.is_empty() {
-                    println!("  Host LAN     : {}", info.host_subnets.join(", "));
+                    println!("{}", kv("Host LAN", info.host_subnets.join(", ")));
                 }
                 if tun.is_some() {
-                    println!("  Mode         : LAN mesh (virtual NIC)");
+                    println!("{}", kv("Mode", "LAN mesh (virtual NIC)"));
                 } else {
-                    println!("  Local listen: {listen}");
-                    println!("  Mode         : port forwarding");
+                    println!("{}", kv("Local listen", listen.clone()));
+                    println!("{}", kv("Mode", "port forwarding"));
                 }
                 if key.is_some() {
-                    println!("  Encryption   : on (--key)");
+                    println!("{}", kv("Encryption", "on (--key)"));
                 }
-                println!("  Punching through NAT ...\n");
+                println!("\n  {}", dim("Punching through NAT ..."));
             }
             Err(e) => {
                 log::warn!("failed to join room: {e}");
@@ -1539,7 +1639,8 @@ pub async fn guest_session(
             }
         }
 
-        let outcome = match guest_punch_phase(
+        let punch_sp = spin("punching to host ...");
+        let punch_result = guest_punch_phase(
             &engine,
             &signaling,
             room_id,
@@ -1547,8 +1648,9 @@ pub async fn guest_session(
             force_relay || direct_broke,
             spread,
         )
-        .await
-        {
+        .await;
+        punch_sp.finish_and_clear();
+        let outcome = match punch_result {
             Ok(o) => o,
             Err(e) => {
                 log::warn!("punch phase error: {e}");
@@ -1593,10 +1695,7 @@ pub async fn guest_session(
                     None
                 };
                 if let (Some(tc), Some(hr)) = (turn_client.take(), host_relay) {
-                    println!(
-                        ">>> {} ...",
-                        warn("UDP hole punching failed, trying TURN relay")
-                    );
+                    println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, hr, key_bytes).await {
                         Ok(stream) => {
                             let r = run_data_plane(
@@ -1623,7 +1722,7 @@ pub async fn guest_session(
                     }
                 }
                 // 2) 私有 TCP 中继（现状）
-                println!(">>> {} ...", warn("UDP hole punching failed, trying relay"));
+                println!("  {}", warn("UDP hole punching failed, trying relay"));
                 let relay_addr = match cfg.relay_addr.parse() {
                     Ok(a) => a,
                     Err(e) => {
@@ -1657,7 +1756,7 @@ pub async fn guest_session(
                 };
                 if force_relay {
                     // 强制中继：不再尝试任何打洞
-                    println!(">>> {} ...", warn("relay connected, waiting for host"));
+                    println!("  {}", ok("relay connected, waiting for host"));
                     run_data_plane(
                         stream,
                         tun.as_ref(),
@@ -1687,7 +1786,7 @@ pub async fn guest_session(
                             .await
                         }
                         _ => {
-                            println!(">>> {} ...", warn("relay connected, waiting for host"));
+                            println!("  {}", ok("relay connected, waiting for host"));
                             run_data_plane(
                                 stream,
                                 tun.as_ref(),
@@ -1706,7 +1805,7 @@ pub async fn guest_session(
         if let Err(e) = run_result {
             log::warn!("session ended abnormally: {e}");
         } else {
-            println!(">>> session ended, preparing to reconnect ...");
+            println!("\n  {}", warn("session ended, preparing to reconnect ..."));
         }
         if let Some(n) = max_rounds {
             if attempt >= n {
@@ -1944,15 +2043,23 @@ pub async fn host_mesh_session(
         })?;
         real_name = crate::p2p::tun::device_name(&dev).unwrap_or_else(|| "frp0".to_string());
         println!(
-            ">>> virtual NIC mode: IP {} / {} (MTU {}, device {real_name})",
-            t.ip, t.netmask, t.mtu
+            "  {} IP {} / {} (MTU {}, device {real_name})",
+            step("virtual NIC mode"),
+            t.ip,
+            t.netmask,
+            t.mtu
         );
         match crate::p2p::tun::allow_firewall(&real_name) {
             Ok(()) => {
-                println!("    firewall opened for {real_name} (peer can ping/access this host)")
+                println!(
+                    "    {}",
+                    hint(format!(
+                        "firewall opened for {real_name} (peer can ping/access this host)"
+                    ))
+                )
             }
             Err(e) => {
-                println!("    firewall rule failed (peer may not ping/access this host): {e}")
+                println!("    {}", warn(format!("firewall rule failed: {e}")))
             }
         }
         if let Some(cidr) = utils::cidr_from_ip_netmask(&t.ip, &t.netmask) {
@@ -1978,7 +2085,7 @@ pub async fn host_mesh_session(
         if attempt > 1 {
             let wait = reconnect_delay(attempt);
             println!(
-                "\n>>> {} ...",
+                "\n  {}",
                 warn(format!(
                     "connection lost, reconnecting in {wait} seconds (Ctrl-C to exit)"
                 ))
@@ -1987,6 +2094,7 @@ pub async fn host_mesh_session(
         }
         let engine = PunchEngine::bind().await?;
         let token = utils::rand_token();
+        let probe_sp = spin("probing public address ...");
         let my_ext = signaling
             .learn_public_addr_auto(
                 engine.socket(),
@@ -1995,6 +2103,7 @@ pub async fn host_mesh_session(
                 cfg.stun_addr_opt().ok().flatten(),
             )
             .await?;
+        probe_sp.finish_and_clear();
         log::info!("public address: {my_ext}");
         let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
         let lan_subnets = if expose_lan {
@@ -2285,10 +2394,7 @@ async fn mesh_host_loop(
             }
             if let Some(gr) = gr {
                 if let Some(tc) = turn_client.take() {
-                    println!(
-                        ">>> {} ...",
-                        warn("UDP hole punching failed, trying TURN relay")
-                    );
+                    println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, gr, key_bytes).await {
                         Ok(stream) => {
                             if let Some(p) = pending.remove(&uuid) {
