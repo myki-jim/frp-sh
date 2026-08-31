@@ -135,6 +135,9 @@ struct Shared {
     stats: Option<Arc<crate::stats::StreamStats>>,
     /// 发送时间戳（seq → Instant）：Ack 抵达时计算 RTT
     sent_at: HashMap<u32, Instant>,
+    /// keepalive ping（带 "p" 负载的 Ack 帧）发出时刻：对端 pong 抵达时计算 RTT，
+    /// 使空闲链路（无数据帧）也有 RTT 采样
+    ping_sent: Option<Instant>,
     /// 测试用：数据帧首发丢包率（重传不受影响，保证最终可达）
     #[cfg(test)]
     loss_rate: f64,
@@ -192,6 +195,7 @@ fn make_shared(peer: SocketAddr, key: Option<[u8; 32]>, had_rx: bool) -> Shared 
         cipher,
         stats: None,
         sent_at: HashMap::new(),
+        ping_sent: None,
         #[cfg(test)]
         loss_rate: 0.0,
     }
@@ -549,9 +553,19 @@ async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
             if let Some(st) = st {
                 for s in &confirmed {
                     if let Some(t) = g.sent_at.remove(s) {
-                        let ms = t.elapsed().as_millis() as u32;
-                        if ms > 0 && ms < 60_000 {
-                            st.on_rtt(ms);
+                        // 微秒精度：回环/局域网直连延迟亚毫秒，毫秒粒度会恒为 0
+                        let us = t.elapsed().as_micros() as u32;
+                        if us > 0 && us < 60_000_000 {
+                            st.on_rtt(us);
+                        }
+                    }
+                }
+                // 数据帧确认缺失时用 keepalive ping 往返兜底（空闲链路 RTT）
+                if confirmed.is_empty() {
+                    if let Some(t) = g.ping_sent.take() {
+                        let us = t.elapsed().as_micros() as u32;
+                        if us > 0 && us < 60_000_000 {
+                            st.on_rtt(us);
                         }
                     }
                 }
@@ -606,7 +620,18 @@ async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
                     &[],
                 ));
             }
-            FrameKind::Ack => {}
+            FrameKind::Ack => {
+                // keepalive ping（带 "p" 负载）→ 回 pong（空 Ack 帧）。
+                // 旧对端忽略该负载，协议兼容；空 Ack 不会再次触发回复，无风暴。
+                if payload == b"p" {
+                    reply = Some(encode_frame(
+                        FrameKind::Ack,
+                        g.next_seq,
+                        g.next_expected,
+                        &[],
+                    ));
+                }
+            }
         }
         reply
     };
@@ -759,12 +784,14 @@ async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
         return;
     }
 
-    // keepalive：空闲时发送 ACK 帧维持 NAT 映射
+    // keepalive：空闲时发送 ACK 帧维持 NAT 映射；带 "p" 负载请求对端 pong，
+    // 使面板在无数据传输时也能采样 RTT（对端旧版本忽略负载，兼容）
     if now.duration_since(*last_tx) >= Duration::from_millis(KEEPALIVE_MS) {
         let (frame, peer, st) = {
-            let g = shared.lock().unwrap();
+            let mut g = shared.lock().unwrap();
+            g.ping_sent = Some(Instant::now());
             (
-                encode_frame(FrameKind::Ack, g.next_seq, g.next_expected, &[]),
+                encode_frame(FrameKind::Ack, g.next_seq, g.next_expected, b"p"),
                 g.peer,
                 g.stats.clone(),
             )
