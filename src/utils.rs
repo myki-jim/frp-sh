@@ -1,7 +1,70 @@
-//! 通用辅助函数：随机数、房间号、时间戳、本机局域网信息等。
+//! 通用辅助函数：随机数、房间号、时间戳、本机局域网信息、终端表格等。
 
+use colored::Colorize;
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+/// 计算含 ANSI 色码字符串的可见宽度（跳过 `ESC[...m` 序列）。
+fn visible_width(s: &str) -> usize {
+    let mut w = 0;
+    let mut in_esc = false;
+    for c in s.chars() {
+        if in_esc {
+            if c == 'm' {
+                in_esc = false;
+            }
+        } else if c == '\x1b' {
+            in_esc = true;
+        } else {
+            w += 1;
+        }
+    }
+    w
+}
+
+/// 两列带框表格（box-drawing）：标签列青色，值列按可见宽度对齐。
+///
+/// 值可以包含 ANSI 色码（如 `✓` 绿色符号），对齐按可见宽度计算不受影响。
+/// 输出形如：
+///
+/// ```text
+///   ┌────────────┬──────────────────────────────┐
+///   │ Signaling  │ http://101.43.41.195:8080    │
+///   │ Relay      │ 101.43.41.195:8081           │
+///   └────────────┴──────────────────────────────┘
+/// ```
+pub fn kv_table(rows: &[(&str, String)]) -> String {
+    let lw = rows
+        .iter()
+        .map(|(l, _)| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let vw = rows
+        .iter()
+        .map(|(_, v)| visible_width(v))
+        .max()
+        .unwrap_or(0);
+    let rule = |l: char, m: char, r: char| {
+        format!(
+            "  {}{}{}{}{}",
+            l,
+            "─".repeat(lw + 2),
+            m,
+            "─".repeat(vw + 2),
+            r
+        )
+    };
+    let mut out = String::new();
+    out.push_str(&rule('┌', '┬', '┐'));
+    out.push('\n');
+    for (l, v) in rows {
+        let pad = " ".repeat(vw.saturating_sub(visible_width(v)));
+        let label = format!("{:<width$}", l, width = lw);
+        out.push_str(&format!("  │ {} │ {}{} │\n", label.cyan(), v, pad));
+    }
+    out.push_str(&rule('└', '┴', '┘'));
+    out
+}
 
 /// 生成 `n` 字节随机数并编码为十六进制字符串（2n 位）。
 pub fn random_hex(n: usize) -> String {
@@ -256,6 +319,20 @@ mod tests {
         assert!(cidrs_overlap("10.66.0.0/24", "10.66.0.5/32"));
         assert!(!cidrs_overlap("192.168.1.0/24", "192.168.2.0/24"));
         assert!(!cidrs_overlap("10.66.0.0/24", "10.66.1.0/24"));
+    }
+
+    #[test]
+    fn kv_table_layout() {
+        // 带色码的值（✓ 绿色）宽度按可见字符计算，所有行等宽
+        let t = kv_table(&[
+            ("Signaling", "http://x:8080".into()),
+            ("Auth", format!("{} ok", "\x1b[32m✓\x1b[0m")),
+        ]);
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(lines.len(), 4); // 上边线 + 2 行 + 下边线
+        let widths: Vec<usize> = lines.iter().map(|l| visible_width(l)).collect();
+        assert!(widths.iter().all(|&w| w == widths[0]));
+        assert!(t.contains('┌') && t.contains('┬') && t.contains('│'));
     }
 
     #[test]
