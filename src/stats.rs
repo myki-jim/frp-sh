@@ -38,9 +38,9 @@ pub struct StreamStats {
     pub sent_bytes: AtomicU64,
     pub recv_frames: AtomicU64,
     pub recv_bytes: AtomicU64,
-    /// 最近一次心跳往返（毫秒）
+    /// 最近一次 RTT 采样（**微秒**；回环直连亚毫秒，毫秒精度会全变 0）
     pub rtt_last: AtomicU32,
-    /// RTT 指数移动平均（毫秒，α≈0.3）
+    /// RTT 指数移动平均（微秒，α≈0.3）
     pub rtt_ewma: AtomicU32,
 }
 
@@ -63,15 +63,15 @@ impl StreamStats {
         self.recv_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-    /// 记录一次 RTT 采样（毫秒）并更新 EWMA。
-    pub fn on_rtt(&self, ms: u32) {
-        self.rtt_last.store(ms, Ordering::Relaxed);
+    /// 记录一次 RTT 采样（微秒）并更新 EWMA。
+    pub fn on_rtt(&self, us: u32) {
+        self.rtt_last.store(us, Ordering::Relaxed);
         let prev = self.rtt_ewma.load(Ordering::Relaxed);
         let ewma = if prev == 0 {
-            ms
+            us
         } else {
-            // ewma = 0.7*prev + 0.3*ms
-            (prev.saturating_mul(7).saturating_add(ms.saturating_mul(3))) / 10
+            // ewma = 0.7*prev + 0.3*us
+            (prev.saturating_mul(7).saturating_add(us.saturating_mul(3))) / 10
         };
         self.rtt_ewma.store(ewma, Ordering::Relaxed);
     }
@@ -200,7 +200,7 @@ pub fn info_snapshot() -> SessionInfo {
 /// 收发速率（字节/秒）：由快照间隔与字节数差在前端计算，这里不维护历史。
 pub type LinkRow = (String, String, i64, u64, u64, u32, u32);
 
-/// 供 JSON 序列化的链路快照（带 bps 由前端采样差值计算）。
+/// 供 JSON 序列化的链路快照（rtt_* 输出为毫秒浮点；bps 由前端采样差值计算）。
 pub fn links_json() -> Vec<serde_json::Map<String, serde_json::Value>> {
     links_snapshot()
         .into_iter()
@@ -211,8 +211,14 @@ pub fn links_json() -> Vec<serde_json::Map<String, serde_json::Value>> {
             m.insert("since".into(), serde_json::json!(since));
             m.insert("sent_bytes".into(), serde_json::json!(sent));
             m.insert("recv_bytes".into(), serde_json::json!(recv));
-            m.insert("rtt_last".into(), serde_json::json!(rtt_last));
-            m.insert("rtt_ewma".into(), serde_json::json!(rtt_ewma));
+            m.insert(
+                "rtt_last".into(),
+                serde_json::json!((rtt_last as f64 / 1000.0 * 10.0).round() / 10.0),
+            );
+            m.insert(
+                "rtt_ewma".into(),
+                serde_json::json!((rtt_ewma as f64 / 1000.0 * 10.0).round() / 10.0),
+            );
             m
         })
         .collect()
