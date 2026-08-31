@@ -289,11 +289,14 @@ impl UdpMesh {
         tokio::spawn(async move {
             mesh_router(s, p, a, punch_tx).await;
         });
-        (Self {
-            socket,
-            peers,
-            aliases,
-        }, punch_rx)
+        (
+            Self {
+                socket,
+                peers,
+                aliases,
+            },
+            punch_rx,
+        )
     }
 
     /// 登记别名：`advertised`（对端通告的地址）与 `canonical`（注册流的观察地址）指向同一条流。
@@ -668,11 +671,7 @@ async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
     {
         let g = shared.lock().unwrap();
         if g.err.is_none() {
-            let limit = if g.had_rx {
-                g.liveness
-            } else {
-                g.liveness * 5
-            };
+            let limit = if g.had_rx { g.liveness } else { g.liveness * 5 };
             let idle = now.duration_since(g.last_rx);
             if idle > limit {
                 let secs = idle.as_secs();
@@ -911,10 +910,11 @@ mod tests {
             .unwrap();
 
         let mut buf = [0u8; 128];
-        let (n, from) = tokio::time::timeout(Duration::from_secs(2), alias_sock.recv_from(&mut buf))
-            .await
-            .expect("no ACK from mesh (alias frame was dropped)")
-            .unwrap();
+        let (n, from) =
+            tokio::time::timeout(Duration::from_secs(2), alias_sock.recv_from(&mut buf))
+                .await
+                .expect("no ACK from mesh (alias frame was dropped)")
+                .unwrap();
         assert_eq!(from, mesh.local_addr().unwrap());
         let (kind, _seq, ack, _) = parse_frame(&buf[..n]).expect("not an FRS1 frame");
         assert_eq!(kind, FrameKind::Ack);
@@ -953,7 +953,10 @@ mod tests {
 
         // 首帧后进入严格检测：对端静默 400ms → 流报错
         let r = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await;
-        assert!(matches!(r, Ok(Err(_))), "expected liveness error after grace, got {r:?}");
+        assert!(
+            matches!(r, Ok(Err(_))),
+            "expected liveness error after grace, got {r:?}"
+        );
     }
 
     #[tokio::test]
