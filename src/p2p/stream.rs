@@ -131,6 +131,10 @@ struct Shared {
     write_waker: Option<Waker>,
     /// 数据帧负载加密（`--key` 启用；ACK/FIN 帧不加密）
     cipher: Option<ChaCha20Poly1305>,
+    /// 面板统计句柄（None = 不采集，测试流不受影响）
+    stats: Option<Arc<crate::stats::StreamStats>>,
+    /// 发送时间戳（seq → Instant）：Ack 抵达时计算 RTT
+    sent_at: HashMap<u32, Instant>,
     /// 测试用：数据帧首发丢包率（重传不受影响，保证最终可达）
     #[cfg(test)]
     loss_rate: f64,
@@ -186,6 +190,8 @@ fn make_shared(peer: SocketAddr, key: Option<[u8; 32]>, had_rx: bool) -> Shared 
         read_waker: None,
         write_waker: None,
         cipher,
+        stats: None,
+        sent_at: HashMap::new(),
         #[cfg(test)]
         loss_rate: 0.0,
     }
@@ -223,6 +229,12 @@ impl UdpStream {
 
     pub fn peer(&self) -> SocketAddr {
         self.shared.lock().unwrap().peer
+    }
+
+    /// 挂接面板统计（在建链后、首个任务输出前调用）。
+    pub fn with_stats(self, stats: Arc<crate::stats::StreamStats>) -> Self {
+        self.shared.lock().unwrap().stats = Some(stats);
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
@@ -335,6 +347,15 @@ impl UdpMesh {
         {
             old_close.notify_one();
         }
+        let st = crate::stats::StreamStats::new(crate::stats::KIND_DIRECT);
+        {
+            shared.lock().unwrap().stats = Some(st.clone());
+        }
+        crate::stats::push_link(crate::stats::LinkEntry {
+            peer: peer.to_string(),
+            kind: "direct",
+            stats: st,
+        });
         let s = self.socket.clone();
         let sh = shared.clone();
         let on = out_notify.clone();
@@ -354,6 +375,7 @@ impl UdpMesh {
         if let Some((_, ic)) = self.peers.lock().unwrap().remove(&peer) {
             ic.notify_one();
         }
+        crate::stats::remove_link(&peer.to_string());
     }
 }
 
@@ -508,14 +530,30 @@ async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
         }
         g.last_rx = Instant::now();
         g.had_rx = true; // 对端已证实存活：存活检测恢复严格阈值
+        if let Some(st) = &g.stats {
+            st.on_recv(data.len());
+        }
 
-        // 累积 ACK：丢弃已确认帧
+        // 累积 ACK：丢弃已确认帧；对被确认帧计算 RTT（首次发送时间戳）
         if ack > 0 {
+            let st = g.stats.clone();
+            let mut confirmed: Vec<u32> = Vec::new();
             while let Some((s, _)) = g.unacked.front() {
                 if *s < ack {
+                    confirmed.push(*s);
                     g.unacked.pop_front();
                 } else {
                     break;
+                }
+            }
+            if let Some(st) = st {
+                for s in &confirmed {
+                    if let Some(t) = g.sent_at.remove(s) {
+                        let ms = t.elapsed().as_millis() as u32;
+                        if ms > 0 && ms < 60_000 {
+                            st.on_rtt(ms);
+                        }
+                    }
                 }
             }
             if g.fin_sent && ack > g.fin_seq && !g.fin_acked {
@@ -573,10 +611,13 @@ async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
         reply
     };
     if let Some(frame) = reply_ack {
-        let peer = {
+        let (peer, st) = {
             let g = shared.lock().unwrap();
-            g.peer
+            (g.peer, g.stats.clone())
         };
+        if let Some(st) = &st {
+            st.on_sent(frame.len());
+        }
         let _ = socket.send_to(&frame, peer).await;
     }
 }
@@ -605,7 +646,12 @@ async fn flush_out<S: crate::p2p::turn::DatagramSocket>(socket: &S, shared: &Arc
                 };
                 let frame = encode_frame(FrameKind::Data, seq, g.next_expected, &wire_payload);
                 let stored = frame.clone().to_vec();
-                g.unacked.push_back((seq, stored));
+                g.unacked.push_back((seq, stored.clone()));
+                // 首次发送记录时间戳（重传不覆盖，RTT 只算首发）
+                g.sent_at.entry(seq).or_insert_with(Instant::now);
+                if let Some(st) = &g.stats {
+                    st.on_sent(frame.len());
+                }
                 let peer = g.peer;
                 #[cfg(test)]
                 let drop_it = g.loss_rate > 0.0 && rand::random::<f64>() < g.loss_rate;
@@ -697,10 +743,15 @@ async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
         g.unacked.iter().map(|(_, f)| f.clone()).collect()
     };
     if !frames.is_empty() {
-        let peer = {
+        let (peer, st) = {
             let g = shared.lock().unwrap();
-            g.peer
+            (g.peer, g.stats.clone())
         };
+        if let Some(st) = &st {
+            for f in &frames {
+                st.on_sent(f.len());
+            }
+        }
         for f in frames {
             let _ = socket.send_to(&f, peer).await;
         }
@@ -710,14 +761,17 @@ async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
 
     // keepalive：空闲时发送 ACK 帧维持 NAT 映射
     if now.duration_since(*last_tx) >= Duration::from_millis(KEEPALIVE_MS) {
-        let frame = {
+        let (frame, peer, st) = {
             let g = shared.lock().unwrap();
-            encode_frame(FrameKind::Ack, g.next_seq, g.next_expected, &[])
+            (
+                encode_frame(FrameKind::Ack, g.next_seq, g.next_expected, &[]),
+                g.peer,
+                g.stats.clone(),
+            )
         };
-        let peer = {
-            let g = shared.lock().unwrap();
-            g.peer
-        };
+        if let Some(st) = &st {
+            st.on_sent(frame.len());
+        }
         let _ = socket.send_to(&frame, peer).await;
         *last_tx = now;
     }

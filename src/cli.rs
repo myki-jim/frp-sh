@@ -33,6 +33,14 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
+    /// Local web panel address (client side; binds 127.0.0.1:6793 by default)
+    #[arg(long, global = true, default_value = "127.0.0.1:6793")]
+    pub panel_addr: String,
+
+    /// Disable the local web panel
+    #[arg(long, global = true)]
+    pub no_panel: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

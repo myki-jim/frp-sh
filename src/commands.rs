@@ -350,6 +350,12 @@ async fn run_data_plane(
         })?;
         // 实际设备名（macOS 为系统分配的 utunN；Linux 为自定义名；Windows 为 wintun 适配器名）
         let real_name = crate::p2p::tun::device_name(&dev).unwrap_or_else(|| dev_name.to_string());
+        crate::stats::update_info(crate::stats::SessionInfo {
+            vnet_ip: o.ip.clone(),
+            tun: real_name.clone(),
+            mtu: o.mtu as u32,
+            ..Default::default()
+        });
         println!(
             "  {} IP {} / {} (MTU {}, device {real_name})",
             step("virtual NIC mode"),
@@ -450,6 +456,7 @@ pub async fn run_serve(
     turn: Option<String>,
     external_ip: Option<std::net::IpAddr>,
 ) -> anyhow::Result<()> {
+    crate::panel::init_uptime();
     let http_listener = TcpListener::bind(&http_addr).await?;
     let http_sock: SocketAddr = http_listener.local_addr()?;
     let udp = UdpSocket::bind(udp_addr.as_deref().unwrap_or(&http_addr)).await?;
@@ -916,9 +923,16 @@ async fn turn_data_plane(
         .await
         .map_err(|e| anyhow::anyhow!("TURN create-permission failed: {e}"))?;
     log::info!("TURN relay link established via {peer_relay}");
+    let st = crate::stats::StreamStats::new(crate::stats::KIND_TURN);
+    crate::stats::push_link(crate::stats::LinkEntry {
+        peer: peer_relay.to_string(),
+        kind: "turn",
+        stats: st.clone(),
+    });
     Ok(crate::p2p::stream::UdpStream::new(
         client, peer_relay, None, key_bytes,
-    ))
+    )
+    .with_stats(st))
 }
 
 /// `game create`：注册房间，进入房主会话；返回房间号。
@@ -1067,6 +1081,16 @@ pub async fn host_session(
     let mut attempt: u64 = 0;
     // TURN 中继上下文（配置了供应商时分配一次，直连失败回退用）
     let mut turn_client: Option<crate::p2p::turn::TurnClient> = None;
+    // 面板基础信息（lan 模式走 mesh 会话，同样在下方 mesh 分支前设置）
+    crate::stats::update_info(crate::stats::SessionInfo {
+        mode: if tun.is_some() { "lan-host" } else { "host" }.into(),
+        room: room_id.to_string(),
+        signaling: cfg.signaling_addr.clone(),
+        my_id: cfg.uuid.clone().unwrap_or_default(),
+        encryption: key.is_some(),
+        started_at: utils::now_unix() as i64,
+        ..Default::default()
+    });
 
     // lan 模式（虚拟网卡）→ 网格会话：多访客全互联
     if let Some(t) = &tun {
@@ -1085,6 +1109,11 @@ pub async fn host_session(
 
     loop {
         attempt += 1;
+        crate::stats::clear_links();
+        crate::stats::update_info(crate::stats::SessionInfo {
+            reconnects: attempt - 1,
+            ..Default::default()
+        });
         if attempt > 1 {
             let wait = reconnect_delay(attempt);
             println!(
@@ -1238,7 +1267,14 @@ pub async fn host_session(
                 )
                 .await
                 {
-                    Ok(s) => s,
+                    Ok(s) => {
+                        crate::stats::push_link(crate::stats::LinkEntry {
+                            peer: "relay".into(),
+                            kind: "relay",
+                            stats: crate::stats::StreamStats::new(crate::stats::KIND_RELAY),
+                        });
+                        s
+                    }
                     Err(e) => {
                         log::warn!("relay connect failed: {e}");
                         continue;
@@ -1478,6 +1514,16 @@ pub async fn guest_session(
     // 对端收不到我们，典型于对端防火墙拦入站）。下一轮跳过打洞直接走中继，
     // 避免每个重连轮都复现同样的 3s 死链、无限循环。
     let mut direct_broke = false;
+    // 面板基础信息
+    crate::stats::update_info(crate::stats::SessionInfo {
+        mode: if tun.is_some() { "lan-guest" } else { "guest" }.into(),
+        room: room_id.to_string(),
+        signaling: cfg.signaling_addr.clone(),
+        my_id: cfg.uuid.clone().unwrap_or_default(),
+        encryption: key.is_some(),
+        started_at: utils::now_unix() as i64,
+        ..Default::default()
+    });
     // TURN 链路异常断开的标记：TURN 建立（对端 relay 也在）但对端没在同一通道上
     // 收发（典型：房主端超时先走了 TCP 中继等配对，两端会师失败）时，访客若每轮
     // 固执重试 TURN 就会死循环。置位后后续轮次跳过 TURN，直走 TCP 中继与房主会师。
@@ -1487,6 +1533,11 @@ pub async fn guest_session(
 
     loop {
         attempt += 1;
+        crate::stats::clear_links();
+        crate::stats::update_info(crate::stats::SessionInfo {
+            reconnects: attempt - 1,
+            ..Default::default()
+        });
         if !first {
             let wait = reconnect_delay(attempt);
             println!(
@@ -1747,7 +1798,14 @@ pub async fn guest_session(
                 )
                 .await
                 {
-                    Ok(s) => s,
+                    Ok(s) => {
+                        crate::stats::push_link(crate::stats::LinkEntry {
+                            peer: "relay".into(),
+                            kind: "relay",
+                            stats: crate::stats::StreamStats::new(crate::stats::KIND_RELAY),
+                        });
+                        s
+                    }
                     Err(e) => {
                         log::warn!("relay connect failed: {e}");
                         continue;
@@ -2081,6 +2139,11 @@ pub async fn host_mesh_session(
     let mut attempt: u64 = 0;
     loop {
         attempt += 1;
+        crate::stats::clear_links();
+        crate::stats::update_info(crate::stats::SessionInfo {
+            reconnects: attempt - 1,
+            ..Default::default()
+        });
         if attempt > 1 {
             let wait = reconnect_delay(attempt);
             println!(
@@ -2528,6 +2591,11 @@ async fn mesh_host_loop(
                         if established.contains_key(&uuid) {
                             plane.unregister(&uuid);
                         }
+                        crate::stats::push_link(crate::stats::LinkEntry {
+                            peer: uuid.clone(),
+                            kind: "relay",
+                            stats: crate::stats::StreamStats::new(crate::stats::KIND_RELAY),
+                        });
                         plane.register(
                             &uuid,
                             mesh_routes_for(&p.info),
@@ -2552,6 +2620,7 @@ async fn mesh_host_loop(
             let was_turn = established.get(&uuid).map(|v| v.as_str()) == Some("turn");
             if established.remove(&uuid).is_some() {
                 established_peer.remove(&uuid);
+                crate::stats::remove_link(&uuid);
                 log::warn!("peer {uuid} link lost, re-punching ...");
                 if was_turn {
                     // TURN 链路异常死亡（心跳超时）：对端多半收不到我们的 indication

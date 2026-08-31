@@ -102,7 +102,13 @@ impl PunchEngine {
         first: Option<(Vec<u8>, SocketAddr)>,
         key: Option<[u8; 32]>,
     ) -> stream::UdpStream {
-        stream::UdpStream::new(self.socket, peer, first, key)
+        let st = crate::stats::StreamStats::new(crate::stats::KIND_DIRECT);
+        crate::stats::push_link(crate::stats::LinkEntry {
+            peer: peer.to_string(),
+            kind: "direct",
+            stats: st.clone(),
+        });
+        stream::UdpStream::new(self.socket, peer, first, key).with_stats(st)
     }
 
     /// 将 socket 转为网格模式（host 侧多访客：同一 socket 承载多个对端流）。
