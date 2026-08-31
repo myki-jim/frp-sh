@@ -15,31 +15,43 @@ pub fn rand_token() -> String {
     random_hex(4)
 }
 
-/// 生成完整房间号：`<prefix>-<6位hex>`，如 `game-a3f9c2`。
-pub fn new_room_id(prefix: &str) -> String {
-    format!("{}-{}", sanitize_prefix(prefix), random_hex(3))
+/// 生成 4 位十进制数字码（0000-9999），如 `4832`。
+pub fn new_room_code() -> String {
+    let mut rng = rand::thread_rng();
+    format!("{:04}", rng.gen_range(0..10000))
 }
 
-/// 清理房间前缀：仅保留小写字母数字与 `-_`，最长 16 字符。
+/// 生成完整房间号：默认 4 位数字码（如 `4832`）；给了前缀则为 `prefix-4832`。
+pub fn new_room_id(prefix: &str) -> String {
+    let p = sanitize_prefix(prefix);
+    if p.is_empty() {
+        new_room_code()
+    } else {
+        format!("{}-{}", p, new_room_code())
+    }
+}
+
+/// 清理房间前缀：仅保留小写字母数字与 `-_`，最长 16 字符；空为合法（无前缀）。
 pub fn sanitize_prefix(prefix: &str) -> String {
-    let clean: String = prefix
+    prefix
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .take(16)
         .collect::<String>()
-        .to_lowercase();
-    if clean.is_empty() {
-        "game".to_string()
-    } else {
-        clean
-    }
+        .to_lowercase()
 }
 
-/// 校验房间号格式（`prefix-hex6`）。
+/// 校验房间号格式：4 位数字码（`4832`）或 `prefix-4位数字`（`lan-4832`）；
+/// 兼容旧版 `prefix-hex6`（跨版本窗口内的老房间仍可加入）。
 pub fn validate_room_id(room_id: &str) -> bool {
+    if room_id.len() == 4 && room_id.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
     match room_id.rsplit_once('-') {
         Some((prefix, suffix)) => {
-            !prefix.is_empty() && suffix.len() == 6 && suffix.chars().all(|c| c.is_ascii_hexdigit())
+            !prefix.is_empty()
+                && ((suffix.len() == 4 && suffix.chars().all(|c| c.is_ascii_digit()))
+                    || (suffix.len() == 6 && suffix.chars().all(|c| c.is_ascii_hexdigit())))
         }
         None => false,
     }
@@ -207,11 +219,23 @@ mod tests {
 
     #[test]
     fn room_id_format() {
-        let id = new_room_id("Game");
-        assert!(id.starts_with("game-"));
+        // 默认：无前缀 4 位数字码
+        let id = new_room_id("");
+        assert_eq!(id.len(), 4);
+        assert!(id.chars().all(|c| c.is_ascii_digit()));
         assert!(validate_room_id(&id));
+        // 带前缀：prefix-4位数字
+        let id2 = new_room_id("Lan");
+        assert!(id2.starts_with("lan-"));
+        assert_eq!(id2.split('-').nth(1).unwrap().len(), 4);
+        assert!(validate_room_id(&id2));
+        // 兼容旧版 prefix-hex6
+        assert!(validate_room_id("game-a3f9c2"));
         assert!(!validate_room_id("nope"));
         assert!(!validate_room_id("game-xyz123"));
+        assert!(!validate_room_id("12345"));
+        // 数字码分布检查（不会恒为同一值）
+        assert_ne!(new_room_code(), "");
     }
 
     #[test]

@@ -71,7 +71,7 @@ pub enum Commands {
 /// Common parameters for port-forwarding modes (shared by game / dev).
 #[derive(clap::Args, Debug)]
 pub struct ForwardCreateArgs {
-    /// Room prefix (defaults: "game" for the game family, "dev" for the dev family)
+    /// Room prefix (optional; default: none — plain 4-digit code like 4832)
     #[arg(short, long)]
     pub prefix: Option<String>,
     /// Room lifetime in seconds (default 12 hours)
@@ -134,7 +134,7 @@ pub enum DevCmd {
 /// Common parameters for mesh mode (lan).
 #[derive(clap::Args, Debug)]
 pub struct LanCreateArgs {
-    /// Room prefix (default "lan")
+    /// Room prefix (optional; default: none — plain 4-digit code like 4832)
     #[arg(short, long)]
     pub prefix: Option<String>,
     /// Room lifetime in seconds (default 12 hours)

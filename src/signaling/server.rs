@@ -153,10 +153,17 @@ async fn create_room(
     Json(req): Json<CreateRoomRequest>,
 ) -> Result<Json<CreateRoomResponse>, (StatusCode, String)> {
     let now = utils::now_unix();
-    let room_id = utils::new_room_id(&req.prefix);
     let mut map = state.rooms.lock().await;
     // 惰性清理过期房间
     map.retain(|_, r| !r.expired());
+    // 生成不冲突的房间号（4 位数字码空间小，撞号时重试；活房间数远小于 10000）
+    let mut room_id = utils::new_room_id(&req.prefix);
+    for _ in 0..50 {
+        if !map.contains_key(&room_id) {
+            break;
+        }
+        room_id = utils::new_room_id(&req.prefix);
+    }
     map.insert(
         room_id.clone(),
         Room {
