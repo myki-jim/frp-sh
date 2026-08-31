@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>frp-sh</title>
+<script type="module" src="https://unpkg.com/mdui@2/mdui.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/mdui@2/mdui.css">
+<style>
+:root{--bd:#e3e3e8;--bg:#f7f7fa;--card:#fff;--tx:#1c1c1e;--dim:#85858b;
+  --green:#34c759;--orange:#ff9f0a;--red:#ff3b30;--blue:#0a84ff}
+@media(prefers-color-scheme:dark){:root{--bd:#2c2c2e;--bg:#111114;--card:#1c1c1f;--tx:#f2f2f5;--dim:#98989f}}
+*{box-sizing:border-box;margin:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}
+.bar{display:flex;align-items:center;gap:10px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:5}
+.bar h1{font-size:17px;font-weight:700;letter-spacing:.2px}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;border:1px solid var(--bd);font-size:12px;color:var(--dim);background:var(--bg)}
+.chip b{color:var(--tx);font-weight:600}
+.chip.c-direct{border-color:var(--green);color:var(--green)}
+.chip.c-turn{border-color:var(--orange);color:var(--orange)}
+.chip.c-relay{border-color:var(--red);color:var(--red)}
+.spacer{flex:1}
+.langbtn{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:12px}
+.wrap{max-width:980px;margin:18px auto;padding:0 16px;display:grid;gap:16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px 18px}
+.card h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);margin-bottom:12px}
+.kv{display:flex;gap:14px;padding:7px 0;border-bottom:1px solid var(--bd);font-size:13.5px}
+.kv:last-child{border-bottom:0}
+.kv .k{width:150px;flex:none;color:var(--dim)}
+.kv .v{word-break:break-all}
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px 18px}
+.stat .n{font-size:26px;font-weight:700}
+.stat .l{font-size:12px;color:var(--dim);margin-top:2px}
+.link{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--bd);font-size:13.5px;flex-wrap:wrap}
+.link:last-child{border-bottom:0}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--dim)}
+.dot.live{background:var(--green);box-shadow:0 0 6px var(--green)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+.rtt{min-width:88px;text-align:right}
+.rate{min-width:130px;text-align:right;color:var(--dim);font-size:12.5px}
+.idle{color:var(--dim);text-align:center;padding:40px 0;font-size:14px}
+svg .edge-direct{stroke:var(--green)}svg .edge-turn{stroke:var(--orange)}svg .edge-relay{stroke:var(--red)}
+.foot{color:var(--dim);font-size:11.5px;text-align:center;padding:10px 0 22px}
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1>frp-sh</h1>
+  <span class="chip" id="chip-mode"><b>—</b></span>
+  <span class="chip" id="chip-room"><b>—</b></span>
+  <span class="chip" id="chip-enc"><b>—</b></span>
+  <span class="spacer"></span>
+  <span class="chip" id="chip-ver">—</span>
+  <button class="langbtn" id="lang" onclick="toggleLang()">中文</button>
+</div>
+<div class="wrap">
+  <div id="idle" class="card idle">—</div>
+  <div id="info-card" class="card" style="display:none">
+    <h2 data-i18n="basic">Basic information</h2>
+    <div class="kv"><span class="k" data-i18n="myid">Your ID</span><span class="v mono" id="i-id">—</span></div>
+    <div class="kv"><span class="k" data-i18n="vnet">Vnet IP</span><span class="v mono" id="i-vnet">—</span></div>
+    <div class="kv"><span class="k" data-i18n="tun">TUN device</span><span class="v mono" id="i-tun">—</span></div>
+    <div class="kv"><span class="k" data-i18n="sig">Signaling</span><span class="v mono" id="i-sig">—</span></div>
+    <div class="kv"><span class="k" data-i18n="since">Session started</span><span class="v" id="i-since">—</span></div>
+  </div>
+  <div id="links-card" class="card" style="display:none">
+    <h2 data-i18n="links">Links</h2>
+    <div id="links"></div>
+  </div>
+  <div id="topo-card" class="card" style="display:none">
+    <h2 data-i18n="topo">Topology</h2>
+    <svg id="topo" viewBox="0 0 500 320" width="100%" height="320"></svg>
+  </div>
+</div>
+<div class="foot" id="foot">ws</div>
+<script>
+const I18N={
+en:{basic:"Basic information",myid:"Your ID",vnet:"Vnet IP",tun:"TUN device",sig:"Signaling",
+since:"Session started",links:"Links",topo:"Topology",idle:"No active session — start frp-sh lan/dev/game.",
+mode:"Mode",room:"Room",enc:"Encryption",on:"on",off:"off",direct:"DIRECT",turn:"TURN",relay:"RELAY",
+lang:"中文",nolinks:"No links yet",ok:"connected"},
+zh:{basic:"基础信息",myid:"本机 ID",vnet:"虚拟 IP",tun:"TUN 设备",sig:"信令服务器",
+since:"会话开始",links:"链路",topo:"连接拓扑",idle:"暂无活动会话 —— 请运行 frp-sh lan/dev/game。",
+mode:"模式",room:"房间",enc:"加密",on:"开",off:"关",direct:"直连",turn:"TURN 中继",relay:"TCP 中继",
+lang:"English",nolinks:"暂无链路",ok:"已连接"}};
+let LANG=localStorage.getItem("frpsh-lang")||"en";
+const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
+function applyLang(){document.querySelectorAll("[data-i18n]").forEach(e=>e.textContent=t(e.dataset.i18n));
+document.getElementById("lang").textContent=t("lang");}
+function toggleLang(){LANG=LANG==="en"?"zh":"en";localStorage.setItem("frpsh-lang",LANG);applyLang();render(lastWS,true)}
+function fmtBytes(b){if(b>=1048576)return(b/1048576).toFixed(1)+" MB";if(b>=1024)return(b/1024).toFixed(1)+" KB";return b+" B"}
+function fmtBps(b){if(b>=1048576)return(b/1048576).toFixed(1)+" MB/s";if(b>=1024)return(b/1024).toFixed(1)+" KB/s";return Math.round(b)+" B/s"}
+function fmtSince(ts){if(!ts)return"—";const s=Math.floor(Date.now()/1000)-ts;
+const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+"h ":"")+m+"m"}
+function esc(s){return String(s).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]))}
+
+let prev=null;let lastWS=null;
+function render(d,force){
+const info=d.info||{},links=d.links||[];
+const hasSession=info.mode&&info.mode!=="idle";
+document.getElementById("idle").style.display=hasSession?"none":"block";
+document.getElementById("info-card").style.display=hasSession?"block":"none";
+document.getElementById("links-card").style.display=hasSession?"block":"none";
+document.getElementById("topo-card").style.display=hasSession&&links.length?"block":"none";
+document.getElementById("chip-mode").innerHTML="<b>"+esc(info.mode?info.mode.toUpperCase():"—")+"</b>";
+document.getElementById("chip-room").innerHTML="<b>"+esc(info.room||"—")+"</b>";
+document.getElementById("chip-enc").innerHTML="<b>"+(info.encryption?t("on"):t("off"))+"</b>";
+document.getElementById("chip-ver").textContent=info.version||"—";
+if(hasSession){
+document.getElementById("i-id").textContent=info.my_id||"—";
+document.getElementById("i-vnet").textContent=info.vnet_ip||"—";
+document.getElementById("i-tun").textContent=info.tun?info.tun+" (MTU "+(info.mtu||1400)+")":"—";
+document.getElementById("i-sig").textContent=info.signaling||"—";
+document.getElementById("i-since").textContent=fmtSince(info.started_at);
+}
+const now=Date.now();
+const lc=document.getElementById("links");lc.innerHTML="";
+const prevMap={};if(prev)prev.links.forEach(l=>prevMap[l.peer]=l);
+links.forEach(l=>{
+const p=prevMap[l.peer];const dt=p?((now-prev.ts)/1000):0;
+const sb=dt>0?Math.max(0,l.sent_bytes-p.sent_bytes)/dt:0;
+const rb=dt>0?Math.max(0,l.recv_bytes-p.recv_bytes)/dt:0;
+const live=rb>0||sb>0;
+const row=document.createElement("div");row.className="link";
+row.innerHTML='<span class="dot'+(live?" live":"")+'"></span>'
++'<span class="mono">'+esc(l.peer.slice(0,8))+"</span>"
++'<span class="chip c-'+l.kind+'">'+esc(t(l.kind))+"</span>"
++'<span class="rtt mono">'+(l.rtt_ewma?t("ok")+" "+l.rtt_ewma+"ms":"…")+"</span>"
++'<span class="spacer"></span>'
++'<span class="rate mono">↑ '+fmtBps(sb)+" · ↓ "+fmtBps(rb)+"</span>";
+lc.appendChild(row);
+});
+if(hasSession&&!links.length)lc.innerHTML='<div class="idle">'+esc(t("nolinks"))+"</div>";
+if(hasSession&&links.length)drawTopo(links,info);
+prev={links,ts:now};
+}
+function drawTopo(links,info){
+const svg=document.getElementById("topo");svg.innerHTML="";
+const cx=250,cy=160,rx=190,ry=112;
+const nodes=[{x:cx,y:cy,label:info.my_id?info.my_id.slice(0,6):"me",sub:info.vnet_ip||"",me:true}];
+const n=links.length;
+links.forEach((l,i)=>{
+const ang=-Math.PI/2+i*2*Math.PI/Math.max(n,1);
+const x=cx+rx*Math.cos(ang),y=cy+ry*Math.sin(ang);
+nodes.push({x,y,label:l.peer.slice(0,6),sub:"",kind:l.kind});
+});
+links.forEach((l,i)=>{
+const nd=nodes[i+1];
+const line=document.createElementNS("http://www.w3.org/2000/svg","line");
+line.setAttribute("x1",cx);line.setAttribute("y1",cy);
+line.setAttribute("x2",nd.x);line.setAttribute("y2",nd.y);
+line.setAttribute("class","edge-"+l.kind);
+line.setAttribute("stroke-width",l.kind==="direct"?3:2);
+line.setAttribute("opacity","0.85");
+svg.appendChild(line);
+});
+nodes.forEach(nd=>{
+const g=document.createElementNS("http://www.w3.org/2000/svg","g");
+const c=document.createElementNS("http://www.w3.org/2000/svg","circle");
+c.setAttribute("cx",nd.x);c.setAttribute("cy",nd.y);c.setAttribute("r",26);
+c.setAttribute("fill",nd.me?"var(--blue)":"var(--card)");
+c.setAttribute("stroke",nd.me?"none":"var(--bd)");c.setAttribute("stroke-width","1.5");
+g.appendChild(c);
+const t1=document.createElementNS("http://www.w3.org/2000/svg","text");
+t1.setAttribute("x",nd.x);t1.setAttribute("y",nd.y+4);t1.setAttribute("text-anchor","middle");
+t1.setAttribute("font-size","10");t1.setAttribute("fill",nd.me?"#fff":"var(--tx)");
+t1.setAttribute("font-family","monospace");t1.textContent=nd.label;g.appendChild(t1);
+svg.appendChild(g);
+});
+}
+const wsProto=location.protocol==="https:"?"wss":"ws";
+function connect(){
+const ws=new WebSocket(wsProto+"://"+location.host+"/ws");
+ws.onmessage=e=>{lastWS=JSON.parse(e.data);render(lastWS)};
+ws.onclose=()=>{document.getElementById("foot").textContent="ws reconnecting …";setTimeout(connect,2000)};
+ws.onopen=()=>{document.getElementById("foot").textContent="ws · 1s"};
+}
+applyLang();connect();
+</script>
+</body>
+</html>

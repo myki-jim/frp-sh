@@ -25,6 +25,9 @@ pub type SharedState = Arc<Mutex<HashMap<String, Room>>>;
 /// 请求认证头（客户端携带服务器密码）。
 pub const AUTH_HEADER: &str = "X-Frp-Sh-Token";
 
+/// 活跃 TCP 中继转发数（panel 用；配对成功 +1，转发结束 -1）。
+pub static ACTIVE_RELAYS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// 服务器应用状态：房间注册表 + 可选密码（按实例传递，避免全局污染）。
 #[derive(Clone)]
 pub struct AppState {
@@ -104,6 +107,7 @@ pub async fn run_http(
         .route("/room/{id}/join", post(join_room))
         .route("/room/{id}/refresh", post(refresh_room))
         .route("/room/{id}", get(get_room).delete(delete_room))
+        .merge(crate::panel::server_routes())
         .with_state(app_state.clone())
         .layer(axum::middleware::from_fn_with_state(
             app_state,
@@ -120,7 +124,9 @@ async fn auth_middleware(
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
     let path = req.uri().path().to_string();
-    if path == "/version" || path == "/health" {
+    if path == "/version" || path == "/health" || path == "/panel" || path.starts_with("/api/panel")
+    {
+        // 面板为只读视图且不含敏感字段（无密码/密钥），免认证开放
         return Ok(next.run(req).await);
     }
     if let Some(pw) = &state.password {
@@ -446,11 +452,13 @@ async fn handle_relay_conn(
         drop(map);
         notify.notify_waiters();
         let pw = password.clone();
+        ACTIVE_RELAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::spawn(async move {
             let pw_opt = pw.as_deref();
             let mut a = maybe_encrypt(stream, pw_opt);
             let mut b = maybe_encrypt(other, pw_opt);
             let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
+            ACTIVE_RELAYS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         });
         return Ok(());
     }
