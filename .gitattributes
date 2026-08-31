@@ -1,0 +1,11 @@
+# Shell scripts must stay LF (CRLF breaks `sh` on macOS/Linux: `set -e\r` is an invalid option)
+*.sh text eol=lf
+
+# PowerShell handles both; keep CRLF for Windows editors
+*.ps1 text eol=crlf
+
+# Version file is compared as an exact string; never allow CR into it
+latest-version.txt text eol=lf
+
+# Release binaries are not text
+web/docs/public/downloads/** binary
