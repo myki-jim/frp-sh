@@ -929,10 +929,7 @@ async fn turn_data_plane(
         kind: "turn",
         stats: st.clone(),
     });
-    Ok(crate::p2p::stream::UdpStream::new(
-        client, peer_relay, None, key_bytes,
-    )
-    .with_stats(st))
+    Ok(crate::p2p::stream::UdpStream::new(client, peer_relay, None, key_bytes).with_stats(st))
 }
 
 /// `game create`：注册房间，进入房主会话；返回房间号。

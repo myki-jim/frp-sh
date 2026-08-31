@@ -3,8 +3,8 @@
 //! 前端为单文件 HTML（MDUI 2 走 CDN + 内嵌扁平 CSS 兜底），`include_str!`
 //! 编译期打入二进制；数据经 WebSocket 定时推送，无轮询。
 
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
 use axum::response::Html;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -48,8 +48,8 @@ async fn summary(
 ) -> Json<serde_json::Value> {
     let rooms = state.rooms.lock().await;
     let guests: usize = rooms.values().map(|r| r.guests.len()).sum();
-    let relay_links = crate::signaling::server::ACTIVE_RELAYS
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let relay_links =
+        crate::signaling::server::ACTIVE_RELAYS.load(std::sync::atomic::Ordering::Relaxed);
     Json(json!({
         "version": crate::version::VERSION,
         "protocol": crate::version::PROTOCOL_VERSION,
