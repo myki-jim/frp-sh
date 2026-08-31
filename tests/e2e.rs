@@ -51,6 +51,7 @@ async fn try_start_server(password: Option<&str>) -> Option<TestServer> {
             signaling_udp: Some(format!("127.0.0.1:{udp_port}")),
             uuid: None,
             password: pw,
+            stun_addr: None,
         },
     })
 }
