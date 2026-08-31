@@ -377,10 +377,14 @@ pub async fn run_serve(
         r = udp_task => { r??; }
         r = relay_task => { r??; }
         r = async {
-            if let Some(t) = turn_task {
-                t.await??;
+            match turn_task {
+                Some(t) => {
+                    t.await??;
+                    Ok::<(), anyhow::Error>(())
+                }
+                // 未启用 TURN 时该分支永不完成，避免 select 立即选中并退出。
+                None => std::future::pending().await,
             }
-            Ok::<(), anyhow::Error>(())
         } => {
             r?;
         }
