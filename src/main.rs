@@ -68,8 +68,17 @@ async fn real_main() -> anyhow::Result<()> {
             relay_addr,
             udp_addr,
             password,
+            turn,
+            external_ip,
         }) => {
-            frp_sh::commands::run_serve(addr, relay_addr, udp_addr, password).await?;
+            let ext = match &external_ip {
+                Some(s) => Some(
+                    s.parse()
+                        .map_err(|e| anyhow::anyhow!("bad --external-ip {s}: {e}"))?,
+                ),
+                None => None,
+            };
+            frp_sh::commands::run_serve(addr, relay_addr, udp_addr, password, turn, ext).await?;
         }
         Some(Commands::Config) => {
             frp_sh::commands::run_config(config).await?;

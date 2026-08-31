@@ -302,6 +302,119 @@ async fn e2e_mesh_multi_guest_links() {
     assert!(host_res.is_ok(), "host mesh session failed: {host_res:?}");
 }
 
+/// 内置 TURN 服务端：两个客户端经 TURN 中继双向转发 + FRS1 流（本地，无外部依赖）。
+async fn turn_builtin_test(password: Option<&str>) -> SocketAddr {
+    let srv = frp_sh::p2p::turn_server::TurnServer::start(
+        "127.0.0.1:0".parse().unwrap(),
+        password,
+        Some("127.0.0.1".parse().unwrap()),
+    )
+    .await
+    .unwrap();
+    let addr = srv.local_addr();
+    tokio::spawn(async move {
+        let _ = srv.run().await;
+    });
+    addr
+}
+
+async fn turn_pair_roundtrip(
+    srv_addr: SocketAddr,
+    username: &str,
+    password: &str,
+) -> (frp_sh::p2p::turn::TurnClient, frp_sh::p2p::turn::TurnClient) {
+    use frp_sh::p2p::turn::{DatagramSocket, TurnClient, TurnCredentials};
+    let cred = TurnCredentials {
+        server: srv_addr,
+        username: username.into(),
+        password: password.into(),
+    };
+    let a = TurnClient::connect(UdpSocket::bind("0.0.0.0:0").await.unwrap(), &cred)
+        .await
+        .expect("client A allocate");
+    let b = TurnClient::connect(UdpSocket::bind("0.0.0.0:0").await.unwrap(), &cred)
+        .await
+        .expect("client B allocate");
+    a.create_permission(b.relay).await.expect("A permission");
+    b.create_permission(a.relay).await.expect("B permission");
+    // A → B
+    a.send_to(b"hello-builtin", b.relay).await.unwrap();
+    let mut buf = [0u8; 128];
+    let (n, _) = tokio::time::timeout(Duration::from_secs(5), b.recv_from(&mut buf))
+        .await
+        .expect("B recv timeout")
+        .unwrap();
+    assert_eq!(&buf[..n], b"hello-builtin");
+    // B → A
+    b.send_to(b"reply", a.relay).await.unwrap();
+    let (n, _) = tokio::time::timeout(Duration::from_secs(5), a.recv_from(&mut buf))
+        .await
+        .expect("A recv timeout")
+        .unwrap();
+    assert_eq!(&buf[..n], b"reply");
+    (a, b)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_turn_builtin_no_auth() {
+    let srv = turn_builtin_test(None).await;
+    let (a, b) = turn_pair_roundtrip(srv, "frp-sh", "").await;
+    drop((a, b));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_turn_builtin_password_auth() {
+    let srv = turn_builtin_test(Some("secret")).await;
+    // 正确密码 → 成功
+    let (a, b) = turn_pair_roundtrip(srv, "frp-sh", "secret").await;
+    drop((a, b));
+    // 错误密码 → 认证失败
+    let cred = frp_sh::p2p::turn::TurnCredentials {
+        server: srv,
+        username: "frp-sh".into(),
+        password: "wrong".into(),
+    };
+    let r =
+        frp_sh::p2p::turn::TurnClient::connect(UdpSocket::bind("0.0.0.0:0").await.unwrap(), &cred)
+            .await;
+    assert!(r.is_err(), "wrong password should fail auth");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_turn_builtin_frs1_stream() {
+    use frp_sh::p2p::stream::UdpStream;
+    use frp_sh::p2p::turn::{TurnClient, TurnCredentials};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let srv = turn_builtin_test(None).await;
+    let cred = TurnCredentials {
+        server: srv,
+        username: "frp-sh".into(),
+        password: String::new(),
+    };
+    let a = TurnClient::connect(UdpSocket::bind("0.0.0.0:0").await.unwrap(), &cred)
+        .await
+        .unwrap();
+    let b = TurnClient::connect(UdpSocket::bind("0.0.0.0:0").await.unwrap(), &cred)
+        .await
+        .unwrap();
+    a.create_permission(b.relay).await.unwrap();
+    b.create_permission(a.relay).await.unwrap();
+    let relay_a = a.relay;
+    let relay_b = b.relay;
+    let mut sa = UdpStream::new(a, relay_b, None, None);
+    let mut sb = UdpStream::new(b, relay_a, None, None);
+    let payload: Vec<u8> = (0..8192u32).map(|i| (i % 253) as u8).collect();
+    let send = payload.clone();
+    let writer = tokio::spawn(async move {
+        sa.write_all(&send).await.unwrap();
+        sa.shutdown().await.unwrap();
+    });
+    let mut got = Vec::new();
+    sb.read_to_end(&mut got).await.unwrap();
+    writer.await.unwrap();
+    assert_eq!(got, payload, "FRS1 over built-in TURN mismatch");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_mesh_relay_pairing() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
