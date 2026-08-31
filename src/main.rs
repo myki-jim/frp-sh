@@ -58,6 +58,16 @@ async fn real_main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    // 单实例锁（按角色）：同机同时只允许一个房主会话/一个访客会话/一个服务端，
+    // 防止误开多个房间；host 与 guest 各一把锁，双端同机不受影响。
+    // 注意：必须放在提权门之后——Windows 提权父进程会等待子进程，不能持有锁。
+    if let Some(role) = frp_sh::commands::session_role(&command) {
+        if let Err(e) = frp_sh::commands::acquire_role_lock(role) {
+            eprintln!("\n  ✗ {e}\n");
+            std::process::exit(1);
+        }
+    }
+
     // 更新检查（serve 只提示不询问；其余命令交互询问）
     let interactive = !matches!(command, Some(Commands::Serve { .. }));
     frp_sh::update::maybe_check_update(interactive).await?;
