@@ -75,7 +75,9 @@ async fn rooms(State(state): State<crate::signaling::server::AppState>) -> Json<
                 .map(|g| {
                     json!({
                         "uuid": g.uuid,
+                        "name": g.name,
                         "addr": g.addr.to_string(),
+                        "lan": g.lan.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                         "vnet_ip": g.vnet_ip,
                         "turn_relay": g.turn_relay.map(|a| a.to_string()),
                     })
@@ -86,9 +88,11 @@ async fn rooms(State(state): State<crate::signaling::server::AppState>) -> Json<
                 "created_at": r.created_at,
                 "ttl_left_s": r.expires_at.saturating_sub(now),
                 "host": {
+                    "name": r.host_name,
                     "addr": r.host_addr.to_string(),
                     "version": r.host_version,
                     "vnet_ip": r.tun_ip,
+                    "lan": r.host_lan.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                     "turn_relay": r.host_turn_relay.map(|a| a.to_string()),
                 },
                 "guests": guests,
@@ -157,6 +161,9 @@ fn client_info_json() -> serde_json::Value {
         "room": i.room,
         "signaling": i.signaling,
         "my_id": i.my_id,
+        "device_name": i.device_name,
+        "ext_addr": i.ext_addr,
+        "lan_addrs": i.lan_addrs,
         "vnet_ip": i.vnet_ip,
         "tun": i.tun,
         "mtu": i.mtu,

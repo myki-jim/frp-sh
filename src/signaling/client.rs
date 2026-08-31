@@ -65,6 +65,7 @@ impl SignalingClient {
         guest_ips: Vec<String>,
         version: String,
         turn_relay: Option<SocketAddr>,
+        name: Option<String>,
     ) -> Result<CreateRoomResponse> {
         let resp = self
             .http
@@ -79,6 +80,7 @@ impl SignalingClient {
                 guest_ips,
                 version,
                 turn_relay,
+                name,
             })
             .send()
             .await
@@ -120,6 +122,7 @@ impl SignalingClient {
         requested_ip: Option<String>,
         guest_subnets: Vec<String>,
         turn_relay: Option<SocketAddr>,
+        name: Option<String>,
     ) -> Result<JoinRoomResponse> {
         let resp = self
             .http
@@ -128,6 +131,7 @@ impl SignalingClient {
                 addr,
                 addr_lan,
                 visitor_id,
+                name,
                 requested_ip,
                 guest_subnets,
                 turn_relay,

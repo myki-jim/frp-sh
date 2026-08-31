@@ -40,6 +40,43 @@ pub struct Config {
     /// 打洞失败时按序尝试，测速选最快者建立 TURN 中继数据面；全部失败回退私有 TCP 中继。
     #[serde(default)]
     pub turn_providers: Vec<String>,
+    /// 可选：设备显示名（面板/拓扑显示；默认取主机名；房间内重名自动加 -2/-3 后缀）
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// 设备显示名：`--name` / config `name` 优先，否则主机名。
+pub fn device_name(configured: Option<&str>) -> String {
+    if let Some(n) = CLI_NAME.get() {
+        if !n.is_empty() {
+            return n.clone();
+        }
+    }
+    configured
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| hostname())
+}
+
+/// CLI `--name`（优先于 config）。
+static CLI_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// main 启动时注入 `--name`。
+pub fn set_cli_name(name: Option<String>) {
+    if let Some(n) = name {
+        if !n.trim().is_empty() {
+            let _ = CLI_NAME.set(n.trim().to_string());
+        }
+    }
+}
+
+/// 本机主机名（跨平台；失败回退 "device"）。
+pub fn hostname() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "device".into())
 }
 
 impl Default for Config {
@@ -52,6 +89,7 @@ impl Default for Config {
             password: None,
             stun_addr: None,
             turn_providers: Vec::new(),
+            name: None,
         }
     }
 }
@@ -265,6 +303,7 @@ mod tests {
             password: Some("secret".into()),
             stun_addr: Some("stun.cloudflare.com:3478".into()),
             turn_providers: vec!["turn://frp-sh:secret@1.2.3.4:3478".into()],
+            name: Some("test-box".into()),
         };
         cfg.save(&path).unwrap();
         let loaded = Config::load(Some(&path)).unwrap();
