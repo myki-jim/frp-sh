@@ -78,6 +78,11 @@ pub enum Commands {
     },
     /// Configure the signaling server interactively (first-run wizard)
     Config,
+    /// Manage saved connection profiles (server panel "one-click join" writes these too)
+    Profile {
+        #[command(subcommand)]
+        cmd: ProfileCmd,
+    },
     /// game multiplayer: application-layer port forwarding (e.g. Minecraft), pure forwarding without meshing
     Game {
         #[command(subcommand)]
@@ -229,4 +234,88 @@ pub enum LanCmd {
     Create(LanCreateArgs),
     /// Join a room (guest)
     Join(LanJoinArgs),
+}
+
+/// Saved connection profile management.
+#[derive(Subcommand, Debug)]
+pub enum ProfileCmd {
+    /// List saved profiles
+    List,
+    /// Show one profile (password masked)
+    Show { name: String },
+    /// Add a profile (name defaults to profile1, profile2, ... in order)
+    Add {
+        /// Profile name (defaults to profileN)
+        #[arg(long)]
+        name: Option<String>,
+        /// Signaling server URL, e.g. http://101.43.41.195:8080
+        #[arg(long)]
+        server: String,
+        /// Room ID to join, e.g. 7411
+        #[arg(long)]
+        room: String,
+        /// Server password
+        #[arg(long)]
+        password: Option<String>,
+        /// Connection mode: lan | dev | game (default lan)
+        #[arg(long, default_value = "lan")]
+        mode: String,
+        /// Device name shown to peers (default hostname)
+        #[arg(long)]
+        device: Option<String>,
+        /// Relay address (default derived from the server host, :8081)
+        #[arg(long)]
+        relay: Option<String>,
+        /// Local listen address (dev/game modes; default 127.0.0.1:25565)
+        #[arg(long)]
+        listen: Option<String>,
+        /// lan mode: expose your LAN into the tunnel
+        #[arg(long)]
+        expose_lan: bool,
+        /// Set as the default profile
+        #[arg(long, default_value_t = true)]
+        set_default: bool,
+    },
+    /// Edit a profile (rename / change fields)
+    Edit {
+        /// Profile name to edit
+        name: String,
+        /// New profile name
+        #[arg(long)]
+        rename: Option<String>,
+        /// Signaling server URL
+        #[arg(long)]
+        server: Option<String>,
+        /// Room ID
+        #[arg(long)]
+        room: Option<String>,
+        /// Server password
+        #[arg(long)]
+        password: Option<String>,
+        /// Device name shown to peers
+        #[arg(long)]
+        device: Option<String>,
+        /// Relay address
+        #[arg(long)]
+        relay: Option<String>,
+        /// Local listen address (dev/game modes)
+        #[arg(long)]
+        listen: Option<String>,
+        /// Connection mode: lan | dev | game
+        #[arg(long)]
+        mode: Option<String>,
+        /// lan mode: expose your LAN into the tunnel
+        #[arg(long)]
+        expose_lan: Option<bool>,
+        /// Set as the default profile
+        #[arg(long)]
+        set_default: bool,
+    },
+    /// Remove a profile
+    Remove { name: String },
+    /// Start a session from a saved profile (uses the default profile if name omitted)
+    Run {
+        /// Profile name (optional; default profile otherwise)
+        name: Option<String>,
+    },
 }

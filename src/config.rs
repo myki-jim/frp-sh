@@ -43,6 +43,61 @@ pub struct Config {
     /// 可选：设备显示名（面板/拓扑显示；默认取主机名；房间内重名自动加 -2/-3 后缀）
     #[serde(default)]
     pub name: Option<String>,
+    /// 连接配置档案（`frp-sh profile` 子命令管理；面板"一键接入"生成）。
+    #[serde(default, skip_serializing_if = "profiles_empty")]
+    pub profiles: std::collections::BTreeMap<String, Profile>,
+}
+
+fn profiles_empty(m: &std::collections::BTreeMap<String, Profile>) -> bool {
+    m.is_empty()
+}
+
+/// 一条客户端连接配置：面板"一键接入"或 `frp-sh profile add` 写入，
+/// `frp-sh profile run <name>` 按它启动会话。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Profile {
+    /// 档案名（默认 profile1、profile2 … 顺序分配；可 `profile edit --rename` 改名）
+    pub name: String,
+    /// 信令服务器 URL（如 http://101.43.41.195:8080）
+    pub server: String,
+    /// 要加入的房间号
+    pub room: String,
+    /// 服务器密码（面板不显示明文；CLI 列表输出同样打码）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// 连接模式：lan（虚拟网卡组网）| dev | game（端口转发）
+    #[serde(default = "default_profile_mode")]
+    pub mode: String,
+    /// 对端显示的设备名（缺省取主机名）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    /// TCP 中继地址（缺省由 server 主机名 :8081 推导）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_addr: Option<String>,
+    /// dev/game 模式的本地监听地址
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen: Option<String>,
+    /// lan 模式：把本机局域网接入隧道
+    #[serde(default)]
+    pub expose_lan: bool,
+    /// 默认档案（`frp-sh profile run` 不带名字时用它）
+    #[serde(default)]
+    pub default: bool,
+}
+
+fn default_profile_mode() -> String {
+    "lan".to_string()
+}
+
+impl Profile {
+    /// 密码打码显示（面板/列表）：只露前 2 后 2。
+    pub fn masked_password(&self) -> String {
+        match &self.password {
+            Some(p) if p.len() > 8 => format!("{}••••{}", &p[..2], &p[p.len() - 2..]),
+            Some(_) => "••••••".into(),
+            None => "—".into(),
+        }
+    }
 }
 
 /// 设备显示名：`--name` / config `name` 优先，否则主机名。
@@ -90,6 +145,7 @@ impl Default for Config {
             stun_addr: None,
             turn_providers: Vec::new(),
             name: None,
+            profiles: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -191,6 +247,50 @@ impl Config {
         }
         let text = toml::to_string(self).map_err(|e| io::Error::other(e.to_string()))?;
         std::fs::write(path, text)
+    }
+
+    /// 保存到默认配置路径（无默认路径时报错）。
+    pub fn save_default(&self) -> anyhow::Result<()> {
+        let p = Self::default_path()
+            .ok_or_else(|| anyhow::anyhow!("cannot determine config path"))?;
+        self.save(&p).map_err(|e| anyhow::anyhow!("save config: {e}"))
+    }
+
+    /// 下一个空闲档案名：profile1、profile2 …
+    pub fn next_profile_name(&self) -> String {
+        let mut n = 1;
+        loop {
+            let name = format!("profile{n}");
+            if !self.profiles.contains_key(&name) {
+                return name;
+            }
+            n += 1;
+        }
+    }
+
+    /// 取默认档案（无标记时取第一个）。
+    pub fn default_profile(&self) -> Option<&Profile> {
+        self.profiles
+            .values()
+            .find(|p| p.default)
+            .or_else(|| self.profiles.values().next())
+    }
+
+    /// 把某档案设为默认（清掉其余标记）。
+    pub fn mark_default_profile(&mut self, name: &str) {
+        for (k, p) in self.profiles.iter_mut() {
+            p.default = k == name;
+        }
+    }
+
+    /// 由 server URL 推导中继地址（同主机 :8081）。
+    pub fn derive_relay(server: &str) -> Option<String> {
+        let url = reqwest::Url::parse(server).ok()?;
+        let host = url.host_str()?;
+        let port = url.port().unwrap_or(80);
+        // 常见约定：HTTP 8080 → 中继 8081；其他端口 +1
+        let relay_port = if port == 80 { 8081 } else { port + 1 };
+        Some(format!("{host}:{relay_port}"))
     }
 
     /// 信令服务器主机名（用于推导中继地址等）。
@@ -304,6 +404,7 @@ mod tests {
             stun_addr: Some("stun.cloudflare.com:3478".into()),
             turn_providers: vec!["turn://frp-sh:secret@1.2.3.4:3478".into()],
             name: Some("test-box".into()),
+            profiles: std::collections::BTreeMap::new(),
         };
         cfg.save(&path).unwrap();
         let loaded = Config::load(Some(&path)).unwrap();

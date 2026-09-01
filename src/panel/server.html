@@ -94,6 +94,7 @@ svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
   <span class="chip" id="chip-auth"><span class="dot"></span><b>—</b></span>
   <span class="chip" id="chip-ver">—</span>
   <button class="btn" id="lang" onclick="toggleLang()">中文</button>
+  <button class="btn" id="logs-btn" onclick="toggleLogs()"><span data-i18n="logs">Logs</span></button>
 </header>
 
 <main class="wrap">
@@ -105,6 +106,11 @@ svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
     </div>
   </section>
   <section id="detail" style="display:none"></section>
+  <section id="logs-card" class="card" style="display:none;margin-top:32px">
+    <h2 style="display:flex;justify-content:space-between;align-items:center"><span data-i18n="logs">Logs</span>
+      <span style="font-size:10.5px;color:var(--tx3);letter-spacing:0;text-transform:none" id="log-file"></span></h2>
+    <div id="logs" style="max-height:460px;overflow-y:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.75;color:var(--tx2)"></div>
+  </section>
 </main>
 
 <footer class="foot" id="foot">ws</footer>
@@ -130,6 +136,10 @@ gate_go:"Enter panel",back:"Back to overview",detail:"Room detail",topo:"Topolog
 pub:"Public address",lan:"LAN addresses",vnet:"Vnet IP",created:"Created",left:"Time left",
 device:"Device",turn_r:"TURN relay",relays_l:"Relay links",proto:"protocol",
 status:"Status",up:"Up",down:"Down",online:"online",idle:"idle",
+logs:"Logs",logfile:"Log file",nologs:"No logs yet",
+join_t:"One-click client join",join_note:"Run this on the client machine (installs frp-sh if missing, saves the profile and joins this room). The password is masked here and only filled in when you copy.",
+join_win:"Windows (PowerShell)",join_nix:"macOS / Linux (shell)",
+copy:"Copy",copied:"Copied!",
 d:"d",h:"h",m:"m"},
 zh:{rooms:"房间",rooms_n:"房间数",guests:"访客数",relays:"中继链路",turn:"TURN 分配",
 host:"房主",guests_n:"位访客",ttl:"剩余",lang:"EN",no:"暂无活跃房间",
@@ -139,12 +149,18 @@ gate_go:"进入面板",back:"返回总览",detail:"房间详情",topo:"拓扑",
 pub:"公网地址",lan:"局域网地址",vnet:"虚拟 IP",created:"创建于",left:"剩余时间",
 device:"设备",turn_r:"TURN 中继",relays_l:"中继链路",proto:"线协议",
 status:"状态",up:"上行",down:"下行",online:"在线",idle:"空闲",
+logs:"日志",logfile:"日志文件",nologs:"暂无日志",
+join_t:"客户端一键接入",join_note:"在客户端机器上运行（自动安装 frp-sh、保存配置并加入本房间）。此处密码打码，复制时才填入真实值。",
+join_win:"Windows (PowerShell)",join_nix:"macOS / Linux (shell)",
+copy:"复制",copied:"已复制!",
 d:"天",h:"时",m:"分"}};
 let LANG=localStorage.getItem("frpsh-lang")||"en";
 const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
 function applyLang(){document.querySelectorAll("[data-i18n]").forEach(e=>e.textContent=t(e.dataset.i18n));document.getElementById("lang").textContent=t("lang")}
 function toggleLang(){LANG=LANG==="en"?"zh":"en";localStorage.setItem("frpsh-lang",LANG);applyLang();route()}
 function esc(s){return String(s??"—").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]))}
+function setText(el,v){v=String(v??"");if(el&&el.textContent!==v)el.textContent=v}
+function setHTML(el,v){if(el&&el.innerHTML!==v)el.innerHTML=v}
 function fmtTtl(s){if(s<=0)return"—";const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+t("h")+" ":"")+m+t("m")}
 function fmtBytes(b){if(b==null)return"—";if(b>=1073741824)return(b/1073741824).toFixed(2)+" GB";if(b>=1048576)return(b/1048576).toFixed(1)+" MB";if(b>=1024)return(b/1024).toFixed(1)+" KB";return Math.round(b)+" B"}
 function fmtBps(b){if(b==null)return"";if(b>=1048576)return(b/1048576).toFixed(1)+" MB/S";if(b>=1024)return(b/1024).toFixed(1)+" KB/S";return Math.round(b)+" B/S"}
@@ -240,8 +256,39 @@ function topoSvg(room){
   });
   return s+"</svg>";
 }
-/* 拓扑入场：连线按长度描画（虚线样式动画后还原），节点半径弹入 */
-function animTopo(svgEl){
+/* ---------- 一键接入：生成客户端 profile 配置命令（密码遮罩，复制才落明文） ---------- */
+function joinCmdBlock(roomId,platform,label){
+  const c=joinCmd(roomId,platform);
+  return '<div style="margin:10px 0 16px"><div style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx3);margin-bottom:6px">'+esc(label)+'</div>'
+    +'<pre id="cmd-'+platform+'" style="background:var(--bg1,#111114);border:1px solid #26262b;border-radius:8px;padding:12px 14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.7;color:var(--tx2);white-space:pre-wrap;word-break:break-all;margin:0 0 8px">'+esc(c.shown)+'</pre>'
+    +'<button class="btn" id="copy-'+platform+'" onclick="copyJoinCmd(\''+esc(roomId)+'\',\''+platform+'\')">'+esc(t("copy"))+"</button></div>";
+}
+function joinCmd(roomId, platform){
+  const origin=location.origin;
+  const relay=location.hostname+":8081";
+  const pw=TOKEN||"";
+  const shown=pw?(pw.slice(0,2)+"••••••"+pw.slice(-2)):"<server-password>";
+  const real=pw||"<server-password>";
+  const winCmd=p=>`$env:FRPSH_SKIP_INIT='1'; irm https://frp.sh/install.ps1 | iex; $env:Path += ";$env:LOCALAPPDATA\\frp-sh"; frp-sh profile add --server ${origin} --relay ${relay} --room ${roomId} --password ${p} --mode lan --set-default; frp-sh profile run`;
+  const nixCmd=p=>`curl -fsSL https://frp.sh/install.sh | FRPSH_SKIP_INIT=1 sh && frp-sh profile add --server ${origin} --relay ${relay} --room ${roomId} --password ${p} --mode lan --set-default && frp-sh profile run`;
+  if(platform==="win")return{shown:winCmd(shown),real:winCmd(real)};
+  return{shown:nixCmd(shown),real:nixCmd(real)};
+}
+async function copyJoinCmd(roomId,platform){
+  const c=joinCmd(roomId,platform).real;
+  try{await navigator.clipboard.writeText(c)}
+  catch(e){
+    const ta=document.createElement("textarea");ta.value=c;document.body.appendChild(ta);
+    ta.select();document.execCommand("copy");ta.remove();
+  }
+  flashCopied(platform);
+}
+function flashCopied(platform){
+  const b=document.getElementById("copy-"+platform);
+  if(!b)return;const old=b.textContent;b.textContent=t("copied");
+  setTimeout(()=>{b.textContent=old},1500);
+}
+/* 拓扑入场：连线按长度描画（虚线样式动画后还原），节点半径弹入 */function animTopo(svgEl){
   if(!G||!svgEl)return;
   svgEl.querySelectorAll("line").forEach((ln,i)=>{
     let len=300;try{len=ln.getTotalLength()}catch(e){}
@@ -315,7 +362,10 @@ function renderDetail(id){
     +kv(t("left"),esc(fmtTtl(room.ttl_left_s))+" · "+esc(t("relays_l"))+": "+(room.relay_pairs||0))+"</div>"
     +'<div class="card"><h2>'+esc(t("topo"))+"</h2>"+topoSvg(room)+"</div>"
     +'<div class="card"><h2>'+esc(t("guests"))+"</h2>"
-    +(guests.length?table:'<div class="idle">'+esc(t("no"))+"</div>")+"</div>";
+    +(guests.length?table:'<div class="idle">'+esc(t("no"))+"</div>")+"</div>"
+    +'<div class="card"><h2>'+esc(t("join_t"))+'</h2><div style="font-size:11.5px;color:var(--tx3);margin:6px 0 12px;line-height:1.6">'+esc(t("join_note"))+"</div>"
+    +joinCmdBlock(room.room_id,"win",t("join_win"))
+    +joinCmdBlock(room.room_id,"nix",t("join_nix"))+"</div>";
   // 速率基准 + 动画（仅在切换房间时播放入场）
   const rows={};guests.forEach(g=>{rows[g.uuid]={up:g.up,down:g.down}});
   prevDetail={room:id,ts:now,rows,host:{up:host.up,down:host.down}};
@@ -338,6 +388,36 @@ function connect(){
   };
   ws.onclose=()=>{document.getElementById("foot").textContent="ws reconnecting …";setTimeout(connect,2500)};
   ws.onopen=()=>{document.getElementById("foot").textContent="ws · 2s"};
+}
+/* ---------- 日志视图（/api/panel/debug，2s 增量拉取，只 append 新行） ---------- */
+let logsTimer=null,logSeq=0;
+function logTime(ts){const d=new Date(ts*1000);const p=n=>String(n).padStart(2,"0");return p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds())}
+async function pullLogs(){
+  try{
+    const d=await fetchJson("/api/panel/debug");
+    const lc=document.getElementById("logs");
+    setText(document.getElementById("log-file"),d.file?d.file:t("logfile"));
+    if(d.total<logSeq){lc.innerHTML="";logSeq=0} // 服务器重启 → 重置
+    const skip=logSeq-Math.max(0,(d.total-d.lines.length));
+    d.lines.slice(Math.max(skip,0)).forEach(l=>{
+      if(l.seq<=logSeq)return;
+      const row=document.createElement("div");
+      const c=l.level==="WARN"?"#e8c66a":(l.level==="ERROR"?"#e86a6a":(l.level==="DEBUG"?"#5a5a5f":"var(--tx2)"));
+      row.innerHTML='<span style="color:var(--tx3)">'+logTime(l.ts)+'</span> <span style="color:'+c+';display:inline-block;min-width:46px">'+esc(l.level)+'</span> <span style="color:'+c+'">'+esc(l.msg)+"</span>";
+      lc.appendChild(row);
+      logSeq=l.seq;
+    });
+    while(lc.children.length>1000)lc.removeChild(lc.firstChild);
+    lc.scrollTop=lc.scrollHeight;
+  }catch(e){}
+}
+function toggleLogs(){
+  const c=document.getElementById("logs-card");
+  const on=c.style.display!=="block";
+  c.style.display=on?"block":"none";
+  document.getElementById("logs-btn").style.outline=on?"1px solid var(--tx)":"";
+  if(on&&!logsTimer){pullLogs();logsTimer=setInterval(pullLogs,2000)}
+  if(!on&&logsTimer){clearInterval(logsTimer);logsTimer=null}
 }
 applyLang();
 if(G){G.from(".bar > *",{opacity:0,y:-8,duration:.4,ease:"power2.out",stagger:.06,clearProps:"all"})}
