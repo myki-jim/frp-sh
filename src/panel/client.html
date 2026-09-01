@@ -97,6 +97,17 @@ svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
     <svg id="topo" viewBox="0 0 500 320" width="100%" height="320"></svg>
   </div>
 
+  <div id="share-card" class="card" style="display:none">
+    <h2 data-i18n="share_t">Invite / share</h2>
+    <div style="font-size:11.5px;color:var(--tx3);margin:6px 0 12px;line-height:1.6" data-i18n="share_note"></div>
+    <div style="margin:10px 0 16px"><div style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx3);margin-bottom:6px" data-i18n="share_win">Windows (PowerShell)</div>
+      <pre id="share-win" style="background:var(--bg1,#111114);border:1px solid #26262b;border-radius:8px;padding:12px 14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.7;color:var(--tx2);white-space:pre-wrap;word-break:break-all;margin:0 0 8px"></pre>
+      <button class="btn" id="share-copy-win" onclick="copyShare('win')">Copy</button></div>
+    <div style="margin:10px 0 4px"><div style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx3);margin-bottom:6px" data-i18n="share_nix">macOS / Linux (shell)</div>
+      <pre id="share-nix" style="background:var(--bg1,#111114);border:1px solid #26262b;border-radius:8px;padding:12px 14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.7;color:var(--tx2);white-space:pre-wrap;word-break:break-all;margin:0 0 8px"></pre>
+      <button class="btn" id="share-copy-nix" onclick="copyShare('nix')">Copy</button></div>
+  </div>
+
   <div id="logs-card" class="card" style="display:none">
     <h2 style="display:flex;justify-content:space-between;align-items:center"><span data-i18n="logs">Logs</span>
       <span style="font-size:10.5px;color:var(--tx3);letter-spacing:0;text-transform:none" id="log-file"></span></h2>
@@ -112,12 +123,18 @@ en:{basic:"Basic information",myid:"Your ID",pub:"Public address",lan:"LAN addre
 tun:"TUN device",sig:"Signaling",since:"Session started",links:"Links",topo:"Topology",
 idle:"No active session — start frp-sh lan/dev/game.",enc:"Encryption",on:"On",off:"Off",
 direct:"Direct",turn:"TURN",relay:"TCP relay",lang:"中文",nolinks:"No links yet",
-na:"n/a",sub:"client panel",dev:"Device",logs:"Logs",logfile:"Log file",nologs:"No logs yet"},
+na:"n/a",sub:"client panel",dev:"Device",logs:"Logs",logfile:"Log file",nologs:"No logs yet",
+share_t:"Invite / share",share_note:"Send this line to a friend (any host or guest can share). It installs frp-sh if missing, saves the connection profile (deduped) and joins this room. Password masked here, filled in on copy.",
+share_win:"Windows (PowerShell)",share_nix:"macOS / Linux (shell)",
+copy:"Copy",copied:"Copied!"},
 zh:{basic:"基础信息",myid:"本机 ID",pub:"公网地址",lan:"局域网地址",vnet:"虚拟 IP",
 tun:"TUN 设备",sig:"信令服务器",since:"会话开始",links:"链路",topo:"连接拓扑",
 idle:"暂无活动会话 —— 请运行 frp-sh lan/dev/game。",enc:"加密",on:"开",off:"关",
 direct:"直连",turn:"TURN",relay:"TCP 中继",lang:"EN",nolinks:"暂无链路",
-na:"—",sub:"客户端面板",dev:"设备",logs:"日志",logfile:"日志文件",nologs:"暂无日志"}};
+na:"—",sub:"客户端面板",dev:"设备",logs:"日志",logfile:"日志文件",nologs:"暂无日志",
+share_t:"邀请 / 分享",share_note:"把这一行发给朋友（房主和访客都可以分享）。会自动安装 frp-sh、保存配置档案（自动去重）并加入当前房间。此处密码打码，复制时才填入真实值。",
+share_win:"Windows (PowerShell)",share_nix:"macOS / Linux (shell)",
+copy:"复制",copied:"已复制!"}};
 let LANG=localStorage.getItem("frpsh-lang")||"en";
 const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
 function applyLang(){document.querySelectorAll("[data-i18n]").forEach(e=>e.textContent=t(e.dataset.i18n));document.getElementById("lang").textContent=t("lang")}
@@ -158,6 +175,21 @@ function render(d){
     setText(document.getElementById("i-sig"),info.signaling||"—");
     setText(document.getElementById("i-since"),fmtSince(info.started_at));
   }
+  /* ---------- 分享卡：房主 / 访客都可复制一键加入命令 ---------- */
+  const sc=document.getElementById("share-card");
+  const shareKey=[info.mode,info.room,info.signaling,info.relay_addr,info.password].join("|");
+  if(hasSession&&info.room){
+    const show=sc.style.display!=="block";
+    sc.style.display="block";
+    if(show&&G){G.from(sc,{opacity:0,y:14,duration:.5,ease:"power2.out",clearProps:"all"})}
+    if(shareKey!==lastShareKey){
+      lastShareKey=shareKey;
+      const w=shareCmd(info,"win"),n=shareCmd(info,"nix");
+      setText(document.getElementById("share-win"),w.shown);
+      setText(document.getElementById("share-nix"),n.shown);
+      window._shareReal={win:w.real,nix:n.real};
+    }
+  }else{sc.style.display="none";lastShareKey=""}
   const now=Date.now();
   const lc=document.getElementById("links");
   const prevMap={};if(prev)prev.links.forEach(l=>prevMap[l.peer+"|"+l.kind]=l);
@@ -268,6 +300,36 @@ function drawTopo(links,info){
   });
 }
 const wsProto=location.protocol==="https:"?"wss":"ws";
+/* ---------- 分享命令生成（房主 / 访客都可复制；profile 自动去重） ---------- */
+let lastShareKey="";
+function shareCmd(info,platform){
+  const origin=(info.signaling||"").replace(/\/+$/,"");
+  const relay=info.relay_addr||(location.hostname?location.hostname+":8081":"");
+  const pw=info.password||"";
+  const shown=pw?(pw.slice(0,2)+"••••••"+pw.slice(-2)):"<server-password>";
+  const real=pw||"<server-password>";
+  const room=info.room||"";
+  const mode=(info.mode||"").indexOf("lan")>=0?"lan":"dev";
+  const winCmd=p=>`$env:FRPSH_SKIP_INIT='1'; irm https://frp.sh/install.ps1 | iex; $env:Path += ";$env:LOCALAPPDATA\\frp-sh"; frp-sh profile add --server ${origin} --relay ${relay} --room ${room} --password ${p} --mode ${mode} --set-default; frp-sh profile run`;
+  const nixCmd=p=>`curl -fsSL https://frp.sh/install.sh | FRPSH_SKIP_INIT=1 sh && frp-sh profile add --server ${origin} --relay ${relay} --room ${room} --password ${p} --mode ${mode} --set-default && frp-sh profile run`;
+  if(platform==="win")return{shown:winCmd(shown),real:winCmd(real)};
+  return{shown:nixCmd(shown),real:nixCmd(real)};
+}
+async function copyShare(platform){
+  const c=(window._shareReal||{})[platform];
+  if(!c)return;
+  try{await navigator.clipboard.writeText(c)}
+  catch(e){
+    const ta=document.createElement("textarea");ta.value=c;document.body.appendChild(ta);
+    ta.select();document.execCommand("copy");ta.remove();
+  }
+  flashShareCopied(platform);
+}
+function flashShareCopied(platform){
+  const b=document.getElementById("share-copy-"+platform);
+  if(!b)return;const old=b.textContent;b.textContent=t("copied");
+  setTimeout(()=>{b.textContent=t("copy")},1500);
+}
 function connect(){
   const ws=new WebSocket(wsProto+"://"+location.host+"/ws");
   ws.onmessage=e=>{lastWS=JSON.parse(e.data);render(lastWS)};
