@@ -45,6 +45,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub name: Option<String>,
 
+    /// UDP hole-punch attempts before falling back to the TCP relay
+    /// (default 1: one failed punch goes straight to relay; 0 disables punching)
+    #[arg(long, global = true, default_value_t = 1)]
+    pub punch_retries: u32,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

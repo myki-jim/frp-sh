@@ -1931,6 +1931,10 @@ pub async fn guest_session(
     // 对端收不到我们，典型于对端防火墙拦入站）。下一轮跳过打洞直接走中继，
     // 避免每个重连轮都复现同样的 3s 死链、无限循环。
     let mut direct_broke = false;
+    // 打洞降级策略（--punch-retries，默认 1）：打洞失败累计达到上限后，
+    // 后续轮次不再尝试打洞和 TURN，直接走 TCP 中继（更快到达稳定链路）。
+    let mut punch_fails: u32 = 0;
+    let mut punch_exhausted = false;
     // 面板基础信息
     crate::stats::update_info(crate::stats::SessionInfo {
         mode: if tun.is_some() { "lan-guest" } else { "guest" }.into(),
@@ -2135,7 +2139,7 @@ pub async fn guest_session(
             &signaling,
             room_id,
             &token,
-            force_relay || direct_broke,
+            force_relay || direct_broke || punch_exhausted,
             spread,
         )
         .await;
@@ -2176,10 +2180,25 @@ pub async fn guest_session(
             }
             PunchOutcome::TimedOut => {
                 state.relay_mode = true;
-                // 1) 优先尝试 TURN 中继（配置了供应商时；轮询等待房主通告 relay，最多 5s）。
-                //    turn_broke（上一轮 TURN 链路异常断开）后跳过 TURN，直走 TCP 中继与
-                //    房主会师——房主端可能已改走 TCP 中继等待配对，固执重试 TURN 会死循环。
-                let host_relay = if turn_client.is_some() && !turn_broke {
+                punch_fails += 1;
+                let retries = crate::config::punch_retries();
+                if !punch_exhausted && punch_fails >= retries {
+                    punch_exhausted = true;
+                    log::info!(
+                        "punch failed {punch_fails}/{retries} rounds: skipping punch and TURN from now on, using TCP relay directly"
+                    );
+                    println!(
+                        "  {}",
+                        warn(format!(
+                            "punch failed {punch_fails} time(s) — switching to TCP relay for good (tune with --punch-retries)"
+                        ))
+                    );
+                }
+                // 1) TURN 中继（配置了供应商或服务器下发内置 TURN 时；punch 用尽后跳过，
+                //    直接走 TCP 中继——重试打洞只会重复同样的失败路径）。
+                //    turn_broke（上一轮 TURN 链路异常断开）后同样跳过 TURN，与房主会师。
+                let host_relay =
+                    if turn_client.is_some() && !turn_broke && !punch_exhausted {
                     let mut hr = None;
                     for _ in 0..20 {
                         if let Ok(r) = signaling.get_room(room_id).await {
