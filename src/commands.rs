@@ -446,8 +446,257 @@ async fn run_data_plane(
     Ok(())
 }
 
-// ---------- 面板流量上报 ----------
+// ---------- 配置档案（profile）管理 ----------
 
+/// 保存配置到磁盘（默认路径；`--config` 指定时用给定路径）。
+fn save_config(cfg: &Config, path: Option<&std::path::Path>) -> anyhow::Result<()> {
+    match path {
+        Some(p) => cfg.save(p).map_err(|e| anyhow::anyhow!("save config: {e}")),
+        None => cfg.save_default(),
+    }
+}
+
+/// `frp-sh profile ...`：配置档案的增删改查与按档案启动会话。
+pub async fn run_profile(
+    cmd: crate::cli::ProfileCmd,
+    config_path: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    use crate::cli::ProfileCmd;
+    let mut cfg = Config::load_auto(config_path.as_deref())?;
+    match cmd {
+        ProfileCmd::List => {
+            if cfg.profiles.is_empty() {
+                println!("no profiles yet — add one with:");
+                println!(
+                    "  {}",
+                    dim("frp-sh profile add --server http://<server>:8080 --room <id> --password <pw>")
+                );
+                return Ok(());
+            }
+            println!("{}", "frp-sh profiles".cyan().bold());
+            for p in cfg.profiles.values() {
+                let star = if p.default { "*" } else { " " };
+                println!(
+                    "  {star}{}  [{}] {} · room {} · device {} · pw {}",
+                    p.name,
+                    p.mode,
+                    p.server,
+                    p.room,
+                    p.device_name.clone().unwrap_or_else(|| "(hostname)".into()),
+                    p.masked_password()
+                );
+            }
+            println!("\n  {}", dim("* = default; run with: frp-sh profile run <name>"));
+        }
+        ProfileCmd::Show { name } => {
+            let p = cfg
+                .profiles
+                .get(&name)
+                .ok_or_else(|| anyhow::anyhow!("profile {name} not found"))?;
+            println!("{}", format!("profile {name}").cyan().bold());
+            println!(
+                "{}",
+                utils::kv_table(&[
+                    ("Server", p.server.clone()),
+                    ("Relay", p.relay_addr.clone().unwrap_or_default()),
+                    ("Room", p.room.clone()),
+                    ("Mode", p.mode.clone()),
+                    ("Device", p.device_name.clone().unwrap_or_default()),
+                    ("Listen", p.listen.clone().unwrap_or_default()),
+                    ("Expose LAN", p.expose_lan.to_string()),
+                    ("Password", p.masked_password()),
+                    ("Default", p.default.to_string()),
+                ])
+            );
+        }
+        ProfileCmd::Add {
+            name,
+            server,
+            room,
+            password,
+            mode,
+            device,
+            relay,
+            listen,
+            expose_lan,
+            set_default,
+        } => {
+            let name = name.unwrap_or_else(|| cfg.next_profile_name());
+            if !mode_matches(&mode) {
+                anyhow::bail!("bad --mode {mode}: expected lan | dev | game");
+            }
+            if cfg.profiles.contains_key(&name) {
+                anyhow::bail!("profile {name} already exists (use `profile edit {name}`)");
+            }
+            let relay = relay.or_else(|| Config::derive_relay(&server));
+            let p = crate::config::Profile {
+                name: name.clone(),
+                server: server.trim().trim_end_matches('/').to_string(),
+                room: room.clone(),
+                password,
+                mode,
+                device_name: device,
+                relay_addr: relay,
+                listen,
+                expose_lan,
+                default: false,
+            };
+            println!("  {}", ok(format!("profile {name} saved")));
+            if set_default {
+                cfg.mark_default_profile(&name);
+            }
+            cfg.profiles.insert(name.clone(), p);
+            save_config(&cfg, config_path.as_deref())?;
+            println!(
+                "  {}",
+                hint(format!(
+                    "start it with: frp-sh profile run {name}"
+                ))
+            );
+        }
+        ProfileCmd::Edit {
+            name,
+            rename,
+            server,
+            room,
+            password,
+            device,
+            relay,
+            listen,
+            mode,
+            expose_lan,
+            set_default,
+        } => {
+            if !cfg.profiles.contains_key(&name) {
+                anyhow::bail!("profile {name} not found");
+            }
+            let p = cfg.profiles.get_mut(&name).unwrap();
+            if let Some(v) = server {
+                p.server = v.trim().trim_end_matches('/').to_string();
+            }
+            if let Some(v) = room {
+                p.room = v;
+            }
+            if let Some(v) = password {
+                p.password = Some(v);
+            }
+            if let Some(v) = device {
+                p.device_name = Some(v);
+            }
+            if let Some(v) = relay {
+                p.relay_addr = Some(v);
+            }
+            if let Some(v) = listen {
+                p.listen = Some(v);
+            }
+            if let Some(v) = mode {
+                if !mode_matches(&v) {
+                    anyhow::bail!("bad --mode {v}: expected lan | dev | game");
+                }
+                p.mode = v;
+            }
+            if let Some(v) = expose_lan {
+                p.expose_lan = v;
+            }
+            if let Some(new_name) = rename {
+                let new_name = new_name.trim().to_string();
+                if new_name.is_empty() {
+                    anyhow::bail!("--rename cannot be empty");
+                }
+                let mut moved = p.clone();
+                moved.name = new_name.clone();
+                cfg.profiles.remove(&name);
+                cfg.profiles.insert(new_name.clone(), moved);
+                if set_default {
+                    cfg.mark_default_profile(&new_name);
+                }
+                save_config(&cfg, config_path.as_deref())?;
+                println!("  {}", ok(format!("profile {new_name} updated")));
+            } else {
+                if set_default {
+                    cfg.mark_default_profile(&name);
+                }
+                save_config(&cfg, config_path.as_deref())?;
+                println!("  {}", ok(format!("profile {name} updated")));
+            }
+        }
+        ProfileCmd::Remove { name } => {
+            if cfg.profiles.remove(&name).is_none() {
+                anyhow::bail!("profile {name} not found");
+            }
+            save_config(&cfg, config_path.as_deref())?;
+            println!("  {}", ok(format!("profile {name} removed")));
+        }
+        ProfileCmd::Run { name } => {
+            let p = match name {
+                Some(n) => cfg.profiles.get(&n).cloned().ok_or_else(|| {
+                    anyhow::anyhow!("profile {n} not found")
+                })?,
+                None => cfg
+                    .default_profile()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no profiles; add one with `profile add`"))?,
+            };
+            run_profile_session(&p, &cfg).await?;
+        }
+    }
+    Ok(())
+}
+
+fn mode_matches(mode: &str) -> bool {
+    matches!(mode, "lan" | "dev" | "game")
+}
+
+/// 按档案启动客户端会话（lan → 虚拟网卡组网；dev/game → 端口转发）。
+async fn run_profile_session(p: &crate::config::Profile, base: &Config) -> anyhow::Result<()> {
+    // 以磁盘配置为底（保留 uuid / stun / turn 等），覆盖档案字段
+    let mut cfg = base.clone();
+    cfg.signaling_addr = p.server.clone();
+    if let Some(r) = &p.relay_addr {
+        cfg.relay_addr = r.clone();
+    }
+    if p.password.is_some() {
+        cfg.password = p.password.clone();
+    }
+    cfg.name = p.device_name.clone();
+    let room = p.room.clone();
+    match p.mode.as_str() {
+        "lan" => {
+            let ip = cfg
+                .uuid
+                .as_deref()
+                .map(crate::utils::derive_vnet_ip)
+                .unwrap_or_else(|| TunOpts::guest_default().ip);
+            let tun_opts = Some(TunOpts {
+                ip,
+                netmask: "255.255.255.0".into(),
+                mtu: 1400,
+                lan_routes: Vec::new(),
+            });
+            let reported_ip = Some(tun_opts.as_ref().map(|t| t.ip.clone()).unwrap_or_default());
+            run_join(
+                cfg,
+                room,
+                "127.0.0.1:25565".into(),
+                false,
+                None,
+                0,
+                2,
+                tun_opts,
+                reported_ip,
+                p.expose_lan,
+            )
+            .await
+        }
+        "dev" | "game" => {
+            let listen = p.listen.clone().unwrap_or_else(|| "127.0.0.1:25565".into());
+            run_join(cfg, room, listen, false, None, 0, 2, None, None, false).await
+        }
+        other => anyhow::bail!("bad profile mode {other}: expected lan | dev | game"),
+    }
+}
+
+// ---------- 面板流量上报 ----------
 /// 周期（2s）把本机链路字节数上报给信令服务器（面板房间详情的设备上下行）。
 ///
 /// - `host`：逐链路上报（peer = 对端设备名，mesh 直连/TURN/中继均已按设备名注册）
@@ -707,6 +956,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         stun_addr,
         turn_providers: Vec::new(),
         name: None, // 设备显示名默认主机名；可手动编辑 config 加 name 字段
+        profiles: std::collections::BTreeMap::new(),
     };
 
     // 保存

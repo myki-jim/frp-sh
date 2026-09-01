@@ -24,7 +24,8 @@ fn main() -> anyhow::Result<()> {
 async fn real_main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     let filter = if cli.verbose { "debug" } else { "info" };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(filter)).init();
+    // 日志终端静默：写入 <配置目录>/logs/frp-sh.log + 内存环形缓冲（面板 /api/debug）
+    frp_sh::debuglog::init(filter);
 
     let cli::Cli {
         command,
@@ -112,6 +113,9 @@ async fn real_main() -> anyhow::Result<()> {
         }
         Some(Commands::Config) => {
             frp_sh::commands::run_config(config).await?;
+        }
+        Some(Commands::Profile { cmd }) => {
+            frp_sh::commands::run_profile(cmd, config).await?;
         }
         Some(Commands::Game { cmd }) => {
             check_config_hint(&config);
