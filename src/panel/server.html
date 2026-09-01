@@ -220,12 +220,28 @@ function renderHome(){
       +'<div class="rmeta"><b>'+esc((r.host&&r.host.name)||t("host"))+'</b> · V'+esc(r.host&&r.host.version)+"<br>"
       +g+" "+esc(t("guests_n"))+" · "+esc(r.host&&r.host.addr)+"</div>"
       +'<div><div class="rmeta" style="margin-bottom:2px">'+esc(t("ttl"))+" "+esc(fmtTtl(r.ttl_left_s))+'</div><div class="ttlbar"><i style="width:'+Math.round(ttlFrac*100)+'%"></i></div></div>'
+      +'<span class="qrbtns">'
+      +'<button class="btn" style="padding:3px 8px;font-size:10px" title="'+esc(t("join_win"))+'" onclick="copyHomeCmd(event,\''+esc(r.room_id)+'\',\'win\')">⧉ W</button>'
+      +'<button class="btn" style="padding:3px 8px;font-size:10px" title="'+esc(t("join_nix"))+'" onclick="copyHomeCmd(event,\''+esc(r.room_id)+'\',\'nix\')">⧉ M/L</button>'
+      +"</span>"
       +'<span class="arrow">→</span></div>';
   }).join("");
   if(key!==lastRoomsKey){lastRoomsKey=key;animIn(rc.querySelectorAll(".room"),.06)}
 }
 function openRoom(id){location.hash="#/room/"+id;route()}
 function goHome(){location.hash="";route()}
+/* 首页房间行内复制一键接入命令（不进详情页；密码走 TOKEN，profile 服务端去重） */
+async function copyHomeCmd(ev,roomId,platform){
+  ev.stopPropagation();
+  const c=joinCmd(roomId,platform).real;
+  try{await navigator.clipboard.writeText(c)}
+  catch(e){
+    const ta=document.createElement("textarea");ta.value=c;document.body.appendChild(ta);
+    ta.select();document.execCommand("copy");ta.remove();
+  }
+  const b=ev.target||ev.srcElement;const old=b.textContent;b.textContent="✓";
+  setTimeout(()=>{b.textContent=old},1200);
+}
 function route(){
   const m=location.hash.match(/^#\/room\/(.+)$/);
   const isDetail=!!m&&!!(lastRooms||[]).find(r=>r.room_id===m[1]);

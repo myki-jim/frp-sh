@@ -170,11 +170,22 @@ pub async fn serve_client(addr: std::net::SocketAddr) {
 
 fn client_info_json() -> serde_json::Value {
     let i = crate::stats::info_snapshot();
+    let role = if i.mode.contains("host") {
+        "host"
+    } else if i.mode.contains("guest") {
+        "guest"
+    } else {
+        ""
+    };
     json!({
         "version": crate::version::VERSION,
         "mode": if i.mode.is_empty() { "idle" } else { i.mode.as_str() },
+        "role": role,
         "room": i.room,
         "signaling": i.signaling,
+        "relay_addr": i.relay_addr,
+        // 本地面板（127.0.0.1）用：分享/一键加入命令生成
+        "password": i.password,
         "my_id": i.my_id,
         "device_name": i.device_name,
         "ext_addr": i.ext_addr,
