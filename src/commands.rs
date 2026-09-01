@@ -521,18 +521,57 @@ pub async fn run_profile(
             expose_lan,
             set_default,
         } => {
-            let name = name.unwrap_or_else(|| cfg.next_profile_name());
             if !mode_matches(&mode) {
                 anyhow::bail!("bad --mode {mode}: expected lan | dev | game");
             }
-            if cfg.profiles.contains_key(&name) {
-                anyhow::bail!("profile {name} already exists (use `profile edit {name}`)");
+            let server = server.trim().trim_end_matches('/').to_string();
+            // 去重：重复运行一键命令/同 server+room+mode 的档案只保留一份。
+            //   显式 --name 已存在 → 合并更新；无 --name 时命中相同 server+room+mode → 更新；
+            //   否则才分配新的 profileN。
+            let existing: Option<String> = match &name {
+                Some(n) if cfg.profiles.contains_key(n) => Some(n.clone()),
+                Some(_) => None,
+                None => cfg
+                    .profiles
+                    .values()
+                    .find(|p| p.server == server && p.room == room && p.mode == mode)
+                    .map(|p| p.name.clone()),
+            };
+            if let Some(n) = existing {
+                let p = cfg.profiles.get_mut(&n).unwrap();
+                // 只覆盖本次显式给出的字段，其余保留旧值
+                if password.is_some() {
+                    p.password = password.clone();
+                }
+                if device.is_some() {
+                    p.device_name = device.clone();
+                }
+                p.relay_addr = relay.clone().or_else(|| {
+                    p.relay_addr.clone().or_else(|| Config::derive_relay(&server))
+                });
+                if listen.is_some() {
+                    p.listen = listen.clone();
+                }
+                if expose_lan {
+                    p.expose_lan = true;
+                }
+                if set_default {
+                    cfg.mark_default_profile(&n);
+                }
+                save_config(&cfg, config_path.as_deref())?;
+                println!("  {}", ok(format!("profile {n} updated (duplicate removed)")));
+                println!(
+                    "  {}",
+                    hint(format!("start it with: frp-sh profile run {n}"))
+                );
+                return Ok(());
             }
+            let name = name.unwrap_or_else(|| cfg.next_profile_name());
             let relay = relay.or_else(|| Config::derive_relay(&server));
             let p = crate::config::Profile {
                 name: name.clone(),
-                server: server.trim().trim_end_matches('/').to_string(),
-                room: room.clone(),
+                server,
+                room,
                 password,
                 mode,
                 device_name: device,
