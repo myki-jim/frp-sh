@@ -94,7 +94,24 @@ fn chrono_like(ts: u64) -> Option<String> {
 
 /// 初始化全局日志后端（替换 env_logger —— 终端不再输出任何 log 行）。
 pub fn init(filter: &str) {
-    let dir = crate::config::Config::default_dir().map(|d| d.join("logs"));
+    // 目录优先级：<配置目录>/logs → $HOME/.config/frp-sh/logs → /var/log/frp-sh（系统服务）→ ./logs
+    let dir = crate::config::Config::default_dir()
+        .map(|d| d.join("logs"))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|h| PathBuf::from(h).join(".config").join("frp-sh").join("logs"))
+        })
+        .or_else(|| {
+            #[cfg(unix)]
+            {
+                Some(PathBuf::from("/var/log/frp-sh"))
+            }
+            #[cfg(not(unix))]
+            {
+                std::env::current_dir().ok().map(|c| c.join("logs"))
+            }
+        })
+        .or_else(|| std::env::current_dir().ok().map(|c| c.join("logs")));
     if let Some(dir) = &dir {
         let _ = std::fs::create_dir_all(dir);
     }
