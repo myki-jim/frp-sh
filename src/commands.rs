@@ -2197,8 +2197,7 @@ pub async fn guest_session(
                 // 1) TURN 中继（配置了供应商或服务器下发内置 TURN 时；punch 用尽后跳过，
                 //    直接走 TCP 中继——重试打洞只会重复同样的失败路径）。
                 //    turn_broke（上一轮 TURN 链路异常断开）后同样跳过 TURN，与房主会师。
-                let host_relay =
-                    if turn_client.is_some() && !turn_broke && !punch_exhausted {
+                let host_relay = if turn_client.is_some() && !turn_broke && !punch_exhausted {
                     let mut hr = None;
                     for _ in 0..20 {
                         if let Ok(r) = signaling.get_room(room_id).await {
