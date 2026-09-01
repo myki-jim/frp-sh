@@ -4,110 +4,118 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>frp-sh</title>
-<script type="module" src="https://unpkg.com/mdui@2/mdui.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/mdui@2/mdui.css">
 <style>
+/* frp-sh client panel — black canvas / D-DIN display / ghost pill / hairlines only */
+@import url('https://fonts.cdnfonts.com/css/d-din');
 :root{
-  --bg:#f4f5fb; --card:#ffffff; --tx:#171923; --dim:#7a7f93; --bd:#e6e8f2;
-  --accent:#5468ff; --accent2:#8b5cf6; --green:#12b76a; --orange:#f79009; --red:#f04438;
-  --shadow:0 1px 2px rgba(23,25,35,.05),0 8px 24px -12px rgba(23,25,35,.12);
+  --canvas:#000000; --surface:#0a0a0a; --hair:#3a3a3f;
+  --tx:#ffffff; --tx2:#f0f0fa; --tx3:#5a5a5f;
 }
-@media(prefers-color-scheme:dark){:root{
-  --bg:#0e1015; --card:#171a21; --tx:#eef0f6; --dim:#8b90a5; --bd:#262a36;
-  --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px -12px rgba(0,0,0,.5);
-}}
 *{box-sizing:border-box;margin:0}
-body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--tx);font-size:14px;-webkit-font-smoothing:antialiased}
-.bar{display:flex;align-items:center;gap:12px;padding:14px 24px;background:var(--card);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:9;flex-wrap:wrap}
-.logo{width:34px;height:34px;border-radius:10px;flex:none;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;color:#fff;font-weight:800;font-size:15px;box-shadow:0 4px 12px -4px var(--accent)}
-.bar h1{font-size:16.5px;font-weight:700}
-.bar h1 small{display:block;font-size:10.5px;color:var(--dim);font-weight:500;letter-spacing:1.2px;text-transform:uppercase}
-.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:999px;border:1px solid var(--bd);font-size:12px;color:var(--dim);background:var(--bg)}
-.chip b{color:var(--tx);font-weight:600}
-.chip.mode{background:linear-gradient(135deg,rgba(84,104,255,.14),rgba(139,92,246,.14));border-color:transparent}
-.chip.mode b{background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent;text-transform:uppercase}
+html{background:var(--canvas)}
+body{font-family:'D-DIN','Arial Narrow',Arial,system-ui,sans-serif;background:var(--canvas);color:var(--tx);font-size:14px;letter-spacing:.32px;-webkit-font-smoothing:antialiased}
+::selection{background:var(--tx);color:var(--canvas)}
+/* ---- bar ---- */
+.bar{display:flex;align-items:center;gap:14px;padding:20px 32px;background:var(--canvas);border-bottom:1px solid var(--hair);position:sticky;top:0;z-index:9;flex-wrap:wrap}
+.wordmark{font-weight:700;font-size:19px;letter-spacing:1.6px;text-transform:uppercase;line-height:.95;flex:none}
+.wordmark span{display:block;font-size:10px;font-weight:400;letter-spacing:1.17px;text-transform:uppercase;color:var(--tx3);margin-top:4px}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border:1px solid var(--hair);border-radius:32px;font-size:10.5px;font-weight:700;letter-spacing:.96px;text-transform:uppercase;color:var(--tx2)}
+.chip b{color:var(--tx);font-weight:700}
+.chip.mode{border-color:var(--tx)}
+.chip.mode b{color:var(--tx)}
 .spacer{flex:1}
-.btn{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:9px;padding:6px 14px;cursor:pointer;font-size:12.5px;transition:.15s}
-.btn:hover{border-color:var(--accent);color:var(--accent)}
-.wrap{max-width:1000px;margin:22px auto;padding:0 20px;display:grid;gap:18px}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow)}
-.card h2{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.1px;color:var(--dim);margin-bottom:14px;display:flex;align-items:center;gap:8px}
-.card h2::before{content:"";width:3px;height:12px;border-radius:2px;background:linear-gradient(180deg,var(--accent),var(--accent2))}
-.kv{display:grid;grid-template-columns:150px 1fr;gap:4px 16px;padding:8px 0;border-bottom:1px dashed var(--bd);font-size:13.5px}
+.btn{background:transparent;border:1px solid var(--tx);color:var(--tx);border-radius:32px;padding:8px 22px;font-family:inherit;font-size:11px;font-weight:700;letter-spacing:1.17px;text-transform:uppercase;cursor:pointer;transition:.15s}
+.btn:hover{background:var(--tx);color:var(--canvas)}
+/* ---- layout ---- */
+.wrap{max-width:1200px;margin:40px auto;padding:0 24px;display:grid;gap:32px}
+.card{background:var(--surface);border:1px solid var(--hair);border-radius:4px;padding:24px}
+.card h2{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.17px;color:var(--tx2);margin-bottom:20px;display:flex;align-items:center;gap:14px}
+.card h2::after{content:"";flex:1;height:1px;background:var(--hair)}
+.kv{display:grid;grid-template-columns:180px 1fr;gap:8px 24px;padding:12px 0;border-bottom:1px solid var(--hair);font-size:13.5px}
 .kv:last-child{border-bottom:0}
-.kv .k{color:var(--dim)}
-.kv .v{word-break:break-all}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
-.link{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.kv .k{font-size:10px;font-weight:700;letter-spacing:.96px;text-transform:uppercase;color:var(--tx3);padding-top:3px}
+.kv .v{word-break:break-all;color:var(--tx2)}
+.kv .v b{color:var(--tx);font-size:15px;letter-spacing:1px}
+.tnum{font-variant-numeric:tabular-nums;letter-spacing:.5px}
+/* ---- links ---- */
+.link{display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--hair);flex-wrap:wrap}
 .link:last-child{border-bottom:0}
-.dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--dim)}
-.dot.live{background:var(--green);box-shadow:0 0 8px rgba(18,183,106,.7)}
-.kind{display:inline-flex;align-items:center;gap:5px;padding:3px 11px;border-radius:999px;font-size:11.5px;font-weight:600}
-.kind.direct{background:rgba(18,183,106,.12);color:var(--green)}
-.kind.turn{background:rgba(247,144,9,.13);color:var(--orange)}
-.kind.relay{background:rgba(240,68,56,.12);color:var(--red)}
-.peer{font-weight:700;font-size:14px}
-.rtt{min-width:96px;text-align:right}
-.rate{min-width:150px;text-align:right;color:var(--dim);font-size:12.5px}
-.det{width:100%;color:var(--dim);font-size:11.5px;padding-left:21px}
-.idle{color:var(--dim);text-align:center;padding:40px 0}
-.foot{color:var(--dim);font-size:11.5px;text-align:center;padding:12px 0 24px}
-svg .e-direct{stroke:var(--green)}svg .e-turn{stroke:var(--orange)}svg .e-relay{stroke:var(--red)}
-@media(max-width:720px){.wrap{padding:0 12px}.kv{grid-template-columns:120px 1fr}}
+.dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--hair)}
+.dot.live{background:var(--tx)}
+.peer{font-weight:700;font-size:14px;letter-spacing:1px;text-transform:uppercase}
+.kind{display:inline-flex;align-items:center;padding:2px 11px;border:1px solid;border-radius:32px;font-size:9.5px;font-weight:700;letter-spacing:.96px;text-transform:uppercase}
+.kind.direct{border-color:var(--tx);color:var(--tx)}
+.kind.turn{border-color:var(--tx2);border-style:dashed;color:var(--tx2)}
+.kind.relay{border-color:var(--tx3);color:var(--tx3)}
+.rtt{min-width:96px;text-align:right;font-variant-numeric:tabular-nums;color:var(--tx2)}
+.rate{min-width:170px;text-align:right;font-variant-numeric:tabular-nums;color:var(--tx3);font-size:12px}
+.det{width:100%;color:var(--tx3);font-size:11px;letter-spacing:.5px;padding-left:21px;font-variant-numeric:tabular-nums}
+.idle{color:var(--tx3);text-align:center;padding:48px 0;font-size:10.5px;font-weight:700;letter-spacing:.96px;text-transform:uppercase}
+.foot{color:var(--tx3);font-size:10px;letter-spacing:.96px;text-transform:uppercase;text-align:center;padding:28px 0 36px}
+/* ---- topology ---- */
+svg .e-direct{stroke:#ffffff;stroke-width:2}
+svg .e-turn{stroke:#f0f0fa;stroke-width:2;stroke-dasharray:6 4}
+svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
+@media(max-width:720px){.wrap{padding:0 16px}.kv{grid-template-columns:130px 1fr}.bar{padding:16px 20px}}
 </style>
 </head>
 <body>
-<div class="bar">
-  <div class="logo">fs</div>
-  <h1>frp-sh<small data-i18n="sub">client panel</small></h1>
+<header class="bar">
+  <div class="wordmark">frp-sh<span data-i18n="sub">client panel</span></div>
   <span class="chip mode" id="chip-mode"><b>—</b></span>
   <span class="chip" id="chip-room"><b>—</b></span>
   <span class="chip" id="chip-enc"><b>—</b></span>
   <span class="spacer"></span>
   <span class="chip" id="chip-ver">—</span>
   <button class="btn" id="lang" onclick="toggleLang()">中文</button>
-</div>
-<div class="wrap">
+</header>
+
+<main class="wrap">
   <div id="idle" class="card idle" style="display:none">—</div>
+
   <div id="info-card" class="card" style="display:none">
     <h2 data-i18n="basic">Basic information</h2>
     <div class="kv"><span class="k" data-i18n="dev">Device</span><span class="v"><b id="i-name">—</b></span></div>
-    <div class="kv"><span class="k" data-i18n="myid">Your ID</span><span class="v mono" id="i-id">—</span></div>
-    <div class="kv"><span class="k" data-i18n="pub">Public address</span><span class="v mono" id="i-ext">—</span></div>
-    <div class="kv"><span class="k" data-i18n="lan">LAN addresses</span><span class="v mono" id="i-lan">—</span></div>
-    <div class="kv"><span class="k" data-i18n="vnet">Vnet IP</span><span class="v mono" id="i-vnet">—</span></div>
-    <div class="kv"><span class="k" data-i18n="tun">TUN device</span><span class="v mono" id="i-tun">—</span></div>
-    <div class="kv"><span class="k" data-i18n="sig">Signaling</span><span class="v mono" id="i-sig">—</span></div>
-    <div class="kv"><span class="k" data-i18n="since">Session started</span><span class="v" id="i-since">—</span></div>
+    <div class="kv"><span class="k" data-i18n="myid">Your ID</span><span class="v tnum" id="i-id">—</span></div>
+    <div class="kv"><span class="k" data-i18n="pub">Public address</span><span class="v tnum" id="i-ext">—</span></div>
+    <div class="kv"><span class="k" data-i18n="lan">LAN addresses</span><span class="v tnum" id="i-lan">—</span></div>
+    <div class="kv"><span class="k" data-i18n="vnet">Vnet IP</span><span class="v tnum" id="i-vnet">—</span></div>
+    <div class="kv"><span class="k" data-i18n="tun">TUN device</span><span class="v tnum" id="i-tun">—</span></div>
+    <div class="kv"><span class="k" data-i18n="sig">Signaling</span><span class="v tnum" id="i-sig">—</span></div>
+    <div class="kv"><span class="k" data-i18n="since">Session started</span><span class="v tnum" id="i-since">—</span></div>
   </div>
+
   <div id="links-card" class="card" style="display:none">
     <h2 data-i18n="links">Links</h2>
     <div id="links"></div>
   </div>
+
   <div id="topo-card" class="card" style="display:none">
     <h2 data-i18n="topo">Topology</h2>
     <svg id="topo" viewBox="0 0 500 320" width="100%" height="320"></svg>
   </div>
-</div>
-<div class="foot" id="foot">ws</div>
+</main>
+
+<footer class="foot" id="foot">ws</footer>
+
 <script>
 const I18N={
 en:{basic:"Basic information",myid:"Your ID",pub:"Public address",lan:"LAN addresses",vnet:"Vnet IP",
 tun:"TUN device",sig:"Signaling",since:"Session started",links:"Links",topo:"Topology",
-idle:"No active session — start frp-sh lan/dev/game.",enc:"Encryption",on:"on",off:"off",
+idle:"No active session — start frp-sh lan/dev/game.",enc:"Encryption",on:"On",off:"Off",
 direct:"Direct",turn:"TURN",relay:"TCP relay",lang:"中文",nolinks:"No links yet",
 na:"n/a",sub:"client panel",dev:"Device"},
 zh:{basic:"基础信息",myid:"本机 ID",pub:"公网地址",lan:"局域网地址",vnet:"虚拟 IP",
 tun:"TUN 设备",sig:"信令服务器",since:"会话开始",links:"链路",topo:"连接拓扑",
 idle:"暂无活动会话 —— 请运行 frp-sh lan/dev/game。",enc:"加密",on:"开",off:"关",
-direct:"直连",turn:"TURN",relay:"TCP 中继",lang:"English",nolinks:"暂无链路",
+direct:"直连",turn:"TURN",relay:"TCP 中继",lang:"EN",nolinks:"暂无链路",
 na:"—",sub:"客户端面板",dev:"设备"}};
 let LANG=localStorage.getItem("frpsh-lang")||"en";
 const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
 function applyLang(){document.querySelectorAll("[data-i18n]").forEach(e=>e.textContent=t(e.dataset.i18n));document.getElementById("lang").textContent=t("lang")}
 function toggleLang(){LANG=LANG==="en"?"zh":"en";localStorage.setItem("frpsh-lang",LANG);applyLang();render(lastWS)}
-function fmtBps(b){if(b>=1048576)return(b/1048576).toFixed(1)+" MB/s";if(b>=1024)return(b/1024).toFixed(1)+" KB/s";return Math.round(b)+" B/s"}
-function fmtSince(ts){if(!ts)return"—";const s=Math.floor(Date.now()/1000)-ts;const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+"h ":"")+m+"m"}
+function fmtBps(b){if(b>=1048576)return(b/1048576).toFixed(1)+" MB/S";if(b>=1024)return(b/1024).toFixed(1)+" KB/S";return Math.round(b)+" B/S"}
+function fmtSince(ts){if(!ts)return"—";const s=Math.floor(Date.now()/1000)-ts;const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+"H ":"")+m+"M"}
 function esc(s){return String(s??"").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]))}
 
 let prev=null,lastWS=null;
@@ -119,17 +127,17 @@ function render(d){
   document.getElementById("info-card").style.display=hasSession?"block":"none";
   document.getElementById("links-card").style.display=hasSession?"block":"none";
   document.getElementById("topo-card").style.display=hasSession&&links.length?"block":"none";
-  document.getElementById("chip-mode").innerHTML="<b>"+esc(hasSession?info.mode:"—")+"</b>";
+  document.getElementById("chip-mode").innerHTML="<b>"+esc(hasSession?info.mode.toUpperCase():"—")+"</b>";
   document.getElementById("chip-room").innerHTML="<b>"+esc(info.room||"—")+"</b>";
-  document.getElementById("chip-enc").innerHTML="<b>"+(info.encryption?t("on"):t("off"))+"</b>";
-  document.getElementById("chip-ver").textContent=info.version||"—";
+  document.getElementById("chip-enc").innerHTML="<b>"+esc(t("enc"))+" · "+(info.encryption?t("on"):t("off"))+"</b>";
+  document.getElementById("chip-ver").textContent="V"+(info.version||"—");
   if(hasSession){
     document.getElementById("i-name").textContent=info.device_name||"—";
     document.getElementById("i-id").textContent=info.my_id||"—";
     document.getElementById("i-ext").textContent=info.ext_addr||"—";
     document.getElementById("i-lan").textContent=info.lan_addrs||"—";
     document.getElementById("i-vnet").textContent=info.vnet_ip||"—";
-    document.getElementById("i-tun").textContent=info.tun?info.tun+" (MTU "+(info.mtu||1400)+")":"—";
+    document.getElementById("i-tun").textContent=info.tun?info.tun.toUpperCase()+" (MTU "+(info.mtu||1400)+")":"—";
     document.getElementById("i-sig").textContent=info.signaling||"—";
     document.getElementById("i-since").textContent=fmtSince(info.started_at);
   }
@@ -148,9 +156,9 @@ function render(d){
       +'<span class="peer">'+esc(l.peer)+"</span>"
       +'<span class="kind '+l.kind+'">'+esc(t(l.kind))+"</span>"
       +'<span style="flex:1"></span>'
-      +'<span class="rtt mono">'+esc(rttTxt)+"</span>"
-      +'<span class="rate mono">↑ '+fmtBps(sb)+" · ↓ "+fmtBps(rb)+"</span>"
-      +(l.detail?'<span class="det mono">'+esc(l.detail)+"</span>":"");
+      +'<span class="rtt">'+esc(rttTxt)+"</span>"
+      +'<span class="rate">↑ '+fmtBps(sb)+" · ↓ "+fmtBps(rb)+"</span>"
+      +(l.detail?'<span class="det">'+esc(l.detail)+"</span>":"");
     lc.appendChild(row);
   });
   if(hasSession&&!links.length)lc.innerHTML='<div class="idle">'+esc(t("nolinks"))+"</div>";
@@ -160,11 +168,11 @@ function render(d){
 function drawTopo(links,info){
   const svg=document.getElementById("topo");svg.innerHTML="";
   const cx=250,cy=160,rx=190,ry=112;
-  const nodes=[{x:cx,y:cy,label:(info.device_name||"me").slice(0,9),sub:info.vnet_ip||"",me:true}];
+  const nodes=[{x:cx,y:cy,label:(info.device_name||"me").slice(0,9).toUpperCase(),sub:info.vnet_ip||"",me:true}];
   const n=links.length;
   links.forEach((l,i)=>{
     const ang=-Math.PI/2+i*2*Math.PI/Math.max(n,1);
-    nodes.push({x:cx+rx*Math.cos(ang),y:cy+ry*Math.sin(ang),label:(l.peer||"?").slice(0,9),kind:l.kind});
+    nodes.push({x:cx+rx*Math.cos(ang),y:cy+ry*Math.sin(ang),label:(l.peer||"?").slice(0,9).toUpperCase(),kind:l.kind});
   });
   links.forEach((l,i)=>{
     const nd=nodes[i+1];
@@ -172,24 +180,24 @@ function drawTopo(links,info){
     line.setAttribute("x1",cx);line.setAttribute("y1",cy);
     line.setAttribute("x2",nd.x);line.setAttribute("y2",nd.y);
     line.setAttribute("class","e-"+l.kind);
-    line.setAttribute("stroke-width","3");line.setAttribute("opacity",".85");
     svg.appendChild(line);
   });
   nodes.forEach(nd=>{
     const g=document.createElementNS("http://www.w3.org/2000/svg","g");
     const c=document.createElementNS("http://www.w3.org/2000/svg","circle");
     c.setAttribute("cx",nd.x);c.setAttribute("cy",nd.y);c.setAttribute("r",30);
-    c.setAttribute("fill",nd.me?"var(--accent)":"var(--card)");
-    c.setAttribute("stroke",nd.me?"none":"var(--bd)");c.setAttribute("stroke-width","1.5");
+    if(nd.me){c.setAttribute("fill","#ffffff");}
+    else{c.setAttribute("fill","#0a0a0a");c.setAttribute("stroke","#3a3a3f");c.setAttribute("stroke-width","1.5");}
     g.appendChild(c);
     const t1=document.createElementNS("http://www.w3.org/2000/svg","text");
     t1.setAttribute("x",nd.x);t1.setAttribute("y",nd.y+1);t1.setAttribute("text-anchor","middle");
-    t1.setAttribute("font-size","10");t1.setAttribute("fill",nd.me?"#fff":"var(--tx)");t1.setAttribute("font-weight","600");
+    t1.setAttribute("font-size","10");t1.setAttribute("font-weight","700");
+    t1.setAttribute("fill",nd.me?"#000000":"#ffffff");
     t1.textContent=nd.label;g.appendChild(t1);
     if(nd.sub){const t2=document.createElementNS("http://www.w3.org/2000/svg","text");
       t2.setAttribute("x",nd.x);t2.setAttribute("y",nd.y+13);t2.setAttribute("text-anchor","middle");
-      t2.setAttribute("font-size","8.5");t2.setAttribute("fill",nd.me?"#dfe3ff":"var(--dim)");
-      t2.setAttribute("font-family","monospace");t2.textContent=nd.sub;g.appendChild(t2);}
+      t2.setAttribute("font-size","9");t2.setAttribute("fill","#5a5a5f");
+      t2.textContent=nd.sub;g.appendChild(t2);}
     svg.appendChild(g);
   });
 }
