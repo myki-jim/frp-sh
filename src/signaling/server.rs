@@ -310,7 +310,7 @@ async fn join_room(
     }
     log::info!(
         "room {room_id}: guest {} ({device_name}) joined from {}, vnet {}",
-        &guest_uuid,
+        guest_uuid,
         req.addr,
         assigned_ip.as_deref().unwrap_or("-")
     );
