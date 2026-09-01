@@ -6,6 +6,7 @@
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod debuglog;
 pub mod error;
 pub mod p2p;
 pub mod panel;

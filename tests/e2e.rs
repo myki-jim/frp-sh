@@ -59,6 +59,7 @@ async fn try_start_server(password: Option<&str>) -> Option<TestServer> {
             stun_addr: None,
             turn_providers: Vec::new(),
             name: None,
+            profiles: std::collections::BTreeMap::new(),
         },
     })
 }

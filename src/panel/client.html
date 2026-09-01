@@ -69,6 +69,7 @@ svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
   <span class="spacer"></span>
   <span class="chip" id="chip-ver">—</span>
   <button class="btn" id="lang" onclick="toggleLang()">中文</button>
+  <button class="btn" id="logs-btn" onclick="toggleLogs()"><span data-i18n="logs">Logs</span></button>
 </header>
 
 <main class="wrap">
@@ -95,6 +96,12 @@ svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
     <h2 data-i18n="topo">Topology</h2>
     <svg id="topo" viewBox="0 0 500 320" width="100%" height="320"></svg>
   </div>
+
+  <div id="logs-card" class="card" style="display:none">
+    <h2 style="display:flex;justify-content:space-between;align-items:center"><span data-i18n="logs">Logs</span>
+      <span style="font-size:10.5px;color:var(--tx3);letter-spacing:0;text-transform:none" id="log-file"></span></h2>
+    <div id="logs" style="max-height:420px;overflow-y:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.75;color:var(--tx2)"></div>
+  </div>
 </main>
 
 <footer class="foot" id="foot">ws</footer>
@@ -105,12 +112,12 @@ en:{basic:"Basic information",myid:"Your ID",pub:"Public address",lan:"LAN addre
 tun:"TUN device",sig:"Signaling",since:"Session started",links:"Links",topo:"Topology",
 idle:"No active session — start frp-sh lan/dev/game.",enc:"Encryption",on:"On",off:"Off",
 direct:"Direct",turn:"TURN",relay:"TCP relay",lang:"中文",nolinks:"No links yet",
-na:"n/a",sub:"client panel",dev:"Device"},
+na:"n/a",sub:"client panel",dev:"Device",logs:"Logs",logfile:"Log file",nologs:"No logs yet"},
 zh:{basic:"基础信息",myid:"本机 ID",pub:"公网地址",lan:"局域网地址",vnet:"虚拟 IP",
 tun:"TUN 设备",sig:"信令服务器",since:"会话开始",links:"链路",topo:"连接拓扑",
 idle:"暂无活动会话 —— 请运行 frp-sh lan/dev/game。",enc:"加密",on:"开",off:"关",
 direct:"直连",turn:"TURN",relay:"TCP 中继",lang:"EN",nolinks:"暂无链路",
-na:"—",sub:"客户端面板",dev:"设备"}};
+na:"—",sub:"客户端面板",dev:"设备",logs:"日志",logfile:"日志文件",nologs:"暂无日志"}};
 let LANG=localStorage.getItem("frpsh-lang")||"en";
 const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
 function applyLang(){document.querySelectorAll("[data-i18n]").forEach(e=>e.textContent=t(e.dataset.i18n));document.getElementById("lang").textContent=t("lang")}
@@ -266,6 +273,37 @@ function connect(){
   ws.onmessage=e=>{lastWS=JSON.parse(e.data);render(lastWS)};
   ws.onclose=()=>{document.getElementById("foot").textContent="ws reconnecting …";setTimeout(connect,2000)};
   ws.onopen=()=>{document.getElementById("foot").textContent="ws · 1s"};
+}
+/* ---------- 日志视图（/api/debug，2s 增量拉取，只 append 新行） ---------- */
+let logsTimer=null,logSeq=0;
+function logTime(ts){const d=new Date(ts*1000);const p=n=>String(n).padStart(2,"0");return p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds())}
+async function pullLogs(){
+  try{
+    const d=await(await fetch("/api/debug")).json();
+    const lc=document.getElementById("logs");
+    setText(document.getElementById("log-file"),d.file?d.file:t("logfile"));
+    if(d.total<logSeq){lc.innerHTML="";logSeq=0} // 进程重启 → 重置
+    const skip=logSeq-Math.max(0,(d.total-d.lines.length));
+    d.lines.slice(Math.max(skip,0)).forEach(l=>{
+      if(l.seq<=logSeq)return;
+      const row=document.createElement("div");
+      const c=l.level==="WARN"?"#e8c66a":(l.level==="ERROR"?"#e86a6a":(l.level==="DEBUG"?"#5a5a5f":"var(--tx2)"));
+      row.innerHTML='<span style="color:var(--tx3)">'+logTime(l.ts)+'</span> <span style="color:'+c+';display:inline-block;min-width:46px">'+esc(l.level)+'</span> <span style="color:'+c+'">'+esc(l.msg)+"</span>";
+      lc.appendChild(row);
+      logSeq=l.seq;
+    });
+    // 超过 1000 行裁剪头部（与后端环容量一致）
+    while(lc.children.length>1000)lc.removeChild(lc.firstChild);
+    lc.scrollTop=lc.scrollHeight;
+  }catch(e){}
+}
+function toggleLogs(){
+  const c=document.getElementById("logs-card");
+  const on=c.style.display!=="block";
+  c.style.display=on?"block":"none";
+  document.getElementById("logs-btn").style.outline=on?"1px solid var(--tx)":"";
+  if(on&&!logsTimer){pullLogs();logsTimer=setInterval(pullLogs,2000)}
+  if(!on&&logsTimer){clearInterval(logsTimer);logsTimer=null}
 }
 applyLang();
 if(G){G.from(".bar > *",{opacity:0,y:-8,duration:.4,ease:"power2.out",stagger:.06,clearProps:"all"})}

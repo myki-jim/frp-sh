@@ -36,6 +36,7 @@ pub fn server_routes() -> Router<crate::signaling::server::AppState> {
         .route("/panel", get(panel_html))
         .route("/api/panel/summary", get(summary))
         .route("/api/panel/rooms", get(rooms))
+        .route("/api/panel/debug", get(debug_json_handler))
         .route("/api/panel/ws", get(ws_handler))
 }
 
@@ -140,6 +141,11 @@ async fn server_ws_loop(mut socket: WebSocket, state: crate::signaling::server::
 
 // ---------- 客户端面板（独立小服务，默认 127.0.0.1:6793） ----------
 
+/// `/api/debug`：进程日志环形缓冲（面板"日志"视图增量拉取）。
+async fn debug_json_handler() -> Json<serde_json::Value> {
+    Json(crate::debuglog::debug_json())
+}
+
 /// 启动客户端面板服务（阻塞任务）。失败仅记日志，不影响会话。
 pub async fn serve_client(addr: std::net::SocketAddr) {
     let app = Router::new()
@@ -149,6 +155,7 @@ pub async fn serve_client(addr: std::net::SocketAddr) {
             "/api/links",
             get(|| async { Json(json!({ "links": crate::stats::links_json() })) }),
         )
+        .route("/api/debug", get(debug_json_handler))
         .route("/ws", get(client_ws));
     match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => {
