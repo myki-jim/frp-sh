@@ -33,8 +33,10 @@ async fn real_main() -> anyhow::Result<()> {
         panel_addr,
         no_panel,
         name,
+        punch_retries,
         ..
     } = cli;
+    frp_sh::config::set_punch_retries(punch_retries);
 
     frp_sh::config::set_cli_name(name);
 

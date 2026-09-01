@@ -116,6 +116,19 @@ pub fn device_name(configured: Option<&str>) -> String {
 /// CLI `--name`（优先于 config）。
 static CLI_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// 打洞尝试轮数上限（`--punch-retries`，默认 1）。
+static PUNCH_RETRIES: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// main 启动时注入 `--punch-retries`。
+pub fn set_punch_retries(n: u32) {
+    let _ = PUNCH_RETRIES.set(n);
+}
+
+/// 打洞尝试轮数上限（未设置时默认 1）。
+pub fn punch_retries() -> u32 {
+    *PUNCH_RETRIES.get().unwrap_or(&1)
+}
+
 /// main 启动时注入 `--name`。
 pub fn set_cli_name(name: Option<String>) {
     if let Some(n) = name {
