@@ -73,6 +73,7 @@ async fn rooms(State(state): State<crate::signaling::server::AppState>) -> Json<
                 .guests
                 .values()
                 .map(|g| {
+                    let t = r.traffic.get(&g.uuid);
                     json!({
                         "uuid": g.uuid,
                         "name": g.name,
@@ -80,9 +81,13 @@ async fn rooms(State(state): State<crate::signaling::server::AppState>) -> Json<
                         "lan": g.lan.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                         "vnet_ip": g.vnet_ip,
                         "turn_relay": g.turn_relay.map(|a| a.to_string()),
+                        "up": t.map(|x| json!(x.up)).unwrap_or(serde_json::Value::Null),
+                        "down": t.map(|x| json!(x.down)).unwrap_or(serde_json::Value::Null),
+                        "t_ts": t.map(|x| json!(x.ts)).unwrap_or(serde_json::Value::Null),
                     })
                 })
                 .collect();
+            let ht = r.traffic.get(":host");
             json!({
                 "room_id": r.room_id,
                 "created_at": r.created_at,
@@ -94,6 +99,9 @@ async fn rooms(State(state): State<crate::signaling::server::AppState>) -> Json<
                     "vnet_ip": r.tun_ip,
                     "lan": r.host_lan.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                     "turn_relay": r.host_turn_relay.map(|a| a.to_string()),
+                    "up": ht.map(|x| json!(x.up)).unwrap_or(serde_json::Value::Null),
+                    "down": ht.map(|x| json!(x.down)).unwrap_or(serde_json::Value::Null),
+                    "t_ts": ht.map(|x| json!(x.ts)).unwrap_or(serde_json::Value::Null),
                 },
                 "guests": guests,
                 "relay_pairs": crate::signaling::server::ACTIVE_RELAYS

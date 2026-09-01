@@ -186,6 +186,10 @@ pub fn session_role(command: &Option<crate::cli::Commands>) -> Option<&'static s
 /// 失败返回 Err（已有同角色实例在运行），调用方应打印并退出。
 pub fn acquire_role_lock(role: &str) -> anyhow::Result<()> {
     use std::fs::OpenOptions;
+    // 开发/测试旁路：FRPSH_ALLOW_MULTI=1 允许同角色多实例（如本机多 guest 冒烟测试）
+    if std::env::var_os("FRPSH_ALLOW_MULTI").is_some_and(|v| v == "1") {
+        return Ok(());
+    }
     #[cfg(unix)]
     let path = std::path::PathBuf::from(format!("/tmp/frp-sh-{role}.lock"));
     #[cfg(not(unix))]
@@ -440,6 +444,52 @@ async fn run_data_plane(
         }
     }
     Ok(())
+}
+
+// ---------- 面板流量上报 ----------
+
+/// 周期（2s）把本机链路字节数上报给信令服务器（面板房间详情的设备上下行）。
+///
+/// - `host`：逐链路上报（peer = 对端设备名，mesh 直连/TURN/中继均已按设备名注册）
+/// - `guest`：汇总为单条（peer = "*"）
+///
+/// 房间失效（过期/被删）→ 服务器 404 → 上报循环自动退出。
+fn spawn_traffic_reporter(
+    signaling: SignalingClient,
+    room_id: String,
+    role: &'static str,
+    my_name: Arc<std::sync::RwLock<String>>,
+) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(2));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await; // interval 首个 tick 立即完成，跳过
+        loop {
+            tick.tick().await;
+            let snap = crate::stats::links_snapshot();
+            if snap.is_empty() {
+                continue; // 尚无链路：不上报（服务器保留旧值）
+            }
+            let links: Vec<(String, u64, u64)> = if role == "guest" {
+                let (mut s, mut r) = (0u64, 0u64);
+                for e in &snap {
+                    s += e.4;
+                    r += e.5;
+                }
+                vec![("*".to_string(), s, r)]
+            } else {
+                snap.iter().map(|e| (e.0.clone(), e.4, e.5)).collect()
+            };
+            let name = my_name.read().unwrap().clone();
+            if let Err(e) = signaling
+                .report_traffic(&room_id, role, &name, &links)
+                .await
+            {
+                log::debug!("traffic reporter stopped: {e}");
+                break;
+            }
+        }
+    });
 }
 
 // ---------- serve ----------
@@ -1098,6 +1148,15 @@ pub async fn host_session(
         started_at: utils::now_unix() as i64,
         ..Default::default()
     });
+    // 面板房间详情：周期上报本机链路流量（设备上下行）
+    spawn_traffic_reporter(
+        signaling.clone(),
+        room_id.to_string(),
+        "host",
+        Arc::new(std::sync::RwLock::new(crate::config::device_name(
+            cfg.name.as_deref(),
+        ))),
+    );
 
     // lan 模式（虚拟网卡）→ 网格会话：多访客全互联
     if let Some(t) = &tun {
@@ -1543,6 +1602,16 @@ pub async fn guest_session(
         started_at: utils::now_unix() as i64,
         ..Default::default()
     });
+    // 面板房间详情：周期上报自身上下行；join 成功后把名字换成服务器去重名
+    let traffic_name = Arc::new(std::sync::RwLock::new(crate::config::device_name(
+        cfg.name.as_deref(),
+    )));
+    spawn_traffic_reporter(
+        signaling.clone(),
+        room_id.to_string(),
+        "guest",
+        traffic_name.clone(),
+    );
     // TURN 链路异常断开的标记：TURN 建立（对端 relay 也在）但对端没在同一通道上
     // 收发（典型：房主端超时先走了 TCP 中继等配对，两端会师失败）时，访客若每轮
     // 固执重试 TURN 就会死循环。置位后后续轮次跳过 TURN，直走 TCP 中继与房主会师。
@@ -1680,6 +1749,10 @@ pub async fn guest_session(
         {
             Ok(join) => {
                 println!("\n  {}", ok(format!("Joined room : {}", join.room_id)));
+                // 服务器侧去重后的设备名（流量上报按它归属）
+                if let Some(n) = &join.name {
+                    *traffic_name.write().unwrap() = n.clone();
+                }
                 let mut guest_rows: Vec<(&str, String)> =
                     vec![("Host address", join.host_addr.to_string())];
                 if let Some(ip) = &host_tun_ip {
@@ -2133,6 +2206,15 @@ pub async fn host_mesh_session(
         .relay_addr
         .parse()
         .map_err(|e| anyhow::anyhow!("bad relay addr {}: {e}", cfg.relay_addr))?;
+    // 面板房间详情：周期上报每条访客链路的流量（对端设备名 → 服务器按名归属）
+    spawn_traffic_reporter(
+        signaling.clone(),
+        room_id.to_string(),
+        "host",
+        Arc::new(std::sync::RwLock::new(crate::config::device_name(
+            cfg.name.as_deref(),
+        ))),
+    );
 
     // 网格数据平面：TUN 一次创建，重连只重建对端链路（测试可传 None 跳过 TUN）
     let (plane, mut dead_rx) = crate::p2p::tun::MeshPlane::new();
@@ -2549,6 +2631,7 @@ async fn mesh_host_loop(
                                     mesh_routes_for(&p.info),
                                     Box::new(stream),
                                     dispatch_tx.clone(),
+                                    None, // TURN 也是 UDP 流，RTT 由流自身心跳负责
                                 );
                                 established.insert(uuid, "turn".into());
                             } else {
@@ -2644,6 +2727,7 @@ async fn mesh_host_loop(
                                     mesh_routes_for(&p.info),
                                     Box::new(stream),
                                     dispatch_tx.clone(),
+                                    None, // TURN 也是 UDP 流，RTT 由流自身心跳负责
                                 );
                                 established.insert(uuid, "turn".into());
                             } else {
@@ -2674,13 +2758,14 @@ async fn mesh_host_loop(
                                 p.info.addr,
                                 p.info.vnet_ip.as_deref().unwrap_or("-")
                             ),
-                            stats: st,
+                            stats: st.clone(),
                         });
                         plane.register(
                             &uuid,
                             mesh_routes_for(&p.info),
                             stream,
                             dispatch_tx.clone(),
+                            Some(st), // TCP 中继无 UDP 心跳 → 由 mesh 层 FRPING 测 RTT
                         );
                         established.insert(uuid, "relay".into());
                     } else {
@@ -2816,6 +2901,7 @@ fn mesh_establish_link(
         mesh_routes_for(info),
         Box::new(stream),
         dispatch_tx.clone(),
+        None, // UDP 直连流自带 RTT 心跳
     );
     established.insert(uuid.to_string(), "direct".into());
 }
