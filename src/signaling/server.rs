@@ -308,6 +308,12 @@ async fn join_room(
         device_name = format!("{base_name}-{n}");
         n += 1;
     }
+    log::info!(
+        "room {room_id}: guest {} ({device_name}) joined from {}, vnet {}",
+        &guest_uuid,
+        req.addr,
+        assigned_ip.as_deref().unwrap_or("-")
+    );
     room.guests.insert(
         guest_uuid.clone(),
         super::GuestInfo {
@@ -325,12 +331,6 @@ async fn join_room(
     room.guest_lan = req.addr_lan;
     room.guest_subnets = req.guest_subnets;
     room.guest_turn_relay = req.turn_relay;
-    log::info!(
-        "room {room_id}: guest {} ({device_name}) joined from {}, vnet {}",
-        &guest_uuid,
-        req.addr,
-        assigned_ip.as_deref().unwrap_or("-")
-    );
     Ok(Json(JoinRoomResponse {
         room_id,
         host_addr: room.host_addr,
