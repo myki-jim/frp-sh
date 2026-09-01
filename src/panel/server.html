@@ -105,12 +105,8 @@ svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
       <div id="rooms"></div>
     </div>
     <div class="card" style="margin-top:32px">
-      <h2 data-i18n="join_t">One-click client join</h2>
-      <div style="font-size:11.5px;color:var(--tx3);margin:6px 0 12px;line-height:1.6" data-i18n="join_note"></div>
-      <div style="display:flex;align-items:center;gap:10px;margin:0 0 14px">
-        <span style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx3)" data-i18n="room">Room</span>
-        <select id="home-join-room" onchange="renderHomeJoin()" style="background:var(--bg1,#111114);color:var(--tx);border:1px solid #26262b;border-radius:8px;padding:6px 10px;font-size:12px"></select>
-      </div>
+      <h2 data-i18n="setup_t">One-click client setup</h2>
+      <div style="font-size:11.5px;color:var(--tx3);margin:6px 0 12px;line-height:1.6" data-i18n="setup_note"></div>
       <div style="margin:10px 0 16px"><div style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx3);margin-bottom:6px" data-i18n="join_win">Windows (PowerShell)</div>
         <pre id="hj-cmd-win" style="background:var(--bg1,#111114);border:1px solid #26262b;border-radius:8px;padding:12px 14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.7;color:var(--tx2);white-space:pre-wrap;word-break:break-all;margin:0 0 8px"></pre>
         <button class="btn" id="hj-copy-win" onclick="copyHomeJoin('win')">Copy</button></div>
@@ -152,6 +148,7 @@ device:"Device",turn_r:"TURN relay",relays_l:"Relay links",proto:"protocol",
 status:"Status",up:"Up",down:"Down",online:"online",idle:"idle",
 logs:"Logs",logfile:"Log file",nologs:"No logs yet",
 join_t:"One-click client join",join_note:"Run this on the client machine (installs frp-sh if missing, saves the profile and joins this room). The password is masked here and only filled in when you copy.",
+setup_t:"One-click client setup",setup_note:"Installs frp-sh (if missing), saves this server as the default profile. No room included - to join a specific room, open it and copy the join command there. Re-running updates the same profile (deduped).",
 join_win:"Windows (PowerShell)",join_nix:"macOS / Linux (shell)",
 copy:"Copy",copied:"Copied!",
 d:"d",h:"h",m:"m"},
@@ -165,6 +162,7 @@ device:"设备",turn_r:"TURN 中继",relays_l:"中继链路",proto:"线协议",
 status:"状态",up:"上行",down:"下行",online:"在线",idle:"空闲",
 logs:"日志",logfile:"日志文件",nologs:"暂无日志",
 join_t:"客户端一键接入",join_note:"在客户端机器上运行（自动安装 frp-sh、保存配置并加入本房间）。此处密码打码，复制时才填入真实值。",
+setup_t:"一键配置客户端",setup_note:"自动安装 frp-sh 并把本服务器存为默认配置档案（不含房间）。要进某个房间，请进入该房间后复制加入命令。重复运行只更新同一份档案（自动去重）。",
 join_win:"Windows (PowerShell)",join_nix:"macOS / Linux (shell)",
 copy:"复制",copied:"已复制!",
 d:"天",h:"时",m:"分"}};
@@ -243,23 +241,24 @@ function renderHome(){
   if(key!==lastRoomsKey){lastRoomsKey=key;animIn(rc.querySelectorAll(".room"),.06)}
   renderHomeJoin();
 }
-/* 首页底部"一键配置客户端"：房间下拉 + 命令（密码遮罩，复制落明文） */
+/* 首页底部"一键配置客户端"：只装 + 配服务器（不含房间）；进房命令在房间详情页 */
+function setupCmd(platform){
+  const origin=location.origin;
+  const relay=location.hostname+":8081";
+  const pw=TOKEN||"";
+  const shown=pw?(pw.slice(0,2)+"••••••"+pw.slice(-2)):"<server-password>";
+  const real=pw||"<server-password>";
+  const winCmd=p=>`$env:FRPSH_SKIP_INIT='1'; irm https://frp.sh/install.ps1 | iex; $env:Path += ";$env:LOCALAPPDATA\\frp-sh"; frp-sh profile add --server ${origin} --relay ${relay} --password ${p} --mode lan --set-default`;
+  const nixCmd=p=>`curl -fsSL https://frp.sh/install.sh | FRPSH_SKIP_INIT=1 sh && frp-sh profile add --server ${origin} --relay ${relay} --password ${p} --mode lan --set-default`;
+  if(platform==="win")return{shown:winCmd(shown),real:winCmd(real)};
+  return{shown:nixCmd(shown),real:nixCmd(real)};
+}
 function renderHomeJoin(){
-  const sel=document.getElementById("home-join-room");
-  if(!sel)return;
-  const rooms=lastRooms||[];
-  const prev=sel.value;
-  sel.innerHTML=rooms.map(r=>'<option value="'+esc(r.room_id)+'"'+(r.room_id===prev?" selected":"")+">"+esc(r.room_id)+"</option>").join("");
-  const rid=sel.value||(rooms[0]&&rooms[0].room_id)||"";
-  if(!rid){setText(document.getElementById("hj-cmd-win"),t("no"));setText(document.getElementById("hj-cmd-nix"),"");return}
-  setText(document.getElementById("hj-cmd-win"),joinCmd(rid,"win").shown);
-  setText(document.getElementById("hj-cmd-nix"),joinCmd(rid,"nix").shown);
-  window._hjRoom=rid;
+  setText(document.getElementById("hj-cmd-win"),setupCmd("win").shown);
+  setText(document.getElementById("hj-cmd-nix"),setupCmd("nix").shown);
 }
 async function copyHomeJoin(platform){
-  const rid=window._hjRoom||(document.getElementById("home-join-room")||{}).value;
-  if(!rid)return;
-  const c=joinCmd(rid,platform).real;
+  const c=setupCmd(platform).real;
   try{await navigator.clipboard.writeText(c)}
   catch(e){
     const ta=document.createElement("textarea");ta.value=c;document.body.appendChild(ta);
