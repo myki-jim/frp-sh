@@ -48,12 +48,64 @@ frp-sh --config /etc/frp-sh.toml serve
 
 - 排查打洞、转发、加密问题时加上此参数，日志会更详细
 - 不带此参数时默认只输出 `info` 级别日志
+- 日志写入 `<配置目录>/logs/frp-sh.log`（终端保持安静），面板"日志"视图也可实时查看
 
 **示例**：
 
 ```bash
 frp-sh --verbose lan join lan-a3f9c2
 ```
+
+---
+
+### `--punch-retries <N>`
+
+**作用**：UDP 打洞的尝试轮数上限（默认 **1**），用尽后**不再重试打洞和 TURN，直接走 TCP 中继**。
+
+- 默认 1：打洞失败一次就永久降级到中继，避免反复重试同样的失败路径浪费时间
+- `--punch-retries 3`：打洞失败 3 次后才降级
+- `--punch-retries 0`：完全跳过打洞，直接中继（等价于每轮 `--relay`）
+- 直连建立后异常掉线的场景不受此参数影响：下一轮自动跳过打洞直接中继
+
+**示例**：
+
+```bash
+frp-sh --punch-retries 3 lan join 7411
+```
+
+---
+
+## `frp-sh profile` —— 管理连接配置档案
+
+把"服务器 + 密码 + 房间 + 模式"保存为命名档案，一键重连。服务器面板的
+"一键配置客户端 / 一键接入"生成的命令底层就是这些子命令；**同一服务器+模式
+的重复添加会自动去重合并**（先"配置客户端"再"进房间"会补全同一份档案）。
+
+```bash
+# 添加档案（名字默认 profile1、profile2…顺序分配；中继地址自动按服务器 :8081 推导）
+frp-sh profile add --server http://101.43.41.195:8080 --room 7411 --password XXXX
+
+# 只保存服务器连接（不含房间）——面板"一键配置客户端"等价命令
+frp-sh profile add --server http://101.43.41.195:8080 --password XXXX --set-default
+
+# 查看列表 / 详情（密码打码显示）
+frp-sh profile list
+frp-sh profile show profile1
+
+# 修改：改名、换房间、换设备名等（字段合并更新）
+frp-sh profile edit profile1 --rename jims-phone --room 7411 --device JimmyPhone
+
+# 删除
+frp-sh profile remove profile1
+
+# 按档案启动会话（缺省用默认档案；lan 模式需要管理员权限）
+frp-sh profile run
+frp-sh profile run profile1
+```
+
+- `--mode`：`lan`（虚拟网卡组网，默认）/ `dev` / `game`（端口转发）
+- `--set-default`：设为默认档案（`profile run` 不带名字时使用）
+- `list` / `show` 中密码永远打码；明文只保存在本机 `config.toml`
 
 ---
 
