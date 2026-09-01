@@ -422,8 +422,15 @@ fn record_traffic(room: &mut Room, key: &str, up: u64, down: u64) {
         down: 0,
         ts: now,
     });
-    e.up = e.up.max(up);
-    e.down = e.down.max(down);
+    // 设备进程重启后计数器归零：上次更新超过 60s 视为旧代次/离线，
+    // 直接覆盖而非 max 合并，避免面板数值被历史高值永久卡死。
+    if now.saturating_sub(e.ts) > 60 {
+        e.up = up;
+        e.down = down;
+    } else {
+        e.up = e.up.max(up);
+        e.down = e.down.max(down);
+    }
     e.ts = now;
 }
 
@@ -648,8 +655,20 @@ async fn handle_relay_conn(
         room.relay_guest.is_some()
     };
     if already {
-        let _ = stream.write_all(b"ERROR ALREADY_CONNECTED\r\n").await;
-        return Ok(());
+        // 同 uuid 的新连接只可能来自客户端重连（旧连接必然已死）：
+        // 不再拒绝，改为顶掉旧槽位，避免僵尸 WAIT 连接把设备永久挡在门外。
+        if let Some(u) = &peer_uuid {
+            let slot = if role == "HOST" {
+                &mut room.relay_hosts
+            } else {
+                &mut room.relay_guests
+            };
+            slot.remove(u);
+        } else if role == "HOST" {
+            room.relay_host.take();
+        } else {
+            room.relay_guest.take();
+        }
     }
     let _ = stream.write_all(b"WAIT\r\n").await;
     {
@@ -672,6 +691,11 @@ async fn handle_relay_conn(
     let notify = room.pair_notify.clone();
     drop(map);
 
+    // uuid 槽位的等待者不监听 pair_notify：任何无关配对的 notify 都会把它唤醒并
+    // 提前返回，导致超时清理被跳过、僵尸连接永久占槽（对端重连被 ALREADY 挡死）。
+    // uuid 配对由配对分支直接消费槽内流；等待者只需保留超时兜底。
+    // 单槽位（旧协议）无 uuid 可查，仍靠 notify 判断"槽已被消费"以提前收尾。
+    let uuid_waiter = peer_uuid.is_some();
     tokio::select! {
         _ = tokio::time::sleep(RELAY_PAIR_TIMEOUT) => {
             let mut map = state.lock().await;
@@ -697,7 +721,13 @@ async fn handle_relay_conn(
             }
             Ok(())
         }
-        _ = notify.notified() => {
+        _ = async {
+            if uuid_waiter {
+                std::future::pending::<()>().await
+            } else {
+                notify.notified().await
+            }
+        } => {
             let map = state.lock().await;
             let consumed = map
                 .get(&room_id)

@@ -123,7 +123,10 @@ function esc(s){return String(s??"").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;
 const G=window.gsap||null;
 function animIn(els,stagger){if(!G||!els||!els.length)return;G.from(els,{opacity:0,y:10,duration:.35,ease:"power2.out",stagger:stagger||.05,clearProps:"all"})}
 
-let prev=null,lastWS=null,lastLinkKey="";
+let prev=null,lastWS=null,lastLinkKey="",lastTopoKey="";
+/* 值变化才写 DOM（避免每秒无谓重排） */
+function setText(el,v){v=String(v??"");if(el.textContent!==v)el.textContent=v}
+function setHTML(el,v){if(el.innerHTML!==v)el.innerHTML=v}
 function render(d){
   if(!d)return;
   const info=d.info||{},links=d.links||[];
@@ -134,50 +137,79 @@ function render(d){
   document.getElementById("links-card").style.display=hasSession?"block":"none";
   document.getElementById("topo-card").style.display=hasSession&&links.length?"block":"none";
   if(hasSession!==wasSession){animIn(document.querySelectorAll("#info-card,#links-card,#topo-card,.idle"),.07)}
-  document.getElementById("chip-mode").innerHTML="<b>"+esc(hasSession?info.mode.toUpperCase():"—")+"</b>";
-  document.getElementById("chip-room").innerHTML="<b>"+esc(info.room||"—")+"</b>";
-  document.getElementById("chip-enc").innerHTML="<b>"+esc(t("enc"))+" · "+(info.encryption?t("on"):t("off"))+"</b>";
-  document.getElementById("chip-ver").textContent="V"+(info.version||"—");
+  setHTML(document.getElementById("chip-mode"),"<b>"+esc(hasSession?info.mode.toUpperCase():"—")+"</b>");
+  setHTML(document.getElementById("chip-room"),"<b>"+esc(info.room||"—")+"</b>");
+  setHTML(document.getElementById("chip-enc"),"<b>"+esc(t("enc"))+" · "+(info.encryption?t("on"):t("off"))+"</b>");
+  setText(document.getElementById("chip-ver"),"V"+(info.version||"—"));
   if(hasSession){
-    document.getElementById("i-name").textContent=info.device_name||"—";
-    document.getElementById("i-id").textContent=info.my_id||"—";
-    document.getElementById("i-ext").textContent=info.ext_addr||"—";
-    document.getElementById("i-lan").textContent=info.lan_addrs||"—";
-    document.getElementById("i-vnet").textContent=info.vnet_ip||"—";
-    document.getElementById("i-tun").textContent=info.tun?info.tun.toUpperCase()+" (MTU "+(info.mtu||1400)+")":"—";
-    document.getElementById("i-sig").textContent=info.signaling||"—";
-    document.getElementById("i-since").textContent=fmtSince(info.started_at);
+    setText(document.getElementById("i-name"),info.device_name||"—");
+    setText(document.getElementById("i-id"),info.my_id||"—");
+    setText(document.getElementById("i-ext"),info.ext_addr||"—");
+    setText(document.getElementById("i-lan"),info.lan_addrs||"—");
+    setText(document.getElementById("i-vnet"),info.vnet_ip||"—");
+    setText(document.getElementById("i-tun"),info.tun?info.tun.toUpperCase()+" (MTU "+(info.mtu||1400)+")":"—");
+    setText(document.getElementById("i-sig"),info.signaling||"—");
+    setText(document.getElementById("i-since"),fmtSince(info.started_at));
   }
   const now=Date.now();
-  const lc=document.getElementById("links");lc.innerHTML="";
-  const prevMap={};if(prev)prev.links.forEach(l=>prevMap[l.peer]=l);
+  const lc=document.getElementById("links");
+  const prevMap={};if(prev)prev.links.forEach(l=>prevMap[l.peer+"|"+l.kind]=l);
+  const key=links.map(l=>l.peer+":"+l.kind).join(",");
+  const idleEl=lc.querySelector(".idle");
+  if(hasSession&&!links.length){
+    if(!idleEl)lc.innerHTML='<div class="idle">'+esc(t("nolinks"))+"</div>";
+    lastLinkKey="";prev={links,ts:now};return;
+  }
+  if(idleEl)idleEl.remove();
+  /* 增量更新：新链路建行（入场动画），已有链路只改 rtt/rate/dot/detail */
+  let structural=key!==lastLinkKey;
   links.forEach(l=>{
-    const p=prevMap[l.peer];const dt=p?((now-prev.ts)/1000):0;
+    const p=prevMap[l.peer+"|"+l.kind];const dt=p?((now-prev.ts)/1000):0;
     const sb=dt>0?Math.max(0,l.sent_bytes-p.sent_bytes)/dt:0;
     const rb=dt>0?Math.max(0,l.recv_bytes-p.recv_bytes)/dt:0;
     const live=rb>0||sb>0;
     const rttTxt=l.kind==="relay"?t("na"):(l.rtt_ewma?l.rtt_ewma+"ms":"…");
-    const row=document.createElement("div");
-    row.className="link";
-    row.innerHTML='<span class="dot'+(live?" live":"")+'"></span>'
-      +'<span class="peer">'+esc(l.peer)+"</span>"
-      +'<span class="kind '+l.kind+'">'+esc(t(l.kind))+"</span>"
-      +'<span style="flex:1"></span>'
-      +'<span class="rtt">'+esc(rttTxt)+"</span>"
-      +'<span class="rate">↑ '+fmtBps(sb)+" · ↓ "+fmtBps(rb)+"</span>"
-      +(l.detail?'<span class="det">'+esc(l.detail)+"</span>":"");
-    lc.appendChild(row);
+    let row=lc.querySelector('.link[data-k="'+CSS.escape(l.peer+":"+l.kind)+'"]');
+    if(!row){
+      row=document.createElement("div");
+      row.className="link";
+      row.dataset.k=l.peer+":"+l.kind;
+      row.innerHTML='<span class="dot"></span>'
+        +'<span class="peer">'+esc(l.peer)+"</span>"
+        +'<span class="kind '+l.kind+'">'+esc(t(l.kind))+"</span>"
+        +'<span style="flex:1"></span>'
+        +'<span class="rtt"></span>'
+        +'<span class="rate"></span>'
+        +(l.detail?'<span class="det"></span>':"");
+      lc.appendChild(row);
+      if(G&&!structural){G.from(row,{opacity:0,y:8,duration:.3,ease:"power2.out",clearProps:"all"})}
+    }
+    row.querySelector(".dot").className="dot"+(live?" live":"");
+    setText(row.querySelector(".rtt"),rttTxt);
+    setText(row.querySelector(".kind"),t(l.kind));
+    setHTML(row.querySelector(".rate"),"↑ "+fmtBps(sb)+" · ↓ "+fmtBps(rb));
+    const det=row.querySelector(".det");
+    if(det)setText(det,l.detail||"");
   });
-  if(hasSession&&!links.length)lc.innerHTML='<div class="idle">'+esc(t("nolinks"))+"</div>";
-  if(hasSession&&links.length){
-    const key=links.map(l=>l.peer+":"+l.kind).join(",");
-    if(key!==lastLinkKey){lastLinkKey=key;animIn(lc.querySelectorAll(".link"),.06)}
-  }
-  if(hasSession&&links.length)drawTopo(links,info);
+  /* 移除消失的链路行；按当前顺序重排（appendChild 移动既有节点） */
+  lc.querySelectorAll(".link").forEach(row=>{
+    if(!links.some(l=>l.peer+":"+l.kind===row.dataset.k))row.remove();
+  });
+  links.forEach(l=>{
+    const row=lc.querySelector('.link[data-k="'+CSS.escape(l.peer+":"+l.kind)+'"]');
+    if(row)lc.appendChild(row);
+  });
+  if(structural){lastLinkKey=key;animIn(lc.querySelectorAll(".link"),.06)}
+  drawTopo(links,info);
   prev={links,ts:now};
 }
 function drawTopo(links,info){
-  const svg=document.getElementById("topo");svg.innerHTML="";
+  const svg=document.getElementById("topo");
+  /* 拓扑只在节点/链路集合变化时重画 —— 动画不随每次 WS 刷新重播 */
+  const key=links.map(l=>l.peer+":"+l.kind).join(",")+"|"+(info.device_name||"")+"|"+(info.vnet_ip||"");
+  if(key===lastTopoKey)return;
+  lastTopoKey=key;
+  svg.innerHTML="";
   const cx=250,cy=160,rx=190,ry=112;
   const nodes=[{x:cx,y:cy,label:(info.device_name||"me").slice(0,9).toUpperCase(),sub:info.vnet_ip||"",me:true}];
   const n=links.length;
