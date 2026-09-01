@@ -104,6 +104,20 @@ svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
       <h2 data-i18n="rooms">Rooms</h2>
       <div id="rooms"></div>
     </div>
+    <div class="card" style="margin-top:32px">
+      <h2 data-i18n="join_t">One-click client join</h2>
+      <div style="font-size:11.5px;color:var(--tx3);margin:6px 0 12px;line-height:1.6" data-i18n="join_note"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin:0 0 14px">
+        <span style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx3)" data-i18n="room">Room</span>
+        <select id="home-join-room" onchange="renderHomeJoin()" style="background:var(--bg1,#111114);color:var(--tx);border:1px solid #26262b;border-radius:8px;padding:6px 10px;font-size:12px"></select>
+      </div>
+      <div style="margin:10px 0 16px"><div style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx3);margin-bottom:6px" data-i18n="join_win">Windows (PowerShell)</div>
+        <pre id="hj-cmd-win" style="background:var(--bg1,#111114);border:1px solid #26262b;border-radius:8px;padding:12px 14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.7;color:var(--tx2);white-space:pre-wrap;word-break:break-all;margin:0 0 8px"></pre>
+        <button class="btn" id="hj-copy-win" onclick="copyHomeJoin('win')">Copy</button></div>
+      <div style="margin:10px 0 4px"><div style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx3);margin-bottom:6px" data-i18n="join_nix">macOS / Linux (shell)</div>
+        <pre id="hj-cmd-nix" style="background:var(--bg1,#111114);border:1px solid #26262b;border-radius:8px;padding:12px 14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.7;color:var(--tx2);white-space:pre-wrap;word-break:break-all;margin:0 0 8px"></pre>
+        <button class="btn" id="hj-copy-nix" onclick="copyHomeJoin('nix')">Copy</button></div>
+    </div>
   </section>
   <section id="detail" style="display:none"></section>
   <section id="logs-card" class="card" style="display:none;margin-top:32px">
@@ -128,7 +142,7 @@ svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
 
 <script>
 const I18N={
-en:{rooms:"Rooms",rooms_n:"Rooms",guests:"Guests",relays:"Relay links",turn:"TURN allocs",
+en:{rooms:"Rooms",rooms_n:"Rooms",guests:"Guests",relays:"Relay links",turn:"TURN allocs",room:"Room",
 host:"Host",guests_n:"guests",ttl:"TTL",lang:"中文",no:"No active rooms",
 auth_on:"auth",auth_off:"auth off",auth_ok:"ok",auth_no:"pending",
 gate_t:"Authentication required",gate_p:"This server is protected by its password.",
@@ -141,7 +155,7 @@ join_t:"One-click client join",join_note:"Run this on the client machine (instal
 join_win:"Windows (PowerShell)",join_nix:"macOS / Linux (shell)",
 copy:"Copy",copied:"Copied!",
 d:"d",h:"h",m:"m"},
-zh:{rooms:"房间",rooms_n:"房间数",guests:"访客数",relays:"中继链路",turn:"TURN 分配",
+zh:{rooms:"房间",rooms_n:"房间数",guests:"访客数",relays:"中继链路",turn:"TURN 分配",room:"房间",
 host:"房主",guests_n:"位访客",ttl:"剩余",lang:"EN",no:"暂无活跃房间",
 auth_on:"鉴权",auth_off:"鉴权关",auth_ok:"通过",auth_no:"待输入",
 gate_t:"需要鉴权",gate_p:"该服务器已启用密码保护。",
@@ -227,6 +241,32 @@ function renderHome(){
       +'<span class="arrow">→</span></div>';
   }).join("");
   if(key!==lastRoomsKey){lastRoomsKey=key;animIn(rc.querySelectorAll(".room"),.06)}
+  renderHomeJoin();
+}
+/* 首页底部"一键配置客户端"：房间下拉 + 命令（密码遮罩，复制落明文） */
+function renderHomeJoin(){
+  const sel=document.getElementById("home-join-room");
+  if(!sel)return;
+  const rooms=lastRooms||[];
+  const prev=sel.value;
+  sel.innerHTML=rooms.map(r=>'<option value="'+esc(r.room_id)+'"'+(r.room_id===prev?" selected":"")+">"+esc(r.room_id)+"</option>").join("");
+  const rid=sel.value||(rooms[0]&&rooms[0].room_id)||"";
+  if(!rid){setText(document.getElementById("hj-cmd-win"),t("no"));setText(document.getElementById("hj-cmd-nix"),"");return}
+  setText(document.getElementById("hj-cmd-win"),joinCmd(rid,"win").shown);
+  setText(document.getElementById("hj-cmd-nix"),joinCmd(rid,"nix").shown);
+  window._hjRoom=rid;
+}
+async function copyHomeJoin(platform){
+  const rid=window._hjRoom||(document.getElementById("home-join-room")||{}).value;
+  if(!rid)return;
+  const c=joinCmd(rid,platform).real;
+  try{await navigator.clipboard.writeText(c)}
+  catch(e){
+    const ta=document.createElement("textarea");ta.value=c;document.body.appendChild(ta);
+    ta.select();document.execCommand("copy");ta.remove();
+  }
+  const b=document.getElementById("hj-copy-"+platform);
+  if(b){const old=b.textContent;b.textContent=t("copied");setTimeout(()=>{b.textContent=t("copy")},1500)}
 }
 function openRoom(id){location.hash="#/room/"+id;route()}
 function goHome(){location.hash="";route()}
