@@ -636,7 +636,10 @@ async fn handle_relay_conn(
         let notify = room.pair_notify.clone();
         let _ = stream.write_all(b"OK\r\n").await;
         drop(map);
-        log::info!("room {room_id}: relay pair established ({role}, uuid {})", peer_uuid.as_deref().unwrap_or("-"));
+        log::info!(
+            "room {room_id}: relay pair established ({role}, uuid {})",
+            peer_uuid.as_deref().unwrap_or("-")
+        );
         notify.notify_waiters();
         let pw = password.clone();
         ACTIVE_RELAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
