@@ -325,6 +325,12 @@ async fn join_room(
     room.guest_lan = req.addr_lan;
     room.guest_subnets = req.guest_subnets;
     room.guest_turn_relay = req.turn_relay;
+    log::info!(
+        "room {room_id}: guest {} ({device_name}) joined from {}, vnet {}",
+        &guest_uuid,
+        req.addr,
+        assigned_ip.as_deref().unwrap_or("-")
+    );
     Ok(Json(JoinRoomResponse {
         room_id,
         host_addr: room.host_addr,
@@ -379,12 +385,14 @@ async fn refresh_room(
     room.host_lan = req.host_lan;
     room.host_subnets = req.host_subnets;
     room.host_turn_relay = req.turn_relay;
+    log::info!("room {room_id}: host refreshed from {}", req.addr);
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn delete_room(State(state): State<AppState>, Path(room_id): Path<String>) -> StatusCode {
     let mut map = state.rooms.lock().await;
     if map.remove(&room_id).is_some() {
+        log::info!("room {room_id}: removed (host left or expired)");
         StatusCode::NO_CONTENT
     } else {
         StatusCode::NOT_FOUND
@@ -628,6 +636,7 @@ async fn handle_relay_conn(
         let notify = room.pair_notify.clone();
         let _ = stream.write_all(b"OK\r\n").await;
         drop(map);
+        log::info!("room {room_id}: relay pair established ({role}, uuid {})", peer_uuid.as_deref().unwrap_or("-"));
         notify.notify_waiters();
         let pw = password.clone();
         ACTIVE_RELAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -637,6 +646,7 @@ async fn handle_relay_conn(
             let mut b = maybe_encrypt(other, pw_opt);
             let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
             ACTIVE_RELAYS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            log::info!("room closed after relay session ended");
         });
         return Ok(());
     }
@@ -716,6 +726,10 @@ async fn handle_relay_conn(
                     slot.take()
                 };
                 if let Some(mut s) = slot_err {
+                    log::warn!(
+                        "room {room_id}: relay wait timeout ({}), no peer arrived",
+                        role
+                    );
                     let _ = s.write_all(b"ERROR NO_PEER\r\n").await;
                 }
             }
