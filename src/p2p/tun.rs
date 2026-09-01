@@ -203,12 +203,16 @@ impl MeshPlane {
 
     /// 注册（或替换）一个对端链路：spawn 读/写任务，按 `routes` 参与选路。
     /// `dispatch_tx`：对端读到的 IP 包发往该通道，由分发器统一路由。
+    /// `stats`：可选统计句柄 —— 提供时本链路每 3s 发送 `FRPING` 心跳帧并在收到
+    /// `FRPONG` 后记录端到端 RTT（TCP 中继无 UDP 层 ping，由此补齐延迟显示；
+    /// 旧版对端不识别该帧，只会将其作为非 IP 包丢弃，完全兼容）。
     pub fn register(
         &self,
         uuid: &str,
         routes: Vec<(u32, u8)>,
         transport: Box<dyn crate::p2p::relay::AsyncReadWrite>,
         dispatch_tx: tokio::sync::mpsc::UnboundedSender<(String, Vec<u8>)>,
+        stats: Option<Arc<crate::stats::StreamStats>>,
     ) {
         self.unregister(uuid); // 清理旧链路（如中继 → 直连切换）
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -227,6 +231,18 @@ impl MeshPlane {
         let dead_tx = self.dead_tx.clone();
         let dt = dispatch_tx.clone();
         let close_r = close.clone();
+        let tx_pong = self
+            .writers
+            .read()
+            .unwrap()
+            .get(uuid)
+            .cloned()
+            .expect("writer channel just inserted");
+        // FRPING 发出时刻（writer 写入 / reader 收到 PONG 时读取）
+        let ping_at: Arc<std::sync::Mutex<Option<std::time::Instant>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let ping_at_r = ping_at.clone();
+        let st_r = stats.clone();
         // reader：对端流 → 帧解码 → dispatch（会话结束/关闭 → 通知死亡）
         tokio::spawn(async move {
             let mut acc: Vec<u8> = Vec::new();
@@ -242,6 +258,18 @@ impl MeshPlane {
                                 loop {
                                     match crate::tunnel::take_frame(&mut acc) {
                                         Ok(Some(f)) if f.is_empty() => { let _ = dt.send((uuid_r.clone(), Vec::new())); }
+                                        // 心跳：FRPING → 原路回 FRPONG；FRPONG → 记录 RTT
+                                        Ok(Some(f)) if f == b"FRPING" => {
+                                            let _ = tx_pong.send(b"FRPONG".to_vec());
+                                        }
+                                        Ok(Some(f)) if f == b"FRPONG" => {
+                                            if let Some(st) = &st_r {
+                                                let sent = ping_at_r.lock().unwrap().take();
+                                                if let Some(t) = sent {
+                                                    st.on_rtt(t.elapsed().as_micros() as u32);
+                                                }
+                                            }
+                                        }
                                         Ok(Some(f)) => { let _ = dt.send((uuid_r.clone(), f)); }
                                         Ok(None) => break,
                                         Err(_) => break,
@@ -254,11 +282,32 @@ impl MeshPlane {
             }
             let _ = dead_tx.send(uuid_r);
         });
-        // writer：发包 → 帧封装 → 对端流（tx 被移除/丢弃时 rx 关闭 → 退出）
+        // writer：发包 → 帧封装 → 对端流（tx 被移除/丢弃时 rx 关闭 → 退出）；
+        // 有统计句柄时每 3s 发送一次 FRPING 心跳（测量经中继的端到端 RTT）
         tokio::spawn(async move {
-            while let Some(pkt) = rx.recv().await {
-                if crate::tunnel::write_frame(&mut wr, &pkt).await.is_err() {
-                    break;
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tick.tick().await; // 首个 tick 立即返回，跳过
+            loop {
+                tokio::select! {
+                    pkt = rx.recv() => {
+                        match pkt {
+                            Some(p) => {
+                                if crate::tunnel::write_frame(&mut wr, &p).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    _ = tick.tick() => {
+                        if stats.is_some() {
+                            *ping_at.lock().unwrap() = Some(std::time::Instant::now());
+                            if crate::tunnel::write_frame(&mut wr, b"FRPING").await.is_err() {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         });

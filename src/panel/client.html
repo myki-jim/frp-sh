@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>frp-sh</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.7/gsap.min.js"></script>
 <style>
 /* frp-sh client panel — black canvas / D-DIN display / ghost pill / hairlines only */
 @import url('https://fonts.cdnfonts.com/css/d-din');
@@ -118,15 +119,21 @@ function fmtBps(b){if(b>=1048576)return(b/1048576).toFixed(1)+" MB/S";if(b>=1024
 function fmtSince(ts){if(!ts)return"—";const s=Math.floor(Date.now()/1000)-ts;const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+"H ":"")+m+"M"}
 function esc(s){return String(s??"").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]))}
 
-let prev=null,lastWS=null;
+/* GSAP（CDN 不可用时静默降级为无动画） */
+const G=window.gsap||null;
+function animIn(els,stagger){if(!G||!els||!els.length)return;G.from(els,{opacity:0,y:10,duration:.35,ease:"power2.out",stagger:stagger||.05,clearProps:"all"})}
+
+let prev=null,lastWS=null,lastLinkKey="";
 function render(d){
   if(!d)return;
   const info=d.info||{},links=d.links||[];
   const hasSession=info.mode&&info.mode!=="idle";
+  const wasSession=document.getElementById("info-card").style.display==="block";
   document.getElementById("idle").style.display=hasSession?"none":"block";
   document.getElementById("info-card").style.display=hasSession?"block":"none";
   document.getElementById("links-card").style.display=hasSession?"block":"none";
   document.getElementById("topo-card").style.display=hasSession&&links.length?"block":"none";
+  if(hasSession!==wasSession){animIn(document.querySelectorAll("#info-card,#links-card,#topo-card,.idle"),.07)}
   document.getElementById("chip-mode").innerHTML="<b>"+esc(hasSession?info.mode.toUpperCase():"—")+"</b>";
   document.getElementById("chip-room").innerHTML="<b>"+esc(info.room||"—")+"</b>";
   document.getElementById("chip-enc").innerHTML="<b>"+esc(t("enc"))+" · "+(info.encryption?t("on"):t("off"))+"</b>";
@@ -162,6 +169,10 @@ function render(d){
     lc.appendChild(row);
   });
   if(hasSession&&!links.length)lc.innerHTML='<div class="idle">'+esc(t("nolinks"))+"</div>";
+  if(hasSession&&links.length){
+    const key=links.map(l=>l.peer+":"+l.kind).join(",");
+    if(key!==lastLinkKey){lastLinkKey=key;animIn(lc.querySelectorAll(".link"),.06)}
+  }
   if(hasSession&&links.length)drawTopo(links,info);
   prev={links,ts:now};
 }
@@ -182,6 +193,22 @@ function drawTopo(links,info){
     line.setAttribute("class","e-"+l.kind);
     svg.appendChild(line);
   });
+  // 入场：连线描画 + 节点弹入（GSAP；CDN 不可用时跳过）
+  if(G){
+    svg.querySelectorAll("line").forEach((ln,i)=>{
+      let len=300;try{len=ln.getTotalLength()}catch(e){}
+      const dashed=ln.classList.contains("e-turn")||ln.classList.contains("e-relay");
+      if(!dashed){
+        ln.style.strokeDasharray=len;ln.style.strokeDashoffset=len;
+        G.to(ln,{strokeDashoffset:0,duration:.6,ease:"power2.inOut",delay:.1+i*.08,
+          onComplete:()=>{ln.style.strokeDasharray="";ln.style.strokeDashoffset=""}});
+      }else{
+        G.from(ln,{opacity:0,duration:.5,delay:.1+i*.08});
+      }
+    });
+    G.from(svg.querySelectorAll("circle"),{attr:{r:0},opacity:0,duration:.4,ease:"power2.out",stagger:.06,delay:.15,clearProps:"all"});
+    G.from(svg.querySelectorAll("text"),{opacity:0,duration:.4,delay:.35,clearProps:"all"});
+  }
   nodes.forEach(nd=>{
     const g=document.createElementNS("http://www.w3.org/2000/svg","g");
     const c=document.createElementNS("http://www.w3.org/2000/svg","circle");
@@ -208,7 +235,9 @@ function connect(){
   ws.onclose=()=>{document.getElementById("foot").textContent="ws reconnecting …";setTimeout(connect,2000)};
   ws.onopen=()=>{document.getElementById("foot").textContent="ws · 1s"};
 }
-applyLang();connect();
+applyLang();
+if(G){G.from(".bar > *",{opacity:0,y:-8,duration:.4,ease:"power2.out",stagger:.06,clearProps:"all"})}
+connect();
 </script>
 </body>
 </html>

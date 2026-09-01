@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>frp-sh panel</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.7/gsap.min.js"></script>
 <style>
 /* frp-sh panel — black canvas / D-DIN display / ghost pill / hairlines only */
 @import url('https://fonts.cdnfonts.com/css/d-din');
@@ -24,6 +25,8 @@ body{font-family:'D-DIN','Arial Narrow',Arial,system-ui,sans-serif;background:va
 .chip b{color:var(--tx);font-weight:700}
 .chip .dot{width:6px;height:6px;border-radius:50%;background:var(--hair);flex:none}
 .chip .dot.on{background:var(--tx)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--hair);display:inline-block;flex:none}
+.dot.on{background:var(--tx)}
 .btn{background:transparent;border:1px solid var(--tx);color:var(--tx);border-radius:32px;padding:8px 22px;font-family:inherit;font-size:11px;font-weight:700;letter-spacing:1.17px;text-transform:uppercase;cursor:pointer;transition:.15s}
 .btn:hover{background:var(--tx);color:var(--canvas)}
 /* ---- layout ---- */
@@ -126,6 +129,7 @@ gate_t:"Authentication required",gate_p:"This server is protected by its passwor
 gate_go:"Enter panel",back:"Back to overview",detail:"Room detail",topo:"Topology",
 pub:"Public address",lan:"LAN addresses",vnet:"Vnet IP",created:"Created",left:"Time left",
 device:"Device",turn_r:"TURN relay",relays_l:"Relay links",proto:"protocol",
+status:"Status",up:"Up",down:"Down",online:"online",idle:"idle",
 d:"d",h:"h",m:"m"},
 zh:{rooms:"房间",rooms_n:"房间数",guests:"访客数",relays:"中继链路",turn:"TURN 分配",
 host:"房主",guests_n:"位访客",ttl:"剩余",lang:"EN",no:"暂无活跃房间",
@@ -134,6 +138,7 @@ gate_t:"需要鉴权",gate_p:"该服务器已启用密码保护。",
 gate_go:"进入面板",back:"返回总览",detail:"房间详情",topo:"拓扑",
 pub:"公网地址",lan:"局域网地址",vnet:"虚拟 IP",created:"创建于",left:"剩余时间",
 device:"设备",turn_r:"TURN 中继",relays_l:"中继链路",proto:"线协议",
+status:"状态",up:"上行",down:"下行",online:"在线",idle:"空闲",
 d:"天",h:"时",m:"分"}};
 let LANG=localStorage.getItem("frpsh-lang")||"en";
 const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
@@ -141,6 +146,12 @@ function applyLang(){document.querySelectorAll("[data-i18n]").forEach(e=>e.textC
 function toggleLang(){LANG=LANG==="en"?"zh":"en";localStorage.setItem("frpsh-lang",LANG);applyLang();route()}
 function esc(s){return String(s??"—").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]))}
 function fmtTtl(s){if(s<=0)return"—";const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+t("h")+" ":"")+m+t("m")}
+function fmtBytes(b){if(b==null)return"—";if(b>=1073741824)return(b/1073741824).toFixed(2)+" GB";if(b>=1048576)return(b/1048576).toFixed(1)+" MB";if(b>=1024)return(b/1024).toFixed(1)+" KB";return Math.round(b)+" B"}
+function fmtBps(b){if(b==null)return"";if(b>=1048576)return(b/1048576).toFixed(1)+" MB/S";if(b>=1024)return(b/1024).toFixed(1)+" KB/S";return Math.round(b)+" B/S"}
+/* GSAP（CDN 不可用时静默降级为无动画） */
+const G=window.gsap||null;
+function animIn(els,stagger){if(!G||!els.length)return;G.from(els,{opacity:0,y:10,duration:.35,ease:"power2.out",stagger:stagger||.05,clearProps:"all"})}
+function flash(el){if(!G||!el)return;G.fromTo(el,{opacity:.25},{opacity:1,duration:.4,ease:"power1.out"})}
 
 /* ---- auth ---- */
 let TOKEN=sessionStorage.getItem("frpsh-token")||"";
@@ -153,7 +164,7 @@ sessionStorage.setItem("frpsh-token",TOKEN);connect()}
 document.getElementById("gate-pw").addEventListener("keydown",e=>{if(e.key==="Enter")saveToken()});
 
 /* ---- data ---- */
-let lastSummary=null,lastRooms=null;
+let lastSummary=null,lastRooms=null,lastRoomsKey="",prevStats={};
 async function fetchJson(url){
   const r=await fetch(url+tokenQs());
   if(r.status===401){showGate(t("gate_p"));throw new Error("unauthorized")}
@@ -169,13 +180,20 @@ function renderAuth(){
   }
   document.getElementById("chip-ver").textContent=(lastSummary.version||"—")+" · "+t("proto")+" V"+(lastSummary.protocol||"—");
 }
-function statCard(n,l){return '<div class="stat"><div class="n">'+(n??0)+'</div><div class="l">'+esc(l)+"</div></div>"}
+function statCard(n,l,key){return '<div class="stat"><div class="n" data-k="'+key+'">'+(n??0)+'</div><div class="l">'+esc(l)+"</div></div>"}
 function renderHome(){
   const s=lastSummary||{};
   document.getElementById("stats").innerHTML=
-    statCard(s.rooms,t("rooms_n"))+statCard(s.guests,t("guests"))+
-    statCard(s.relay_links,t("relays"))+statCard(s.turn_allocs,t("turn"));
+    statCard(s.rooms,t("rooms_n"),"rooms")+statCard(s.guests,t("guests"),"guests")+
+    statCard(s.relay_links,t("relays"),"relays")+statCard(s.turn_allocs,t("turn"),"turn");
+  ["rooms","guests","relays","turn"].forEach(k=>{
+    if(prevStats[k]!==undefined&&prevStats[k]!==(s[k]??0)){
+      const el=document.querySelector('.stat .n[data-k="'+k+'"]');flash(el);
+    }
+    prevStats[k]=s[k]??0;
+  });
   const rooms=lastRooms||[];
+  const key=rooms.map(r=>r.room_id+":"+((r.guests||[]).length)).join(",");
   const rc=document.getElementById("rooms");
   if(!rooms.length){rc.innerHTML='<div class="idle">'+esc(t("no"))+"</div>";return}
   rc.innerHTML=rooms.map(r=>{
@@ -188,6 +206,7 @@ function renderHome(){
       +'<div><div class="rmeta" style="margin-bottom:2px">'+esc(t("ttl"))+" "+esc(fmtTtl(r.ttl_left_s))+'</div><div class="ttlbar"><i style="width:'+Math.round(ttlFrac*100)+'%"></i></div></div>'
       +'<span class="arrow">→</span></div>';
   }).join("");
+  if(key!==lastRoomsKey){lastRoomsKey=key;animIn(rc.querySelectorAll(".room"),.06)}
 }
 function openRoom(id){location.hash="#/room/"+id;route()}
 function goHome(){location.hash="";route()}
@@ -221,19 +240,69 @@ function topoSvg(room){
   });
   return s+"</svg>";
 }
+/* 拓扑入场：连线按长度描画（虚线样式动画后还原），节点半径弹入 */
+function animTopo(svgEl){
+  if(!G||!svgEl)return;
+  svgEl.querySelectorAll("line").forEach((ln,i)=>{
+    let len=300;try{len=ln.getTotalLength()}catch(e){}
+    const dashed=ln.classList.contains("e-turn")||ln.classList.contains("e-relay");
+    if(!dashed){
+      ln.style.strokeDasharray=len;ln.style.strokeDashoffset=len;
+      G.to(ln,{strokeDashoffset:0,duration:.6,ease:"power2.inOut",delay:.1+i*.08,
+        onComplete:()=>{ln.style.strokeDasharray="";ln.style.strokeDashoffset=""}});
+    }else{
+      G.from(ln,{opacity:0,duration:.5,delay:.1+i*.08});
+    }
+  });
+  G.from(svgEl.querySelectorAll("circle"),{attr:{r:0},opacity:0,duration:.4,ease:"power2.out",stagger:.06,delay:.15,clearProps:"all"});
+  G.from(svgEl.querySelectorAll("text"),{opacity:0,duration:.4,delay:.35,clearProps:"all"});
+}
+/* 房间详情：设备连接表（状态 / 上下行含实时速率），房主行置顶 */
+let prevDetail={room:null,ts:0,rows:{},host:null};
+let prevDetailChanged=null;
+function detailStatus(g,relays){
+  const kind=g.turn_relay?"turn":((relays>0)?"relay":"direct");
+  const live=g.t_ts&&(Date.now()/1000-g.t_ts)<10;
+  return {kind,live:!!live};
+}
+function trafficCell(cur,prev,dt){
+  if(cur==null)return '<span style="color:var(--tx3)">—</span>';
+  const rate=dt>0&&prev!=null?Math.max(0,cur-prev)/dt:null;
+  return fmtBytes(cur)+(rate!=null?' <span style="color:var(--tx3);font-size:10.5px">'+fmtBps(rate)+"</span>":"");
+}
 function renderDetail(id){
   const room=(lastRooms||[]).find(r=>r.room_id===id);
   if(!room){route();return}
   const host=room.host||{};const guests=room.guests||[];
+  const now=Date.now();
+  const dt=prevDetail.room===id&&prevDetail.ts?(now-prevDetail.ts)/1000:0;
+  const rowPrev=prevDetail.room===id?prevDetail.rows:{};
+  const hostPrev=prevDetail.room===id?prevDetail.host:null;
   const kv=(k,v)=>'<div class="kv"><span class="k">'+esc(k)+'</span><span class="v">'+v+"</span></div>";
   const d=document.getElementById("detail");
-  let table='<table><tr><th>'+esc(t("device"))+'</th><th>'+esc(t("pub"))+'</th><th>'+esc(t("lan"))+'</th><th>'+esc(t("vnet"))+'</th><th>'+esc(t("turn_r"))+"</th></tr>";
+  const statusCell=(g,relays)=>{
+    const st=detailStatus(g,relays);
+    return '<span class="dot'+(st.live?" on":"")+'" style="display:inline-block;vertical-align:middle;margin-right:8px"></span>'
+      +'<span class="kind '+st.kind+'">'+esc(t(st.kind))+"</span>";
+  };
+  let table='<table><tr><th>'+esc(t("device"))+'</th><th>'+esc(t("status"))+'</th><th>'+esc(t("pub"))+'</th><th>'+esc(t("lan"))+'</th><th>'+esc(t("vnet"))+'</th><th>↑ '+esc(t("up"))+'</th><th>↓ '+esc(t("down"))+"</th></tr>";
+  const relays=room.relay_pairs||0;
+  table+='<tr><td><b>'+esc(host.name||t("host"))+"</b></td>"
+    +"<td>"+statusCell(host,relays)+"</td>"
+    +'<td class="tnum">'+esc(host.addr)+"</td>"
+    +'<td class="tnum">'+esc((host.lan||[]).join(", ")||"—")+"</td>"
+    +'<td class="tnum">'+esc(host.vnet_ip||"—")+"</td>"
+    +'<td class="tnum">'+trafficCell(host.up==null?null:host.up,hostPrev?hostPrev.up:null,dt)+"</td>"
+    +'<td class="tnum">'+trafficCell(host.down==null?null:host.down,hostPrev?hostPrev.down:null,dt)+"</td></tr>";
   guests.forEach(g=>{
+    const p=rowPrev[g.uuid]||null;
     table+='<tr><td><b>'+esc(g.name||g.uuid)+"</b></td>"
+      +"<td>"+statusCell(g,relays)+"</td>"
       +'<td class="tnum">'+esc(g.addr)+"</td>"
       +'<td class="tnum">'+esc((g.lan||[]).join(", ")||"—")+"</td>"
       +'<td class="tnum">'+esc(g.vnet_ip||"—")+"</td>"
-      +'<td class="tnum">'+esc(g.turn_relay||"—")+"</td></tr>";
+      +'<td class="tnum">'+trafficCell(g.up,p?p.up:null,dt)+"</td>"
+      +'<td class="tnum">'+trafficCell(g.down,p?p.down:null,dt)+"</td></tr>";
   });
   table+="</table>";
   d.innerHTML=
@@ -247,6 +316,15 @@ function renderDetail(id){
     +'<div class="card"><h2>'+esc(t("topo"))+"</h2>"+topoSvg(room)+"</div>"
     +'<div class="card"><h2>'+esc(t("guests"))+"</h2>"
     +(guests.length?table:'<div class="idle">'+esc(t("no"))+"</div>")+"</div>";
+  // 速率基准 + 动画（仅在切换房间时播放入场）
+  const rows={};guests.forEach(g=>{rows[g.uuid]={up:g.up,down:g.down}});
+  prevDetail={room:id,ts:now,rows,host:{up:host.up,down:host.down}};
+  const svgEl=d.querySelector("svg");
+  if(prevDetailChanged!==id){
+    prevDetailChanged=id;
+    animTopo(svgEl);
+    animIn(d.querySelectorAll(".card"),.07);
+  }
 }
 /* ---- ws ---- */
 let ws=null;
@@ -262,6 +340,7 @@ function connect(){
   ws.onopen=()=>{document.getElementById("foot").textContent="ws · 2s"};
 }
 applyLang();
+if(G){G.from(".bar > *",{opacity:0,y:-8,duration:.4,ease:"power2.out",stagger:.06,clearProps:"all"})}
 fetchJson("/api/panel/summary").then(s=>{lastSummary=s;renderAuth();hideGate();connect();}).catch(()=>{});
 </script>
 </body>

@@ -215,6 +215,45 @@ impl SignalingClient {
         }
     }
 
+    /// 上报本机链路流量（面板房间详情的设备上下行）。
+    ///
+    /// - `role`：`host`（`links[].peer` 为对端设备名，未知传 "*"）
+    /// - `role`：`guest`（汇总自身上下行，`links` 单条 peer="*"）
+    /// - `name`：服务器侧设备名（join 响应去重后的名字）
+    ///
+    /// 房间已失效返回 `RoomNotFound`（调用方据此停止上报循环）。
+    pub async fn report_traffic(
+        &self,
+        room_id: &str,
+        role: &str,
+        name: &str,
+        links: &[(String, u64, u64)],
+    ) -> Result<()> {
+        let body = serde_json::json!({
+            "room": room_id,
+            "role": role,
+            "name": name,
+            "links": links
+                .iter()
+                .map(|(peer, sent, recv)| serde_json::json!({
+                    "peer": peer, "sent": sent, "recv": recv
+                }))
+                .collect::<Vec<_>>(),
+        });
+        let resp = self
+            .http
+            .post(format!("{}/api/traffic", self.base_url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| FrpError::Signaling(format!("report traffic: {e}")))?;
+        match resp.status() {
+            StatusCode::NOT_FOUND => Err(FrpError::RoomNotFound(room_id.to_string())),
+            s if !s.is_success() => Err(FrpError::Signaling(format!("report traffic: HTTP {s}"))),
+            _ => Ok(()),
+        }
+    }
+
     /// 查询服务器版本、线协议版本与是否启用密码认证。
     ///
     /// 旧服务器没有 `/version` 端点（404）时返回 `None`（按协议 1、无认证兼容）。
