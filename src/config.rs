@@ -251,9 +251,10 @@ impl Config {
 
     /// 保存到默认配置路径（无默认路径时报错）。
     pub fn save_default(&self) -> anyhow::Result<()> {
-        let p = Self::default_path()
-            .ok_or_else(|| anyhow::anyhow!("cannot determine config path"))?;
-        self.save(&p).map_err(|e| anyhow::anyhow!("save config: {e}"))
+        let p =
+            Self::default_path().ok_or_else(|| anyhow::anyhow!("cannot determine config path"))?;
+        self.save(&p)
+            .map_err(|e| anyhow::anyhow!("save config: {e}"))
     }
 
     /// 下一个空闲档案名：profile1、profile2 …

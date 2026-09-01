@@ -496,7 +496,10 @@ pub async fn run_profile(
                     p.masked_password()
                 );
             }
-            println!("\n  {}", dim("* = default; run with: frp-sh profile run <name>"));
+            println!(
+                "\n  {}",
+                dim("* = default; run with: frp-sh profile run <name>")
+            );
         }
         ProfileCmd::Show { name } => {
             let p = cfg
@@ -565,7 +568,9 @@ pub async fn run_profile(
                     p.room = room.clone();
                 }
                 p.relay_addr = relay.clone().or_else(|| {
-                    p.relay_addr.clone().or_else(|| Config::derive_relay(&server))
+                    p.relay_addr
+                        .clone()
+                        .or_else(|| Config::derive_relay(&server))
                 });
                 if listen.is_some() {
                     p.listen = listen.clone();
@@ -577,7 +582,10 @@ pub async fn run_profile(
                     cfg.mark_default_profile(&n);
                 }
                 save_config(&cfg, config_path.as_deref())?;
-                println!("  {}", ok(format!("profile {n} updated (duplicate removed)")));
+                println!(
+                    "  {}",
+                    ok(format!("profile {n} updated (duplicate removed)"))
+                );
                 println!(
                     "  {}",
                     hint(format!("start it with: frp-sh profile run {n}"))
@@ -606,9 +614,7 @@ pub async fn run_profile(
             save_config(&cfg, config_path.as_deref())?;
             println!(
                 "  {}",
-                hint(format!(
-                    "start it with: frp-sh profile run {name}"
-                ))
+                hint(format!("start it with: frp-sh profile run {name}"))
             );
         }
         ProfileCmd::Edit {
@@ -686,9 +692,11 @@ pub async fn run_profile(
         }
         ProfileCmd::Run { name } => {
             let p = match name {
-                Some(n) => cfg.profiles.get(&n).cloned().ok_or_else(|| {
-                    anyhow::anyhow!("profile {n} not found")
-                })?,
+                Some(n) => cfg
+                    .profiles
+                    .get(&n)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("profile {n} not found"))?,
                 None => cfg
                     .default_profile()
                     .cloned()
@@ -1363,7 +1371,12 @@ pub async fn run_create(
     let room_id = resp.room_id.clone();
     // 面板基础信息（dev/game host；lan host 会在 host_session 再次填充同样的值）
     crate::stats::update_info(crate::stats::SessionInfo {
-        mode: if tun.is_some() { "lan-host" } else { "forward-host" }.into(),
+        mode: if tun.is_some() {
+            "lan-host"
+        } else {
+            "forward-host"
+        }
+        .into(),
         room: room_id.clone(),
         signaling: cfg.signaling_addr.clone(),
         my_id: cfg.uuid.clone().unwrap_or_default(),
