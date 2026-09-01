@@ -251,8 +251,10 @@ pub enum ProfileCmd {
         /// Signaling server URL, e.g. http://101.43.41.195:8080
         #[arg(long)]
         server: String,
-        /// Room ID to join, e.g. 7411
-        #[arg(long)]
+        /// Room ID to join (optional: omit for a server-only profile saved by
+        /// the panel's "one-click client setup"; the room is filled in later
+        /// when a room join command runs)
+        #[arg(long, default_value = "")]
         room: String,
         /// Server password
         #[arg(long)]

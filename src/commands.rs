@@ -462,7 +462,17 @@ pub async fn run_profile(
     config_path: Option<std::path::PathBuf>,
 ) -> anyhow::Result<()> {
     use crate::cli::ProfileCmd;
-    let mut cfg = Config::load_auto(config_path.as_deref())?;
+    // 一键安装场景：config.toml 可能还不存在（install 脚本跳过了向导）——
+    // 此时从空白配置开始建档，而不是报错退出。
+    let missing = match &config_path {
+        Some(p) => !p.exists(),
+        None => !Config::default_exists(),
+    };
+    let mut cfg = if missing {
+        Config::default()
+    } else {
+        Config::load_auto(config_path.as_deref())?
+    };
     match cmd {
         ProfileCmd::List => {
             if cfg.profiles.is_empty() {
@@ -525,16 +535,21 @@ pub async fn run_profile(
                 anyhow::bail!("bad --mode {mode}: expected lan | dev | game");
             }
             let server = server.trim().trim_end_matches('/').to_string();
-            // 去重：重复运行一键命令/同 server+room+mode 的档案只保留一份。
-            //   显式 --name 已存在 → 合并更新；无 --name 时命中相同 server+room+mode → 更新；
-            //   否则才分配新的 profileN。
+            // 去重（分层配置）：
+            //   "一键配置客户端"命令不带 --room → 保存/更新"服务器档案"（room 为空）；
+            //   "进房间"命令带 --room → 若已有同 server+mode 的档案（无论是否带房间）
+            //   就更新它并补上房间号，否则新建。同一台机器先配置后进房只沉淀一份档案。
             let existing: Option<String> = match &name {
                 Some(n) if cfg.profiles.contains_key(n) => Some(n.clone()),
                 Some(_) => None,
                 None => cfg
                     .profiles
                     .values()
-                    .find(|p| p.server == server && p.room == room && p.mode == mode)
+                    .find(|p| {
+                        p.server == server
+                            && p.mode == mode
+                            && (p.room == room || p.room.is_empty() || room.is_empty())
+                    })
                     .map(|p| p.name.clone()),
             };
             if let Some(n) = existing {
@@ -545,6 +560,9 @@ pub async fn run_profile(
                 }
                 if device.is_some() {
                     p.device_name = device.clone();
+                }
+                if !room.is_empty() {
+                    p.room = room.clone();
                 }
                 p.relay_addr = relay.clone().or_else(|| {
                     p.relay_addr.clone().or_else(|| Config::derive_relay(&server))
@@ -676,6 +694,12 @@ pub async fn run_profile(
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("no profiles; add one with `profile add`"))?,
             };
+            if p.room.trim().is_empty() {
+                anyhow::bail!(
+                    "profile {} has no room yet — open the room on the server panel and copy its join command (it will fill in the room on this profile)",
+                    p.name
+                );
+            }
             run_profile_session(&p, &cfg).await?;
         }
     }
