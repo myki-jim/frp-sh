@@ -220,9 +220,9 @@ function renderHome(){
       +'<div class="rmeta"><b>'+esc((r.host&&r.host.name)||t("host"))+'</b> · V'+esc(r.host&&r.host.version)+"<br>"
       +g+" "+esc(t("guests_n"))+" · "+esc(r.host&&r.host.addr)+"</div>"
       +'<div><div class="rmeta" style="margin-bottom:2px">'+esc(t("ttl"))+" "+esc(fmtTtl(r.ttl_left_s))+'</div><div class="ttlbar"><i style="width:'+Math.round(ttlFrac*100)+'%"></i></div></div>'
-      +'<span class="qrbtns">'
-      +'<button class="btn" style="padding:3px 8px;font-size:10px" title="'+esc(t("join_win"))+'" onclick="copyHomeCmd(event,\''+esc(r.room_id)+'\',\'win\')">⧉ W</button>'
-      +'<button class="btn" style="padding:3px 8px;font-size:10px" title="'+esc(t("join_nix"))+'" onclick="copyHomeCmd(event,\''+esc(r.room_id)+'\',\'nix\')">⧉ M/L</button>'
+      +'<span class="qrbtns" style="display:flex;gap:6px;align-items:center">'
+      +'<button class="btn" style="padding:6px 12px;font-size:11.5px" title="'+esc(t("join_win"))+'" onclick="copyHomeCmd(event,\''+esc(r.room_id)+'\',\'win\')">⧉ Windows</button>'
+      +'<button class="btn" style="padding:6px 12px;font-size:11.5px" title="'+esc(t("join_nix"))+'" onclick="copyHomeCmd(event,\''+esc(r.room_id)+'\',\'nix\')">⧉ Mac / Linux</button>'
       +"</span>"
       +'<span class="arrow">→</span></div>';
   }).join("");

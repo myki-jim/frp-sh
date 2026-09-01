@@ -33,15 +33,20 @@ fn uptime_secs() -> u64 {
 
 pub fn server_routes() -> Router<crate::signaling::server::AppState> {
     Router::new()
-        .route("/panel", get(panel_html))
+        .route(
+            "/panel",
+            get(|| async {
+                // no-cache：面板随二进制更新，避免浏览器缓存旧版
+                (
+                    [(axum::http::header::CACHE_CONTROL, "no-cache")],
+                    Html(SERVER_HTML),
+                )
+            }),
+        )
         .route("/api/panel/summary", get(summary))
         .route("/api/panel/rooms", get(rooms))
         .route("/api/panel/debug", get(debug_json_handler))
         .route("/api/panel/ws", get(ws_handler))
-}
-
-async fn panel_html() -> Html<&'static str> {
-    Html(SERVER_HTML)
 }
 
 async fn summary(
@@ -149,7 +154,15 @@ async fn debug_json_handler() -> Json<serde_json::Value> {
 /// 启动客户端面板服务（阻塞任务）。失败仅记日志，不影响会话。
 pub async fn serve_client(addr: std::net::SocketAddr) {
     let app = Router::new()
-        .route("/", get(|| async { Html(CLIENT_HTML) }))
+        .route(
+            "/",
+            get(|| async {
+                (
+                    [(axum::http::header::CACHE_CONTROL, "no-cache")],
+                    Html(CLIENT_HTML),
+                )
+            }),
+        )
         .route("/api/info", get(info_json))
         .route(
             "/api/links",
