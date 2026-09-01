@@ -52,12 +52,70 @@ frp-sh --config /etc/frp-sh.toml serve
 
 - Add it when troubleshooting punching, forwarding, or encryption
 - Without it, only `info`-level logs are shown
+- Logs go to `<config dir>/logs/frp-sh.log` (terminal stays quiet); the panel's Logs view shows them live
 
 **Example**:
 
 ```bash
 frp-sh --verbose lan join lan-a3f9c2
 ```
+
+---
+
+### `--punch-retries <N>`
+
+**Purpose**: how many UDP hole-punch rounds to try before falling back to the
+TCP relay (default **1**). After the limit, punching **and** TURN are skipped
+entirely and every reconnect goes straight to the relay.
+
+- Default 1: one failed punch permanently downgrades to relay — no repeated
+  retries over the same failing path
+- `--punch-retries 3`: tolerate 3 failed rounds before downgrading
+- `--punch-retries 0`: never punch, always relay
+- Unaffected: a direct link that drops after being established still skips
+  punching on the next round automatically
+
+**Example**:
+
+```bash
+frp-sh --punch-retries 3 lan join 7411
+```
+
+---
+
+## `frp-sh profile` — manage connection profiles
+
+Save "server + password + room + mode" as a named profile and reconnect with
+one command. The server panel's "one-click client setup / join" commands use
+these under the hood; **adding the same server+mode twice dedupes into one
+profile** (setup first, then joining a room fills the room into the same
+profile).
+
+```bash
+# Add a profile (name defaults to profile1, profile2, ...; relay derived as :8081)
+frp-sh profile add --server http://101.43.41.195:8080 --room 7411 --password XXXX
+
+# Server-only profile (no room) — same as the panel's "one-click client setup"
+frp-sh profile add --server http://101.43.41.195:8080 --password XXXX --set-default
+
+# List / show (passwords masked)
+frp-sh profile list
+frp-sh profile show profile1
+
+# Edit: rename, change room, device name, etc. (fields merge)
+frp-sh profile edit profile1 --rename jims-phone --room 7411 --device JimmyPhone
+
+# Remove
+frp-sh profile remove profile1
+
+# Start a session from a profile (default profile if omitted; lan needs admin)
+frp-sh profile run
+frp-sh profile run profile1
+```
+
+- `--mode`: `lan` (virtual NIC mesh, default) / `dev` / `game` (port forwarding)
+- `--set-default`: mark as the default profile (used by `profile run` without a name)
+- Passwords are always masked in `list` / `show`; plaintext lives only in the local `config.toml`
 
 ---
 
