@@ -223,6 +223,7 @@ function renderHome(){
   const rooms=lastRooms||[];
   const key=rooms.map(r=>r.room_id+":"+((r.guests||[]).length)).join(",");
   const rc=document.getElementById("rooms");
+  renderHomeJoin(); // 配置卡命令与房间无关，任何情况下都要填（否则卡片空白）
   if(!rooms.length){rc.innerHTML='<div class="idle">'+esc(t("no"))+"</div>";return}
   rc.innerHTML=rooms.map(r=>{
     const g=(r.guests||[]).length;
