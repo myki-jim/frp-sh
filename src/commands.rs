@@ -1337,6 +1337,18 @@ pub async fn run_create(
         )
         .await?;
     let room_id = resp.room_id.clone();
+    // 面板基础信息（dev/game host；lan host 会在 host_session 再次填充同样的值）
+    crate::stats::update_info(crate::stats::SessionInfo {
+        mode: if tun.is_some() { "lan-host" } else { "forward-host" }.into(),
+        room: room_id.clone(),
+        signaling: cfg.signaling_addr.clone(),
+        my_id: cfg.uuid.clone().unwrap_or_default(),
+        device_name: crate::config::device_name(cfg.name.as_deref()),
+        started_at: utils::now_unix() as i64,
+        password: cfg.password.clone().unwrap_or_default(),
+        relay_addr: cfg.relay_addr.clone(),
+        ..Default::default()
+    });
     println!("\n  {}", ok(format!("Room created : {room_id}")));
     let mut host_rows: Vec<(&str, String)> = vec![("Signaling", cfg.signaling_addr.clone())];
     if let Some(u) = &cfg.uuid {
@@ -1435,6 +1447,8 @@ pub async fn host_session(
         device_name: crate::config::device_name(cfg.name.as_deref()),
         encryption: key.is_some(),
         started_at: utils::now_unix() as i64,
+        password: cfg.password.clone().unwrap_or_default(),
+        relay_addr: cfg.relay_addr.clone(),
         ..Default::default()
     });
     // 面板房间详情：周期上报本机链路流量（设备上下行）
@@ -1889,6 +1903,8 @@ pub async fn guest_session(
         device_name: crate::config::device_name(cfg.name.as_deref()),
         encryption: key.is_some(),
         started_at: utils::now_unix() as i64,
+        password: cfg.password.clone().unwrap_or_default(),
+        relay_addr: cfg.relay_addr.clone(),
         ..Default::default()
     });
     // 面板房间详情：周期上报自身上下行；join 成功后把名字换成服务器去重名

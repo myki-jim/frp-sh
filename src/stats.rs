@@ -163,6 +163,10 @@ pub struct SessionInfo {
     pub encryption: bool,
     pub started_at: i64,
     pub reconnects: u64,
+    /// 信令服务器密码（面板"分享/一键加入"命令生成用；本地面板 127.0.0.1 才可读）
+    pub password: String,
+    /// TCP 中继地址（分享命令的 --relay）
+    pub relay_addr: String,
 }
 
 static SESSION_INFO: OnceLock<Mutex<SessionInfo>> = OnceLock::new();
@@ -207,6 +211,12 @@ pub fn update_info(patch: SessionInfo) {
     }
     if patch.reconnects > 0 {
         info.reconnects = patch.reconnects;
+    }
+    if !patch.password.is_empty() {
+        info.password = patch.password;
+    }
+    if !patch.relay_addr.is_empty() {
+        info.relay_addr = patch.relay_addr;
     }
 }
 
