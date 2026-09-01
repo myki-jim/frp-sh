@@ -4,100 +4,115 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>frp-sh panel</title>
-<script type="module" src="https://unpkg.com/mdui@2/mdui.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/mdui@2/mdui.css">
 <style>
+/* frp-sh panel — black canvas / D-DIN display / ghost pill / hairlines only */
+@import url('https://fonts.cdnfonts.com/css/d-din');
 :root{
-  --bg:#f4f5fb; --card:#ffffff; --tx:#171923; --dim:#7a7f93; --bd:#e6e8f2;
-  --accent:#5468ff; --accent2:#8b5cf6; --green:#12b76a; --orange:#f79009; --red:#f04438;
-  --shadow:0 1px 2px rgba(23,25,35,.05),0 8px 24px -12px rgba(23,25,35,.12);
+  --canvas:#000000; --surface:#0a0a0a; --hair:#3a3a3f;
+  --tx:#ffffff; --tx2:#f0f0fa; --tx3:#5a5a5f;
 }
-@media(prefers-color-scheme:dark){:root{
-  --bg:#0e1015; --card:#171a21; --tx:#eef0f6; --dim:#8b90a5; --bd:#262a36;
-  --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px -12px rgba(0,0,0,.5);
-}}
 *{box-sizing:border-box;margin:0}
-body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--tx);font-size:14px;-webkit-font-smoothing:antialiased}
-.bar{display:flex;align-items:center;gap:12px;padding:14px 24px;background:var(--card);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:9}
-.logo{width:34px;height:34px;border-radius:10px;flex:none;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;color:#fff;font-weight:800;font-size:15px;box-shadow:0 4px 12px -4px var(--accent)}
-.bar h1{font-size:16.5px;font-weight:700;letter-spacing:.2px}
-.bar h1 small{display:block;font-size:10.5px;color:var(--dim);font-weight:500;letter-spacing:1.2px;text-transform:uppercase}
-.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:999px;border:1px solid var(--bd);font-size:12px;color:var(--dim);background:var(--bg)}
-.chip b{color:var(--tx);font-weight:600}
-.chip .dot{width:7px;height:7px;border-radius:50%}
+html{background:var(--canvas)}
+body{font-family:'D-DIN','Arial Narrow',Arial,system-ui,sans-serif;background:var(--canvas);color:var(--tx);font-size:14px;letter-spacing:.32px;-webkit-font-smoothing:antialiased}
+::selection{background:var(--tx);color:var(--canvas)}
+/* ---- bar (overlay-style nav, hairline only) ---- */
+.bar{display:flex;align-items:center;gap:14px;padding:20px 32px;background:var(--canvas);border-bottom:1px solid var(--hair);position:sticky;top:0;z-index:9;flex-wrap:wrap}
+.wordmark{font-weight:700;font-size:19px;letter-spacing:1.6px;text-transform:uppercase;line-height:.95;flex:none}
+.wordmark span{display:block;font-size:10px;font-weight:400;letter-spacing:1.17px;text-transform:uppercase;color:var(--tx3);margin-top:4px}
 .spacer{flex:1}
-.btn{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:9px;padding:6px 14px;cursor:pointer;font-size:12.5px;transition:.15s}
-.btn:hover{border-color:var(--accent);color:var(--accent)}
-.wrap{max-width:1100px;margin:22px auto;padding:0 20px;display:grid;gap:18px}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow)}
-.card h2{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.1px;color:var(--dim);margin-bottom:14px;display:flex;align-items:center;gap:8px}
-.card h2::before{content:"";width:3px;height:12px;border-radius:2px;background:linear-gradient(180deg,var(--accent),var(--accent2))}
-.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
-.stat{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:16px 18px;box-shadow:var(--shadow);position:relative;overflow:hidden}
-.stat::after{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:linear-gradient(180deg,var(--accent),var(--accent2));opacity:.85}
-.stat .n{font-size:28px;font-weight:800;font-variant-numeric:tabular-nums}
-.stat .l{font-size:12px;color:var(--dim);margin-top:3px}
-.room{background:var(--card);border:1px solid var(--bd);border-radius:16px;box-shadow:var(--shadow);cursor:pointer;transition:.18s;display:flex;align-items:center;gap:16px;padding:16px 20px;flex-wrap:wrap}
-.room:hover{border-color:var(--accent);transform:translateY(-1px)}
-.rid{font-weight:800;font-size:19px;font-variant-numeric:tabular-nums;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent;min-width:74px}
-.rmeta{color:var(--dim);font-size:12.5px;line-height:1.7}
-.rmeta b{color:var(--tx);font-weight:600}
-.arrow{margin-left:auto;color:var(--dim);font-size:18px}
-.ttlbar{height:4px;border-radius:4px;background:var(--bd);overflow:hidden;width:120px}
-.ttlbar i{display:block;height:100%;background:linear-gradient(90deg,var(--green),#6ce9a6)}
-.kv{display:grid;grid-template-columns:170px 1fr;gap:4px 16px;padding:8px 0;border-bottom:1px dashed var(--bd);font-size:13.5px}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border:1px solid var(--hair);border-radius:32px;font-size:10.5px;font-weight:700;letter-spacing:.96px;text-transform:uppercase;color:var(--tx2)}
+.chip b{color:var(--tx);font-weight:700}
+.chip .dot{width:6px;height:6px;border-radius:50%;background:var(--hair);flex:none}
+.chip .dot.on{background:var(--tx)}
+.btn{background:transparent;border:1px solid var(--tx);color:var(--tx);border-radius:32px;padding:8px 22px;font-family:inherit;font-size:11px;font-weight:700;letter-spacing:1.17px;text-transform:uppercase;cursor:pointer;transition:.15s}
+.btn:hover{background:var(--tx);color:var(--canvas)}
+/* ---- layout ---- */
+.wrap{max-width:1200px;margin:40px auto;padding:0 24px;display:grid;gap:32px}
+.card{background:var(--surface);border:1px solid var(--hair);border-radius:4px;padding:24px}
+.card h2{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.17px;color:var(--tx2);margin-bottom:20px;display:flex;align-items:center;gap:14px}
+.card h2::after{content:"";flex:1;height:1px;background:var(--hair)}
+/* ---- stats: hairline grid, no shadow ---- */
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1px;background:var(--hair);border:1px solid var(--hair)}
+.stat{background:var(--canvas);padding:24px}
+.stat .n{font-size:40px;font-weight:700;line-height:.95;font-variant-numeric:tabular-nums}
+.stat .l{font-size:10px;letter-spacing:.96px;text-transform:uppercase;color:var(--tx3);margin-top:12px}
+/* ---- rooms ---- */
+.room{background:var(--surface);border:1px solid var(--hair);border-radius:4px;cursor:pointer;transition:border-color .15s;display:flex;align-items:center;gap:24px;padding:20px 24px;flex-wrap:wrap;margin-bottom:12px}
+.room:last-child{margin-bottom:0}
+.room:hover{border-color:var(--tx)}
+.rid{font-weight:700;font-size:30px;line-height:.95;font-variant-numeric:tabular-nums;min-width:92px}
+.rmeta{color:var(--tx2);font-size:11px;letter-spacing:.96px;text-transform:uppercase;line-height:2}
+.rmeta b{color:var(--tx);font-weight:700}
+.arrow{margin-left:auto;color:var(--tx3);font-size:20px;transition:.15s}
+.room:hover .arrow{color:var(--tx)}
+.ttlbar{height:2px;background:var(--hair);overflow:hidden;width:130px;margin-top:6px}
+.ttlbar i{display:block;height:100%;background:var(--tx)}
+/* ---- detail ---- */
+.kv{display:grid;grid-template-columns:180px 1fr;gap:8px 24px;padding:12px 0;border-bottom:1px solid var(--hair);font-size:13.5px}
 .kv:last-child{border-bottom:0}
-.kv .k{color:var(--dim)}
-.kv .v{word-break:break-all}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.8px;padding:8px 10px;border-bottom:1px solid var(--bd)}
-td{padding:10px;border-bottom:1px solid var(--bd)}
+.kv .k{font-size:10px;font-weight:700;letter-spacing:.96px;text-transform:uppercase;color:var(--tx3);padding-top:3px}
+.kv .v{word-break:break-all;color:var(--tx2)}
+.kv .v b{color:var(--tx)}
+.tnum{font-variant-numeric:tabular-nums;letter-spacing:.5px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-size:10px;font-weight:700;letter-spacing:.96px;text-transform:uppercase;color:var(--tx3);padding:8px 12px 10px;border-bottom:1px solid var(--hair)}
+td{padding:12px;border-bottom:1px solid var(--hair);color:var(--tx2)}
+td b{color:var(--tx)}
 tr:last-child td{border-bottom:0}
-.idle{color:var(--dim);text-align:center;padding:36px 0}
-.foot{color:var(--dim);font-size:11.5px;text-align:center;padding:12px 0 24px}
-#gate{position:fixed;inset:0;background:var(--bg);z-index:99;display:none;place-items:center}
-#gate .card{width:min(380px,90vw);text-align:center;padding:36px 32px}
-#gate .logo{width:52px;height:52px;font-size:22px;margin:0 auto 16px}
-#gate h3{margin-bottom:6px}
-#gate p{color:var(--dim);font-size:12.5px;margin-bottom:18px}
-#gate input{width:100%;padding:11px 14px;border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx);font-size:14px;outline:none;margin-bottom:12px}
-#gate input:focus{border-color:var(--accent)}
-#gate .err{color:var(--red);font-size:12px;min-height:16px;margin-bottom:8px}
-#gate .btn{width:100%;padding:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:0;color:#fff;font-weight:600;font-size:14px}
-svg .e-direct{stroke:var(--green)}svg .e-turn{stroke:var(--orange)}svg .e-relay{stroke:var(--red)}
-@media(max-width:720px){.wrap{padding:0 12px}.kv{grid-template-columns:130px 1fr}}
+.back{display:inline-flex;align-items:center;gap:8px;color:var(--tx2);cursor:pointer;font-size:11px;font-weight:700;letter-spacing:1.17px;text-transform:uppercase;text-decoration:underline;text-underline-offset:4px}
+.back:hover{color:var(--tx)}
+.idle{color:var(--tx3);text-align:center;padding:48px 0;font-size:10.5px;font-weight:700;letter-spacing:.96px;text-transform:uppercase}
+.foot{color:var(--tx3);font-size:10px;letter-spacing:.96px;text-transform:uppercase;text-align:center;padding:28px 0 36px}
+/* ---- badges / topology ---- */
+.kind{display:inline-flex;align-items:center;padding:2px 11px;border:1px solid;border-radius:32px;font-size:9.5px;font-weight:700;letter-spacing:.96px;text-transform:uppercase}
+.kind.direct{border-color:var(--tx);color:var(--tx)}
+.kind.turn{border-color:var(--tx2);border-style:dashed;color:var(--tx2)}
+.kind.relay{border-color:var(--tx3);color:var(--tx3)}
+svg .e-direct{stroke:#ffffff;stroke-width:2}
+svg .e-turn{stroke:#f0f0fa;stroke-width:2;stroke-dasharray:6 4}
+svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
+/* ---- gate ---- */
+#gate{position:fixed;inset:0;background:var(--canvas);z-index:99;display:none;place-items:center}
+#gate .panel{width:min(420px,92vw);text-align:center;border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);padding:48px 40px}
+#gate .wordmark{font-size:24px;margin-bottom:24px}
+#gate h3{font-size:15px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;line-height:1.2;margin-bottom:8px}
+#gate p{color:var(--tx3);font-size:11px;letter-spacing:.96px;text-transform:uppercase;margin-bottom:28px}
+#gate input{width:100%;padding:12px 14px;border:1px solid var(--hair);border-radius:4px;background:transparent;color:var(--tx);font-family:inherit;font-size:14px;letter-spacing:.32px;outline:none;margin-bottom:12px}
+#gate input:focus{border-color:var(--tx)}
+#gate .err{font-size:10px;font-weight:700;letter-spacing:.96px;text-transform:uppercase;min-height:14px;margin-bottom:10px}
+#gate .btn{width:100%}
+@media(max-width:720px){.wrap{padding:0 16px}.kv{grid-template-columns:130px 1fr}.bar{padding:16px 20px}}
 </style>
 </head>
 <body>
-<div class="bar">
-  <div class="logo">fs</div>
-  <h1>frp-sh panel<small>signaling server</small></h1>
+<header class="bar">
+  <div class="wordmark">frp-sh<span id="bar-sub">signaling server</span></div>
   <span class="spacer"></span>
   <span class="chip" id="chip-auth"><span class="dot"></span><b>—</b></span>
   <span class="chip" id="chip-ver">—</span>
   <button class="btn" id="lang" onclick="toggleLang()">中文</button>
-</div>
+</header>
 
-<div class="wrap" id="home" style="display:none">
-  <div class="stat-row" id="stats"></div>
-  <div class="card">
-    <h2 data-i18n="rooms">Rooms</h2>
-    <div id="rooms"></div>
-  </div>
-</div>
+<main class="wrap">
+  <section id="home" style="display:none">
+    <div class="stat-row" id="stats"></div>
+    <div class="card" style="margin-top:32px">
+      <h2 data-i18n="rooms">Rooms</h2>
+      <div id="rooms"></div>
+    </div>
+  </section>
+  <section id="detail" style="display:none"></section>
+</main>
 
-<div class="wrap" id="detail" style="display:none"></div>
-
-<div class="foot" id="foot">ws</div>
+<footer class="foot" id="foot">ws</footer>
 
 <div id="gate">
-  <div class="card">
-    <div class="logo">fs</div>
+  <div class="panel">
+    <div class="wordmark">frp-sh</div>
     <h3 data-i18n="gate_t">Authentication required</h3>
-    <p data-i18n="gate_p">This server is protected by its password (--password).</p>
+    <p data-i18n="gate_p">This server is protected by its password.</p>
     <div class="err" id="gate-err"></div>
-    <input type="password" id="gate-pw" placeholder="server password" autocomplete="off">
+    <input type="password" id="gate-pw" placeholder="SERVER PASSWORD" autocomplete="off">
     <button class="btn" onclick="saveToken()" data-i18n="gate_go">Enter panel</button>
   </div>
 </div>
@@ -106,16 +121,16 @@ svg .e-direct{stroke:var(--green)}svg .e-turn{stroke:var(--orange)}svg .e-relay{
 const I18N={
 en:{rooms:"Rooms",rooms_n:"Rooms",guests:"Guests",relays:"Relay links",turn:"TURN allocs",
 host:"Host",guests_n:"guests",ttl:"TTL",lang:"中文",no:"No active rooms",
-auth_on:"auth on",auth_off:"auth off",auth_ok:"authenticated",auth_no:"not authenticated",
-gate_t:"Authentication required",gate_p:"This server is protected by its password (--password).",
+auth_on:"auth",auth_off:"auth off",auth_ok:"ok",auth_no:"pending",
+gate_t:"Authentication required",gate_p:"This server is protected by its password.",
 gate_go:"Enter panel",back:"Back to overview",detail:"Room detail",topo:"Topology",
 pub:"Public address",lan:"LAN addresses",vnet:"Vnet IP",created:"Created",left:"Time left",
 device:"Device",turn_r:"TURN relay",relays_l:"Relay links",proto:"protocol",
 d:"d",h:"h",m:"m"},
 zh:{rooms:"房间",rooms_n:"房间数",guests:"访客数",relays:"中继链路",turn:"TURN 分配",
-host:"房主",guests_n:"位访客",ttl:"剩余",lang:"English",no:"暂无活跃房间",
-auth_on:"鉴权开",auth_off:"鉴权关",auth_ok:"已鉴权",auth_no:"未鉴权",
-gate_t:"需要鉴权",gate_p:"该服务器已启用密码保护（--password）。",
+host:"房主",guests_n:"位访客",ttl:"剩余",lang:"EN",no:"暂无活跃房间",
+auth_on:"鉴权",auth_off:"鉴权关",auth_ok:"通过",auth_no:"待输入",
+gate_t:"需要鉴权",gate_p:"该服务器已启用密码保护。",
 gate_go:"进入面板",back:"返回总览",detail:"房间详情",topo:"拓扑",
 pub:"公网地址",lan:"局域网地址",vnet:"虚拟 IP",created:"创建于",left:"剩余时间",
 device:"设备",turn_r:"TURN 中继",relays_l:"中继链路",proto:"线协议",
@@ -127,34 +142,32 @@ function toggleLang(){LANG=LANG==="en"?"zh":"en";localStorage.setItem("frpsh-lan
 function esc(s){return String(s??"—").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]))}
 function fmtTtl(s){if(s<=0)return"—";const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+t("h")+" ":"")+m+t("m")}
 
+/* ---- auth ---- */
 let TOKEN=sessionStorage.getItem("frpsh-token")||"";
 function tokenQs(){return TOKEN?("?token="+encodeURIComponent(TOKEN)):""}
 function showGate(msg){document.getElementById("gate").style.display="grid";document.getElementById("gate-err").textContent=msg||""}
 function hideGate(){document.getElementById("gate").style.display="none"}
 function saveToken(){TOKEN=document.getElementById("gate-pw").value.trim();
-if(!TOKEN){document.getElementById("gate-err").textContent="password required";return}
+if(!TOKEN){document.getElementById("gate-err").textContent="PASSWORD REQUIRED";return}
 sessionStorage.setItem("frpsh-token",TOKEN);connect()}
 document.getElementById("gate-pw").addEventListener("keydown",e=>{if(e.key==="Enter")saveToken()});
 
+/* ---- data ---- */
 let lastSummary=null,lastRooms=null;
 async function fetchJson(url){
   const r=await fetch(url+tokenQs());
   if(r.status===401){showGate(t("gate_p"));throw new Error("unauthorized")}
   return r.json();
 }
-async function refresh(){
-  try{
-    lastSummary=await fetchJson("/api/panel/summary");
-    lastRooms=await fetchJson("/api/panel/rooms");
-    hideGate();renderAuth();route();
-  }catch(e){}
-}
 function renderAuth(){
   const c=document.getElementById("chip-auth");
   if(!lastSummary)return;
-  if(lastSummary.auth){c.innerHTML='<span class="dot" style="background:var(--green)"></span><b>'+esc(t("auth_on")+" · "+t(TOKEN?"auth_ok":"auth_no"))+'</b>'}
-  else{c.innerHTML='<span class="dot" style="background:var(--dim)"></span><b>'+esc(t("auth_off"))+'</b>'}
-  document.getElementById("chip-ver").textContent=(lastSummary.version||"—")+" · "+t("proto")+" v"+(lastSummary.protocol||"—");
+  if(lastSummary.auth){
+    c.innerHTML='<span class="dot'+(TOKEN?" on":"")+'"></span><b>'+esc(t("auth_on")+" · "+(TOKEN?t("auth_ok"):t("auth_no")))+"</b>";
+  }else{
+    c.innerHTML='<span class="dot"></span><b>'+esc(t("auth_off"))+"</b>";
+  }
+  document.getElementById("chip-ver").textContent=(lastSummary.version||"—")+" · "+t("proto")+" V"+(lastSummary.protocol||"—");
 }
 function statCard(n,l){return '<div class="stat"><div class="n">'+(n??0)+'</div><div class="l">'+esc(l)+"</div></div>"}
 function renderHome(){
@@ -170,10 +183,10 @@ function renderHome(){
     const ttlFrac=Math.max(0,Math.min(1,(r.ttl_left_s||0)/43200));
     return '<div class="room" onclick="openRoom(\''+esc(r.room_id)+'\')">'
       +'<div class="rid">'+esc(r.room_id)+"</div>"
-      +'<div class="rmeta"><b>'+esc((r.host&&r.host.name)||t("host"))+'</b> · v'+esc(r.host&&r.host.version)+"<br>"
+      +'<div class="rmeta"><b>'+esc((r.host&&r.host.name)||t("host"))+'</b> · V'+esc(r.host&&r.host.version)+"<br>"
       +g+" "+esc(t("guests_n"))+" · "+esc(r.host&&r.host.addr)+"</div>"
-      +'<div><div class="rmeta" style="margin-bottom:4px">'+esc(t("ttl"))+" "+esc(fmtTtl(r.ttl_left_s))+'</div><div class="ttlbar"><i style="width:'+Math.round(ttlFrac*100)+'%"></i></div></div>'
-      +'<span class="arrow">›</span></div>';
+      +'<div><div class="rmeta" style="margin-bottom:2px">'+esc(t("ttl"))+" "+esc(fmtTtl(r.ttl_left_s))+'</div><div class="ttlbar"><i style="width:'+Math.round(ttlFrac*100)+'%"></i></div></div>'
+      +'<span class="arrow">→</span></div>';
   }).join("");
 }
 function openRoom(id){location.hash="#/room/"+id;route()}
@@ -194,17 +207,17 @@ function topoSvg(room){
     const ang=-Math.PI/2+i*2*Math.PI/Math.max(guests.length,1);
     const x=cx+rx*Math.cos(ang),y=cy+ry*Math.sin(ang);
     const kind=g.turn_relay?"turn":(relays>0?"relay":"direct");
-    s+='<line x1="'+cx+'" y1="'+cy+'" x2="'+x+'" y2="'+y+'" class="e-'+kind+'" stroke-width="3" opacity=".8"/>';
+    s+='<line x1="'+cx+'" y1="'+cy+'" x2="'+x+'" y2="'+y+'" class="e-'+kind+'"/>';
   });
-  s+='<circle cx="'+cx+'" cy="'+cy+'" r="34" fill="var(--accent)"/>'
-    +'<text x="'+cx+'" y="'+(cy-2)+'" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">'+esc((host.name||"host").slice(0,10))+'</text>'
-    +'<text x="'+cx+'" y="'+(cy+13)+'" text-anchor="middle" font-size="9" fill="#dfe3ff" font-family="monospace">'+esc(host.vnet_ip||room.room_id)+'</text>';
+  s+='<circle cx="'+cx+'" cy="'+cy+'" r="34" fill="#ffffff"/>'
+    +'<text x="'+cx+'" y="'+(cy-2)+'" text-anchor="middle" font-size="11" fill="#000000" font-weight="700" letter-spacing="1">'+esc((host.name||"host").slice(0,10).toUpperCase())+'</text>'
+    +'<text x="'+cx+'" y="'+(cy+13)+'" text-anchor="middle" font-size="9" fill="#5a5a5f">'+esc(host.vnet_ip||room.room_id)+'</text>';
   guests.forEach((g,i)=>{
     const ang=-Math.PI/2+i*2*Math.PI/Math.max(guests.length,1);
     const x=cx+rx*Math.cos(ang),y=cy+ry*Math.sin(ang);
-    s+='<circle cx="'+x+'" cy="'+y+'" r="30" fill="var(--card)" stroke="var(--bd)" stroke-width="1.5"/>'
-      +'<text x="'+x+'" y="'+(y-2)+'" text-anchor="middle" font-size="10.5" fill="var(--tx)" font-weight="600">'+esc((g.name||g.uuid||"?").slice(0,10))+'</text>'
-      +'<text x="'+x+'" y="'+(y+12)+'" text-anchor="middle" font-size="8.5" fill="var(--dim)" font-family="monospace">'+esc(g.vnet_ip||"")+'</text>';
+    s+='<circle cx="'+x+'" cy="'+y+'" r="30" fill="#0a0a0a" stroke="#3a3a3f" stroke-width="1.5"/>'
+      +'<text x="'+x+'" y="'+(y-2)+'" text-anchor="middle" font-size="10.5" fill="#ffffff" font-weight="700" letter-spacing="0.5">'+esc((g.name||g.uuid||"?").slice(0,10).toUpperCase())+'</text>'
+      +'<text x="'+x+'" y="'+(y+12)+'" text-anchor="middle" font-size="9" fill="#5a5a5f">'+esc(g.vnet_ip||"")+'</text>';
   });
   return s+"</svg>";
 }
@@ -217,24 +230,25 @@ function renderDetail(id){
   let table='<table><tr><th>'+esc(t("device"))+'</th><th>'+esc(t("pub"))+'</th><th>'+esc(t("lan"))+'</th><th>'+esc(t("vnet"))+'</th><th>'+esc(t("turn_r"))+"</th></tr>";
   guests.forEach(g=>{
     table+='<tr><td><b>'+esc(g.name||g.uuid)+"</b></td>"
-      +'<td class="mono">'+esc(g.addr)+"</td>"
-      +'<td class="mono">'+esc((g.lan||[]).join(", ")||"—")+"</td>"
-      +'<td class="mono">'+esc(g.vnet_ip||"—")+"</td>"
-      +'<td class="mono">'+esc(g.turn_relay||"—")+"</td></tr>";
+      +'<td class="tnum">'+esc(g.addr)+"</td>"
+      +'<td class="tnum">'+esc((g.lan||[]).join(", ")||"—")+"</td>"
+      +'<td class="tnum">'+esc(g.vnet_ip||"—")+"</td>"
+      +'<td class="tnum">'+esc(g.turn_relay||"—")+"</td></tr>";
   });
   table+="</table>";
   d.innerHTML=
-    '<span class="back" onclick="goHome()" style="cursor:pointer">‹ '+esc(t("back"))+"</span>"
-    +'<div class="card"><h2>'+esc(t("detail"))+' — '+esc(room.room_id)+"</h2>"
-    +'<div class="kv"><span class="k">'+esc(t("host"))+'</span><span class="v"><b>'+esc(host.name||"—")+'</b> <span class="mono">('+esc(host.addr)+")</span> · v"+esc(host.version)+"</span></div>"
-    +kv(t("vnet"),'<span class="mono">'+esc(host.vnet_ip||"—")+"</span>")
-    +kv(t("lan"),'<span class="mono">'+esc((host.lan||[]).join(", ")||"—")+"</span>")
-    +kv(t("created"),'<span class="mono">'+new Date((room.created_at||0)*1000).toLocaleString()+"</span>")
+    '<span class="back" onclick="goHome()">← '+esc(t("back"))+"</span>"
+    +'<div class="card" style="margin-top:16px"><h2>'+esc(t("detail"))+' — '+esc(room.room_id)+"</h2>"
+    +'<div class="kv"><span class="k">'+esc(t("host"))+'</span><span class="v"><b>'+esc(host.name||"—")+'</b> <span class="tnum">('+esc(host.addr)+")</span> · V"+esc(host.version)+"</span></div>"
+    +kv(t("vnet"),'<span class="tnum">'+esc(host.vnet_ip||"—")+"</span>")
+    +kv(t("lan"),'<span class="tnum">'+esc((host.lan||[]).join(", ")||"—")+"</span>")
+    +kv(t("created"),'<span class="tnum">'+new Date((room.created_at||0)*1000).toLocaleString()+"</span>")
     +kv(t("left"),esc(fmtTtl(room.ttl_left_s))+" · "+esc(t("relays_l"))+": "+(room.relay_pairs||0))+"</div>"
     +'<div class="card"><h2>'+esc(t("topo"))+"</h2>"+topoSvg(room)+"</div>"
     +'<div class="card"><h2>'+esc(t("guests"))+"</h2>"
     +(guests.length?table:'<div class="idle">'+esc(t("no"))+"</div>")+"</div>";
 }
+/* ---- ws ---- */
 let ws=null;
 function connect(){
   const proto=location.protocol==="https:"?"wss":"ws";
