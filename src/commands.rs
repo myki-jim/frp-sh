@@ -2067,9 +2067,10 @@ pub async fn guest_session(
         };
         // TURN：客户端自配供应商优先，否则用信令服务器下发的内置 TURN；
         // 加入时通告本端 relay 地址（房主据此建立 TURN 链路）。
-        // turn_broke 置位后不再分配/尝试 TURN，直走 TCP 中继会师。
+        // turn_broke 置位后不再分配/尝试 TURN；punch_exhausted 后同样不分配、
+        // 也不通告（房主轮询 5s 拿不到即直接落 TCP 中继，避免在 TURN 上空等错位）。
         let mut turn_relay: Option<SocketAddr> = None;
-        if turn_client.is_none() && !turn_broke {
+        if turn_client.is_none() && !turn_broke && !punch_exhausted {
             if let Ok(Some(c)) = try_turn_connect_with_offer(cfg, info.server_turn).await {
                 turn_relay = Some(c.relay);
                 turn_client = Some(c);
@@ -2180,19 +2181,23 @@ pub async fn guest_session(
             }
             PunchOutcome::TimedOut => {
                 state.relay_mode = true;
-                punch_fails += 1;
-                let retries = crate::config::punch_retries();
-                if !punch_exhausted && punch_fails >= retries {
-                    punch_exhausted = true;
-                    log::info!(
-                        "punch failed {punch_fails}/{retries} rounds: skipping punch and TURN from now on, using TCP relay directly"
-                    );
-                    println!(
-                        "  {}",
-                        warn(format!(
-                            "punch failed {punch_fails} time(s) — switching to TCP relay for good (tune with --punch-retries)"
-                        ))
-                    );
+                // force_relay（--relay）是用户显式选择，不算"打洞失败"：
+                // 计入会误触发降级、跳过 TURN，与房主端的 TURN 等待错位会师。
+                if !force_relay {
+                    punch_fails += 1;
+                    let retries = crate::config::punch_retries();
+                    if !punch_exhausted && punch_fails >= retries {
+                        punch_exhausted = true;
+                        log::info!(
+                            "punch failed {punch_fails}/{retries} rounds: skipping punch and TURN from now on, using TCP relay directly"
+                        );
+                        println!(
+                            "  {}",
+                            warn(format!(
+                                "punch failed {punch_fails} time(s) — switching to TCP relay for good (tune with --punch-retries)"
+                            ))
+                        );
+                    }
                 }
                 // 1) TURN 中继（配置了供应商或服务器下发内置 TURN 时；punch 用尽后跳过，
                 //    直接走 TCP 中继——重试打洞只会重复同样的失败路径）。
