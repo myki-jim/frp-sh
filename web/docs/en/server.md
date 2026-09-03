@@ -124,6 +124,24 @@ curl http://SERVER-IP:8080/health
 # Expect: ADDR <token> <your-public-ip>:<port>
 ```
 
+## Logs and troubleshooting
+
+Server logs are **not printed to the terminal** — they go to a local file and can be
+pulled incrementally over HTTP:
+
+- Log file: `/var/log/frp-sh/frp-sh.log` (Linux; 5 MB rotation to `.old`). systemd
+  environments without a `$HOME` automatically fall back to `/var/log/frp-sh`
+- Panel **Logs** view: the Logs tab at the top of `http://SERVER-IP:8080/panel`
+  streams live incremental updates (served by `/api/panel/debug`, authenticated with
+  the same token as the panel)
+- Key events are logged automatically: guest joins (with public address / vnet IP),
+  host refresh, relay pair established / timeout, room removal, TURN allocation
+- The client side has panel logs too (client panel Logs view / `/api/debug`);
+  `--verbose` records the punching phase in more detail
+- Diagnosing repeatedly dropped connections: compare the "join → relay pair → drop"
+  timelines in both ends' logs and use the panel's topology view to tell whether
+  punching, TURN, or the relay path is at fault
+
 ## Coexisting with other services
 
 Other services on the server (e.g., ports 8000/8765) are unaffected; to move ports, change `--addr`/`--relay-addr` and update the client config accordingly.

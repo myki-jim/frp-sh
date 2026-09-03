@@ -18,12 +18,21 @@ The client cannot reach the server's UDP probe port:
 
 ### Stuck at `UDP hole punching failed, falling back to relay ...`
 
-Punch failure is normal for strict NATs and **does not break usage** —it falls back to relay automatically. To get direct:
+Punch failure is normal (overly strict NAT) and **does not break usage** — it falls
+back to relay automatically. Since v0.3.7 **one failed punch permanently downgrades**:
+later rounds no longer retry punching or TURN and go straight to the TCP relay (no
+more wasting ten-plus seconds retrying the same failing path). If you want a direct
+link or more attempts:
 
-- Try a larger `--spread` (symmetric NAT)
-- Make sure UDP outbound works on both sides
-- If both ends are behind the same NAT/LAN, public-IP punching is a hairpin case and may fail —use `--relay`
-- After a punch failure, prefer **TURN relay** (configure `turn_providers`; a UDP relay with better traversal/latency than the private TCP relay); only when TURN is also unavailable does it fall back to the private TCP relay
+- `--punch-retries 3`: downgrade only after 3 failed rounds (default 1);
+  `--punch-retries 0` skips punching entirely
+- Try a larger `--spread` (symmetric-NAT scenarios)
+- Make sure UDP outbound works on both sides; on the same WiFi see [LAN direct](#both-sides-are-on-the-same-wifi-—how-do-we-get-a-lan-direct-link)
+- If both ends are on the same LAN / behind the same NAT, public-IP punching is a
+  hairpin case and the direct link may fail — staying downgraded on the relay is fine,
+  or try the LAN-direct path first (LAN addresses are advertised automatically)
+- TURN relay (configure `turn_providers`) is only tried in the first round before the
+  downgrade; after downgrading it always uses the TCP relay
 
 ### Direct link established but no data flows
 
