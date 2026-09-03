@@ -1,11 +1,32 @@
 # 安装与构建
 
-## 环境要求
+## 方式零：一键脚本安装（推荐）
+
+一行命令安装 / 更新（重复执行即更新；脚本自动检测系统与架构，从 GitHub Releases 下载最新版）：
+
+::: code-group
+
+```bash [Linux / macOS]
+curl -fsSL https://frp.sh/install.sh | sh
+```
+
+```powershell [Windows (PowerShell)]
+irm https://frp.sh/install.ps1 | iex
+```
+
+:::
+
+- Windows 版自动安装到 `%LOCALAPPDATA%\frp-sh` 并加入用户 PATH，附带 wintun.dll
+- POSIX 版安装到 `/usr/local/bin`
+- CI 环境设置 `FRPSH_SKIP_INIT=1` 可跳过安装后的首次向导
+- 环境要求：无需 Rust，无需编译
+
+## 环境要求（源码构建）
 
 - **Rust**：1.70+（推荐用 rustup 安装最新稳定版）
 - **操作系统**：Windows / Linux / macOS（UDP 行为基本一致；已处理 Windows 特有的 WSAECONNRESET 问题）
 
-## 方式一：源码构建（推荐）
+## 方式一：源码构建
 
 ```bash
 git clone <你的仓库地址> frp-sh
@@ -25,7 +46,7 @@ target/release/frp-sh.exe   # Windows
 target/release/frp-sh       # Linux / macOS
 ```
 
-发布构建约 **5.4 MB**（已 strip + LTO），单文件可分发，无需运行时依赖。
+发布构建约 **6 MB**（已 strip + LTO），单文件可分发，无需运行时依赖。
 
 ## 方式二：直接编译运行
 

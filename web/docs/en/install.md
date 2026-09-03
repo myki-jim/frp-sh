@@ -1,11 +1,34 @@
 # Installation & Building
 
-## Requirements
+## Option 0: One-line script install (recommended)
+
+Install / update with one command (re-running it updates; the script detects the
+system and architecture and downloads the latest release from GitHub Releases):
+
+::: code-group
+
+```bash [Linux / macOS]
+curl -fsSL https://frp.sh/install.sh | sh
+```
+
+```powershell [Windows (PowerShell)]
+irm https://frp.sh/install.ps1 | iex
+```
+
+:::
+
+- The Windows installer puts the binary in `%LOCALAPPDATA%\frp-sh`, adds it to the
+  user PATH, and bundles wintun.dll
+- The POSIX installer installs to `/usr/local/bin`
+- In CI, set `FRPSH_SKIP_INIT=1` to skip the first-run wizard after installing
+- Requirements: no Rust, no compilation
+
+## Requirements (source build)
 
 - **Rust**: 1.70+ (install the latest stable via rustup)
 - **OS**: Windows / Linux / macOS (UDP behavior is largely the same; Windows WSAECONNRESET quirks are handled)
 
-## Option 1: Build from source (recommended)
+## Option 1: Build from source
 
 ```bash
 git clone <your-repo-url> frp-sh
@@ -25,7 +48,7 @@ target/release/frp-sh.exe   # Windows
 target/release/frp-sh       # Linux / macOS
 ```
 
-The release binary is about **5.4 MB** (stripped + LTO), a single file with no runtime dependencies.
+The release binary is about **6 MB** (stripped + LTO), a single file with no runtime dependencies.
 
 ## Option 2: Build without a repo clone
 

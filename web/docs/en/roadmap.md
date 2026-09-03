@@ -41,6 +41,29 @@ The current version focuses on "simple, robust, good enough". Planned capabiliti
   - TODO: in-session upgrade/downgrade (relay ↔ direct seamless switching),
     TURN provider discovery
 
+## Implemented (v0.3)
+
+-  **Connection profiles** (`frp-sh profile add/list/show/edit/remove/run`): save
+  server + password + room in one line; names are assigned in sequence and can be
+  renamed; the same server + mode dedupes and merges automatically; the panel's
+  "one-click join" runs on a profile under the hood
+-  **Web panels on both ends**: server panel (online rooms/devices/link rates/
+  topology map, one-click join commands, logs view) + client panel (local status /
+  sharing / logs view); passwords stay masked throughout and only land on the
+  clipboard when you copy
+-  **Logging system**: terminal stays quiet, logs go to `<config dir>/logs/frp-sh.log`
+  (5 MB rotation) plus an in-memory ring buffer, pulled incrementally via the panel's
+  `/debug`; key server-side events (join / relay pairing / timeout / room removal)
+  are logged end to end
+-  **Punch downgrade strategy** (`--punch-retries`, default 1): one failed punch
+  skips punching and TURN and goes straight to the TCP relay — no more repeating the
+  failing path; a dropped direct link also skips punching automatically
+-  Relay WAIT deadlock fix (UUID-slot waiters can no longer be woken spuriously),
+  relay traffic-statistics accounting fix, same-NAT link-stability debugging tools
+  (panel debug)
+-  One-line install scripts (Windows PowerShell / POSIX shell) — install and go
+  (skip the wizard; configure later with profiles / the panels)
+
 ## Implemented (v0.1)
 
 -  Room-based signaling (REST + UDP probe + TTL expiry)

@@ -41,11 +41,13 @@ frp-sh dev create --service 127.0.0.1:8080
 frp-sh dev join dev-a3f9c2 --listen 127.0.0.1:8080
 ```
 
-- 打洞失败自动回退中继；`--relay` 强制中继
+- 打洞失败自动回退中继；`--relay` 强制中继；`--punch-retries N` 控制降级阈值（默认 1：打洞失败一次即永久走中继，不再反复重试）
 - `--key` 启用 ChaCha20-Poly1305 端到端加密
 - `--max-conns N` 限制连接数（默认无限）；`--spread N` 调打洞散布
 - **同局域网自动直连**：房主通告局域网地址，同一 WiFi 下访客秒级直连（不经服务器）
 - **组网（lan）**：虚拟网卡整机入网；`--expose-lan` 可将本机局域网接入隧道（默认不暴露）
+- **连接配置档案**：`frp-sh profile add/run` 一行保存服务器+密码+房间，一键重连；同服务器+模式自动去重合并
+- **双端 Web 面板**：服务器面板（房间/链路速率/拓扑/一键接入命令）+ 客户端面板（本机状态/分享/日志），日志写入本地文件不刷终端
 - 断线自动重连：网络抖动 / NAT 映射过期后按 2s、4s、8s…退避自动重连（上限 15s）
 - 每台设备有唯一 ID（UUID），虚拟网卡 IP 由 ID 稳定派生，长期不变
 - 默认端口 `25565` 是 Minecraft 的默认端口，可通过 `--service` / `--listen` 改成任意端口
@@ -77,7 +79,7 @@ cargo clippy --all-targets -- -D warnings
 cd web && npm run build    # 构建文档站
 ```
 
-CI（GitHub Actions）：push/PR 自动运行 fmt / clippy / test / release 构建；打 `v*` 标签自动发布五平台二进制（linux/macos x86_64+aarch64、windows x86_64）；push main 自动部署文档站到 Cloudflare Pages。
+CI（GitHub Actions）：push/PR 自动运行 fmt / clippy / test / release 构建；打 `v*` 标签自动发布 7 个资产（linux x86_64+aarch64 各 glibc/musl 双版本、macOS x86_64+aarch64、Windows x86_64）；push main 自动部署文档站到 Cloudflare Pages。
 
 ## License
 
