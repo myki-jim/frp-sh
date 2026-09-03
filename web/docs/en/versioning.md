@@ -6,7 +6,7 @@ frp-sh is in the **0.x development stage** (in semver, `major=0` means not yet s
 
 - **Features and protocol may change**: before 1.0 we keep adding capabilities and
   revising designs; backward compatibility is not promised
-- **Fast iteration**: 0.x ships almost weekly (currently v0.2.x); follow along
+- **Fast iteration**: 0.x ships almost weekly (currently v0.3.x); follow along
 - **1.0 is the first stable release**: we only bump to 1.0 once the bar below is met
 
 ## The 1.0 bar
@@ -34,7 +34,7 @@ frp-sh is in the **0.x development stage** (in semver, `major=0` means not yet s
 
 ### Update checks
 
-- Every run prints the current version and protocol (`frp-sh v0.2.0 (protocol v1)`)
+- Every run prints the current version and protocol (`frp-sh v0.3.7 (protocol v1)`)
 - Startup checks for new versions (`frp.sh/latest-version.txt`, throttled to 6h)
 - When a new version exists it asks `[Y/n]`:
   - **Smooth upgrade** (same major, minor diff ≤ 1) → can skip; prompted again next start
@@ -53,6 +53,7 @@ frp-sh is in the **0.x development stage** (in semver, `major=0` means not yet s
 
 ## Release cadence
 
-- `0.x`: feature work and fixes, shipped whenever ready (currently v0.2.x: TURN relay main line)
+- `0.x`: feature work and fixes, shipped whenever ready (currently v0.3.x: connection
+  profiles / one-click join / panel logs / punch downgrade strategy)
 - `1.0.0`: first stable release; semver applies from then on (`1.x` compatible,
   `2.0` breaking)

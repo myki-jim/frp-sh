@@ -18,24 +18,26 @@ hero:
 
 features:
   - title:  房间制社交组网
-    details: 一个 game-xxxxxx 房间号即可建立连接，无需公网 IP 与端口映射
+    details: 一个房间号即可建立连接，无需公网 IP 与端口映射
   - title:  UDP 打洞直连
     details: STUN 优先的公网探测 + PUNCH/ACK 同时握手，可穿透受限锥形 NAT
   - title:  端到端加密
     details: 双方 --key 口令一致即启用 ChaCha20-Poly1305 加密传输
   - title:  中继回退
-    details: 打洞失败自动转 TURN 中继（可选）或服务器 TCP 中继，迟到直连复查自愈不对称场景
+    details: 打洞失败自动转 TURN 中继（可选）或服务器 TCP 中继；失败即降级不反复重试，迟到直连复查自愈不对称场景
+  - title:  连接配置档案
+    details: frp-sh profile 一行保存服务器/密码/房间，一键重连；面板"一键接入"自动去重合并
+  - title:  双端 Web 面板
+    details: 服务器与客户端面板实时显示房间、链路速率、连接拓扑与运行日志（/debug 增量拉取）
   - title:  内置 TURN
     details: serve --turn 单二进制提供标准 RFC 5766 TURN，客户端多供应商自动择优
-  - title:  多连接复用
-    details: 同一隧道顺序承载多个 TCP 连接，断线秒级重连
   - title:  单文件二进制
-    details: 纯 Rust 实现，约 5 MB 单文件，不依赖 frp / libp2p / webrtc
+    details: 纯 Rust 实现，约 6 MB 单文件，不依赖 frp / libp2p / webrtc
 ---
 
 ::: warning 开发阶段（0.x）
 
-frp-sh 目前处于 **开发阶段**（`v0.2.x`），**1.0 之前功能与协议可能调整**，不承诺向后兼容。
+frp-sh 目前处于 **开发阶段**（`v0.3.x`），**1.0 之前功能与协议可能调整**，不承诺向后兼容。
 版本快速迭代，建议跟随更新；求稳部署请留意更新提示与代差警告。
 详见[版本策略](./versioning)。
 

@@ -30,7 +30,28 @@ For a permanent setup see [Deploy the Server](./server).
 
 ## Step 2: Configure the client
 
-Both host and guest need a config pointing at that server (the built-in default targets `127.0.0.1` for local testing only):
+Both host and guest need a config pointing at that server. **Use a connection profile**
+(one line, written to your local config automatically):
+
+```bash
+# Save the server connection (--set-default marks it as the default profile; without
+# a room it's "configuration" only — the room is filled in when you join one)
+frp-sh profile add --server http://YOUR-SERVER-IP:8080 --password YOUR_PASSWORD --set-default
+
+# Joining a room afterwards (first time, or to fill in the room code; the same
+# server + mode merge into the same profile automatically)
+frp-sh profile add --server http://YOUR-SERVER-IP:8080 --password YOUR_PASSWORD --room 7411
+frp-sh profile run          # start a session from the default profile in one go
+frp-sh profile list         # view existing profiles (passwords masked)
+```
+
+> The server panel's home page has a "one-click client setup" card at the bottom —
+> copy the whole command and send it to a friend: pasting and running it completes all
+> of the post-install configuration. A room's "one-click join" command fills in the
+> same profile automatically.
+
+Manual way (TOML config file — the default config points at `127.0.0.1`, local
+testing on one machine only):
 
 ```toml
 # config/server.toml
