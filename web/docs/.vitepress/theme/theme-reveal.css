@@ -42,44 +42,17 @@
   }
 }
 
-/* A translucent aurora at the viewport edge; all content remains live beneath it. */
+/* Live rendering only: these decorative canvases never capture or block the page. */
 .theme-live,
 .theme-live * {
   transition-property: none !important;
 }
-.theme-aura {
+.theme-wave,
+.language-dust {
   position: fixed;
   inset: 0;
+  width: 100vw;
+  height: 100vh;
   z-index: 100;
   pointer-events: none;
-  overflow: hidden;
-}
-.theme-aura i {
-  position: absolute;
-  inset: -12%;
-  border-radius: 44%;
-  background: conic-gradient(
-    from 30deg,
-    #69bfff,
-    #9d79ff,
-    #f58fb8,
-    #f7c482,
-    #68d7c9,
-    #69bfff
-  );
-  mask-image: radial-gradient(
-    ellipse,
-    transparent 60%,
-    #000 68%,
-    transparent 75%
-  );
-  filter: blur(26px);
-  transform-origin: center;
-}
-.theme-aura i:nth-child(2) {
-  opacity: 0.6;
-  border-radius: 48% 38% 44% 40%;
-}
-.theme-aura i:nth-child(3) {
-  opacity: 0.4;
 }
