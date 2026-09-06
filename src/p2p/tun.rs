@@ -473,6 +473,7 @@ pub async fn add_route(cidr: &str, name: &str, _gateway: &str) -> Result<()> {
         .map_err(|e| FrpError::Tun(e.to_string()))
 }
 pub(crate) fn delete_route_local(cidr: &str, name: &str, gateway: &str) -> Result<()> {
+    let _ = gateway;
     #[cfg(target_os = "linux")]
     {
         let _ = gateway;

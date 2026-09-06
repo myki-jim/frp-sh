@@ -65,13 +65,15 @@ pub async fn connect() -> io::Result<Stream> {
         loop {
             match open_client() {
                 Ok(s) => {
-                    verify_server(&s)?;
+                    verify_server(&s).map_err(|e| {
+                        io::Error::new(e.kind(), format!("Verify helper process identity: {e}"))
+                    })?;
                     return Ok(s);
                 }
                 Err(e) if e.raw_os_error() == Some(231) && tokio::time::Instant::now() < until => {
                     tokio::time::sleep(Duration::from_millis(25)).await
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(io::Error::new(e.kind(), format!("Open helper pipe: {e}"))),
             }
         }
     }
@@ -201,6 +203,8 @@ where
 {
     let mut tasks = tokio::task::JoinSet::new();
     #[cfg(windows)]
+    grant_identity_query(&policy)?;
+    #[cfg(windows)]
     let mut listener = pipe(&policy, true)?;
     #[cfg(unix)]
     let listener = {
@@ -252,5 +256,72 @@ where
     while tasks.join_next().await.is_some() {}
     #[cfg(unix)]
     let _ = std::fs::remove_file(ENDPOINT);
+    Ok(())
+}
+
+/// Permit only executable-identity queries; do not grant memory, token duplication,
+/// termination, handle duplication, or pipe-instance creation to the client.
+#[cfg(windows)]
+fn grant_identity_query(policy: &Policy) -> io::Result<()> {
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SetSecurityInfo,
+                SE_KERNEL_OBJECT,
+            },
+            GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION,
+        },
+        System::Threading::GetCurrentProcess,
+    };
+    if !policy.allowed_sid.starts_with("S-1-")
+        || !policy
+            .allowed_sid
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'S' || b == b'-')
+    {
+        return Err(io::Error::other("Invalid allowed SID"));
+    }
+    let descriptor = format!(
+        "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x1000;;;{})",
+        policy.allowed_sid
+    );
+    let wide: Vec<_> = descriptor.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let mut sd = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            1,
+            &mut sd,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut acl = std::ptr::null_mut();
+        if GetSecurityDescriptorDacl(sd, &mut present, &mut acl, &mut defaulted) == 0
+            || present == 0
+            || acl.is_null()
+        {
+            let error = io::Error::last_os_error();
+            LocalFree(sd);
+            return Err(error);
+        }
+        let code = SetSecurityInfo(
+            GetCurrentProcess(),
+            SE_KERNEL_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            acl,
+            std::ptr::null(),
+        );
+        LocalFree(sd);
+        if code != 0 {
+            return Err(io::Error::from_raw_os_error(code as i32));
+        }
+    }
     Ok(())
 }
