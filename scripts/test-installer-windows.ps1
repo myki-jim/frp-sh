@@ -3,11 +3,20 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $path = Join-Path $root 'web/docs/public/install.ps1'
 $bytes = [IO.File]::ReadAllBytes($path)
-if ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) { throw 'Installer needs UTF-8 BOM for Windows PowerShell -File' }
+if (@($bytes | Where-Object { $_ -gt 127 }).Count) { throw 'Installer must be ASCII-safe for irm and -File' }
 $tokens = $null
 $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
 if ($errors) { throw ($errors | Out-String) }
+$text = [IO.File]::ReadAllText($path)
+$null = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$tokens, [ref]$errors)
+if ($errors) { throw ($errors | Out-String) }
+$messageFunction = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Message' }, $true)
+. ([scriptblock]::Create($messageFunction.Extent.Text))
+function Write-Host { param($Object) $script:messageOutput = $Object }
+$Lang = 'zh-CN'
+Message 'Test' '\u4e2d\u6587'
+if ($script:messageOutput -ne (-join @([char]0x4e2d, [char]0x6587))) { throw 'Chinese output decoding failed' }
 $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Download-Verified' }, $true)
 . ([scriptblock]::Create($function.Extent.Text))
 $base = 'https://example.invalid/release'
