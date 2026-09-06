@@ -180,6 +180,22 @@ pub(crate) fn add_subnet_route_local(cidr: &str, dev: &str) -> Result<()> {
     }
 }
 
+// A Darwin point-to-point address is not automatically routed through loopback.
+// Without this /32 exception, self traffic enters utun and is sent to the peer.
+#[cfg(target_os = "macos")]
+pub(crate) fn local_address_route(ip: &str, add: bool) -> Result<()> {
+    run_cmd(
+        "route",
+        &[
+            "-n",
+            if add { "add" } else { "delete" },
+            "-host",
+            ip,
+            "127.0.0.1",
+        ],
+    )
+}
+
 /// Helper-owned firewall rule, scoped to this virtual interface only.
 #[cfg(target_os = "windows")]
 pub(crate) fn allow_firewall_local(iface: &str) -> Result<()> {
