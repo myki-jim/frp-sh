@@ -7,9 +7,8 @@ const { frontmatter, lang } = useData();
 onMounted(() => {
   watchEffect(
     () => {
-      document.documentElement.lang = frontmatter.value.cinematic
-        ? "en"
-        : lang.value;
+      if (!frontmatter.value.cinematic)
+        document.documentElement.lang = lang.value;
     },
     { flush: "post" },
   );
