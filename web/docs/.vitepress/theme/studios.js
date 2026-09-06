@@ -1,7 +1,7 @@
 import * as T from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 
-export function mountStudios(host, state) {
+export function mountStudios(host, state, motion = { progress: 0.5 }) {
   const scene = new T.Scene(),
     camera = new T.OrthographicCamera(-10, 10, 7, -7, 0.1, 100);
   const renderer = new T.WebGLRenderer({
@@ -358,7 +358,7 @@ export function mountStudios(host, state) {
     dots.forEach((dot, i) =>
       dot.position.copy(
         curves[i].getPointAt(
-          state.reduced ? 0.5 : (time * 0.0001 + i * 0.15) % 1,
+          state.reduced ? 0.5 : (time * 0.00035 + i * 0.15) % 1,
         ),
       ),
     );
@@ -366,6 +366,17 @@ export function mountStudios(host, state) {
       renderer.shadowMap.needsUpdate = true;
       previousNight = night;
     }
+    // Orbit the complete arrangement; furniture and room clearances stay fixed.
+    const progress = state.reduced ? 0.5 : motion.progress;
+    const angle = T.MathUtils.lerp(0.15, 0.82, progress);
+    camera.position.set(
+      Math.sin(angle) * 22,
+      T.MathUtils.lerp(16, 12, progress),
+      Math.cos(angle) * 22,
+    );
+    camera.lookAt(0, 0.3, 0);
+    camera.zoom = T.MathUtils.lerp(0.87, 1.04, Math.sin(progress * Math.PI));
+    camera.updateProjectionMatrix();
     renderer.render(scene, camera);
     if (!document.hidden && !state.reduced && visible)
       frame = requestAnimationFrame(render);

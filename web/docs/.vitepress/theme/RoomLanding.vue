@@ -1,5 +1,12 @@
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, watch } from "vue";
+import {
+  ref,
+  reactive,
+  onMounted,
+  onBeforeUnmount,
+  watch,
+  nextTick,
+} from "vue";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { commands } from "./install-commands.js";
@@ -12,6 +19,7 @@ const root = ref(null),
   message = ref(""),
   failed = ref(false);
 const scene = reactive({ night: false, reduced: false });
+const motion = { progress: 0 };
 const tr = (en, zh) => (language.value === "en" ? en : zh);
 const docs = (path) => (language.value === "en" ? "/en/" : "/") + path;
 let world,
@@ -31,6 +39,7 @@ function toggleLanguage() {
   document.documentElement.lang = language.value;
   save("frpsh-site-language", language.value);
   message.value = "";
+  nextTick(() => ScrollTrigger.refresh());
 }
 function light() {
   const modes = ["auto", "day", "night"];
@@ -73,32 +82,144 @@ onMounted(async () => {
   gsap.registerPlugin(ScrollTrigger);
   ctx = gsap.matchMedia();
   ctx.add(
-    "(prefers-reduced-motion: no-preference)",
-    () => {
-      gsap.from(".hero-copy > *", {
-        y: 24,
-        opacity: 0,
-        stagger: 0.1,
-        duration: 0.8,
-        ease: "power3.out",
-      });
-      gsap.utils
-        .toArray(".reveal")
-        .forEach((el) =>
-          gsap.from(el, {
-            y: 30,
-            opacity: 0,
-            duration: 0.7,
-            scrollTrigger: { trigger: el, start: "top 90%", once: true },
-          }),
+    {
+      desktop: "(min-width: 851px)",
+      mobile: "(max-width: 850px)",
+      reduced: "(prefers-reduced-motion: reduce)",
+    },
+    ({ conditions }) => {
+      if (conditions.reduced) {
+        motion.progress = 0.5;
+        return;
+      }
+      const desktop = conditions.desktop;
+      const entrance = gsap.timeline({ defaults: { ease: "power4.out" } });
+      entrance
+        .from(".headline-line > span", {
+          yPercent: 115,
+          rotation: 5,
+          duration: 1.3,
+          stagger: 0.16,
+        })
+        .from(
+          ".hero-copy .eyebrow, .intro, .hero-actions",
+          { y: 45, opacity: 0, duration: 0.9, stagger: 0.1 },
+          0.3,
         );
+      gsap.fromTo(
+        ".studio-shell",
+        { clipPath: "inset(18% 12% 10% 12%)", y: 100, scale: 0.86 },
+        {
+          clipPath: "inset(0% 0% 0% 0%)",
+          y: 0,
+          scale: 1,
+          ease: "none",
+          scrollTrigger: {
+            trigger: ".studio-shell",
+            start: "top 95%",
+            end: "top 22%",
+            scrub: 0.8,
+          },
+        },
+      );
+      gsap.to(motion, {
+        progress: 1,
+        ease: "none",
+        scrollTrigger: {
+          trigger: ".studio-shell",
+          start: "top bottom",
+          end: "bottom top",
+          scrub: 1,
+        },
+      });
+      gsap.from(".connection h2", {
+        x: desktop ? -160 : -65,
+        opacity: 0,
+        duration: 1.15,
+        scrollTrigger: {
+          trigger: ".connection",
+          start: "top 78%",
+          toggleActions: "play none none reverse",
+        },
+      });
+      gsap.from(".connection-copy", {
+        x: desktop ? 120 : 55,
+        opacity: 0,
+        duration: 1.15,
+        scrollTrigger: {
+          trigger: ".connection",
+          start: "top 75%",
+          toggleActions: "play none none reverse",
+        },
+      });
+      gsap.from(".route i", {
+        scaleX: 0,
+        transformOrigin: "left",
+        duration: 1.2,
+        scrollTrigger: {
+          trigger: ".route",
+          start: "top 85%",
+          toggleActions: "play none none reverse",
+        },
+      });
+      gsap.fromTo(
+        ".motion-track",
+        { xPercent: 12 },
+        {
+          xPercent: -35,
+          ease: "none",
+          scrollTrigger: {
+            trigger: ".motion-band",
+            start: "top bottom",
+            end: "bottom top",
+            scrub: 1,
+          },
+        },
+      );
+      gsap.utils.toArray(".use-grid article").forEach((el, i) => {
+        gsap.from(el, {
+          x: (i ? 1 : -1) * (desktop ? 170 : 65),
+          y: 90,
+          rotation: i ? 5 : -5,
+          opacity: 0,
+          ease: "power3.out",
+          duration: 1.2,
+          scrollTrigger: {
+            trigger: el,
+            start: "top 88%",
+            toggleActions: "play none none reverse",
+          },
+        });
+      });
+      gsap.from(".details > *", {
+        y: 85,
+        opacity: 0,
+        stagger: 0.15,
+        duration: 1,
+        scrollTrigger: { trigger: ".details", start: "top 85%", once: true },
+      });
+      gsap.from(".install h2", {
+        y: 90,
+        opacity: 0,
+        duration: 1.1,
+        scrollTrigger: { trigger: ".install", start: "top 90%", once: true },
+      });
+      gsap.from(".install-box", {
+        y: 100,
+        rotationX: 14,
+        scale: 0.9,
+        opacity: 0,
+        duration: 1.15,
+        clearProps: "transform,opacity",
+        scrollTrigger: { trigger: ".install", start: "top 90%", once: true },
+      });
     },
     root.value,
   );
   try {
     const { mountStudios } = await import("./studios.js");
     if (disposed) return;
-    world = mountStudios(host.value, scene);
+    world = mountStudios(host.value, scene, motion);
     stop = watch(
       () => [scene.night, scene.reduced],
       () => world?.refresh(),
@@ -154,9 +275,12 @@ onBeforeUnmount(() => {
       <div class="hero-copy">
         <p class="eyebrow">P2P NETWORKING / v0.4.0</p>
         <h1>
-          {{ tr("Your people.", "你和伙伴，") }}<br /><span>{{
-            tr("One network.", "同一个网络。")
-          }}</span>
+          <span class="headline-line"
+            ><span>{{ tr("Your people.", "你和伙伴，") }}</span></span
+          >
+          <span class="headline-line headline-muted"
+            ><span>{{ tr("One network.", "同一个网络。") }}</span></span
+          >
         </h1>
         <p class="intro">
           {{
@@ -224,6 +348,13 @@ onBeforeUnmount(() => {
         >
       </div>
     </section>
+    <div class="motion-band" aria-hidden="true">
+      <div class="motion-track">
+        <span>{{ tr("LESS WAITING", "少一点等待") }}</span
+        ><i>↗</i><span>{{ tr("MORE TOGETHER", "一起，即刻") }}</span
+        ><i>↗</i>
+      </div>
+    </div>
     <section class="use-section">
       <div class="section-line reveal">
         <p class="eyebrow">02 / {{ tr("MADE FOR TOGETHER", "为一起而生") }}</p>
