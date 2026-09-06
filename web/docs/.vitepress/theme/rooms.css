@@ -568,3 +568,43 @@
     transform: none;
   }
 }
+
+.network-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding-top: 35px;
+  font: 10px/1.5 monospace;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+}
+.network-legend > span:first-child {
+  color: var(--accent);
+}
+.network-steps {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 6%;
+  padding: 32px 0;
+  border-bottom: 1px solid var(--line);
+  font: 12px monospace;
+  letter-spacing: 1px;
+}
+.network-steps i {
+  font: normal 28px Arial;
+  color: var(--accent);
+}
+@media (max-width: 600px) {
+  .network-legend {
+    font-size: 8px;
+    letter-spacing: 0;
+  }
+  .network-steps {
+    font-size: 9px;
+    letter-spacing: 0;
+  }
+  .network-steps i {
+    font-size: 20px;
+  }
+}

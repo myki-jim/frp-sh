@@ -475,3 +475,64 @@
     min-width: 560px;
   }
 }
+
+.docs-reading-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--vp-c-brand-1);
+  transform: scaleX(0);
+  transform-origin: left;
+  z-index: 100;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .doc-shell .VPNavBar,
+  .doc-shell .VPSidebar,
+  .doc-shell .VPContent {
+    transition:
+      background-color 0.65s,
+      border-color 0.65s;
+  }
+  .doc-shell .VPSidebarItem .link {
+    transition:
+      color 0.25s,
+      background 0.25s,
+      padding-left 0.3s;
+  }
+  .doc-shell .VPSidebarItem .link:hover {
+    padding-left: 8px;
+  }
+  .doc-shell .VPDocOutlineItem .outline-link {
+    transition:
+      color 0.25s,
+      transform 0.3s;
+  }
+  .doc-shell .VPDocOutlineItem .outline-link.active {
+    transform: translateX(4px);
+  }
+  .doc-shell .VPDocAsideOutline .outline-marker {
+    transition:
+      top 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 0.3s;
+  }
+  .doc-shell .vp-doc div[class*="language-"] {
+    transition:
+      border-color 0.35s,
+      box-shadow 0.35s;
+  }
+  .doc-shell .vp-doc div[class*="language-"]:hover {
+    border-color: var(--vp-c-brand-1);
+    box-shadow: 0 8px 28px #0000000a;
+  }
+  .doc-shell .pager-link {
+    transition:
+      transform 0.3s,
+      border-color 0.3s;
+  }
+  .doc-shell .pager-link:hover {
+    transform: translateY(-4px);
+  }
+}
