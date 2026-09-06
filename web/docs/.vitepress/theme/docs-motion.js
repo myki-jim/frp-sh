@@ -5,19 +5,23 @@ export function mountDocsMotion(shell) {
   gsap.registerPlugin(ScrollTrigger);
   const mm = gsap.matchMedia();
   mm.add("(prefers-reduced-motion: no-preference)", () => {
-    gsap.from(shell.querySelectorAll(".docs-eyebrow, .vp-doc h1"), {
-      y: 38,
-      opacity: 0,
-      duration: 0.75,
-      stagger: 0.09,
-      ease: "power3.out",
-      clearProps: "transform,opacity",
-    });
+    const ashing =
+      document.documentElement.classList.contains("language-ashing");
+    if (!ashing)
+      gsap.from(shell.querySelectorAll(".docs-eyebrow, .vp-doc h1"), {
+        y: 38,
+        opacity: 0,
+        duration: 0.75,
+        stagger: 0.09,
+        ease: "power3.out",
+        clearProps: "transform,opacity",
+      });
     shell
       .querySelectorAll(
         '.vp-doc h2, .vp-doc div[class*="language-"], .vp-doc .custom-block, .vp-doc .mermaid',
       )
       .forEach((el) => {
+        if (ashing && el.getBoundingClientRect().top < innerHeight) return;
         gsap.from(el, {
           y: 26,
           opacity: 0.55,
