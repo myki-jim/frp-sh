@@ -2,7 +2,7 @@
 import { useData } from "vitepress";
 import DefaultTheme from "vitepress/theme";
 import { defineAsyncComponent, watchEffect, onMounted } from "vue";
-const Landing = defineAsyncComponent(() => import("./Landing.vue"));
+const Landing = defineAsyncComponent(() => import("./RoomLanding.vue"));
 const { frontmatter, lang } = useData();
 onMounted(() => {
   watchEffect(

@@ -1,9 +1,11 @@
 # Website motion system
 
-The homepage now uses a procedural Canvas optical field in `ConnectionField.vue`, replacing the generated hardware image. No raster hero is loaded. The earlier generated asset was removed at the user's request.
+The homepage uses a procedural Three.js scene in `RoomScene.vue`: two miniature workspaces with modeled desks, monitors, chairs, windows, lamps and plants. Scrolling draws a connection path, moves the camera and brings the rooms together while lowering the dividing wall. The scene illustrates the connection concept, not live network telemetry.
 
-GSAP provides headline masks, text illumination, scroll progress, perspective rings, connection-path drawing, section masks, rotating scene orbits and desktop horizontal storytelling. Canvas caps pixel density at 1.5 and pauses offscreen or when the tab is hidden. Reduced-motion preference renders a static field and vertical story layout.
+The direction takes inspiration from the interactive workspace concept described at https://office.graffico.it/, linked by the GSAP showcase. The supplied showcase page 4 was inaccessible during research. No artwork or model assets were copied. The old generated-image/particle-field implementation has been removed.
 
-The EN / 中文 button switches the complete landing page in place and remembers the explicit choice in local storage. First visits default to English. Documentation links follow the selected language. HTML language metadata follows the rendered language; install commands remain unchanged.
+GSAP controls headline masks, section reveals, the pinned connection sequence and horizontal use cases. Narrow or short screens use a vertical layout and an explicit play button. Reduced-motion preference disables automatic motion and pinning. Three.js caps pixel density at 1.5, pauses when offscreen or hidden, disposes resources on navigation, and supplies a text fallback when WebGL is unavailable.
 
-Validated with a production VitePress build and browser checks: both language directions, persistence after reload, translated document links, desktop view, and a 390 px Chinese mobile layout without horizontal overflow. Browser console reported no errors or warnings during the check.
+First visits default to English. EN / 中文 switches the complete page in place, remembers the choice, updates HTML language metadata and changes documentation links. Installation commands are available for both supported platform groups.
+
+Validation: production VitePress build; desktop scene and connection replay; horizontal scrolling; 390 px mobile layout without horizontal overflow; language switching and persistence. No browser console errors were observed. The build still reports large JavaScript chunks, including Three.js and the documentation's Mermaid dependency; these are not a claim of measured load-time performance.
