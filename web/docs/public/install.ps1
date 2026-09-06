@@ -19,7 +19,7 @@ if (-not $isAdmin) {
         $child = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -Wait -PassThru
         if ($child.ExitCode -ne 0) { throw 'Installation failed. Run the installer from an administrator terminal to see the detailed error.' }
     } finally { Remove-Item -LiteralPath $bootstrap -ErrorAction SilentlyContinue }
-    $env:Path += ';' + (Join-Path $env:ProgramFiles 'frp-sh')
+    $env:Path = (Join-Path $env:ProgramFiles 'frp-sh') + ';' + $env:Path
     Message 'Installed. Run frp-sh from your normal terminal; LAN sessions no longer request UAC.' '安装完成。请在普通终端运行 frp-sh，LAN 会话不再请求 UAC。'
     return
 }

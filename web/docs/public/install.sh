@@ -56,7 +56,12 @@ cleanup() {
             case "$item" in client) path="$dest/frp-sh";; helper) path="$dest/frp-sh-net";; policy) path=/etc/frp-sh/helper.toml;; unit) path="$unit";; esac
             if [ -f "$stage/previous-$item" ]; then cp -p "$stage/previous-$item" "$path"; else rm -f "$path"; fi
         done
-        if [ -f "$stage/previous-link" ]; then ln -sf "$(cat "$stage/previous-link")" /usr/local/bin/frp-sh; else rm -f /usr/local/bin/frp-sh; fi
+        if [ -f "$stage/previous-legacy" ]; then
+            rm -f /usr/local/bin/frp-sh
+            cp -p "$stage/previous-legacy" /usr/local/bin/frp-sh
+        elif [ -f "$stage/previous-link" ]; then
+            ln -sf "$(cat "$stage/previous-link")" /usr/local/bin/frp-sh
+        else rm -f /usr/local/bin/frp-sh; fi
         if [ -f "$stage/previous-unit" ]; then
             case "$manager" in
                 systemd) systemctl daemon-reload; systemctl start frp-sh-network.service || true;;
@@ -97,7 +102,11 @@ for item in client helper policy unit; do
     [ ! -f "$path" ] || cp -p "$path" "$stage/previous-$item"
 done
 if [ -L /usr/local/bin/frp-sh ]; then readlink /usr/local/bin/frp-sh > "$stage/previous-link"
-elif [ -e /usr/local/bin/frp-sh ]; then printf 'Refusing to replace an unmanaged /usr/local/bin/frp-sh file\n'; exit 1; fi
+elif [ -f /usr/local/bin/frp-sh ]; then
+    # The 0.3 installer placed its executable here directly.
+    cp -p /usr/local/bin/frp-sh "$stage/previous-legacy"
+    cp -p /usr/local/bin/frp-sh "$dest/frp-sh.previous"
+elif [ -e /usr/local/bin/frp-sh ]; then printf 'Unexpected installation path type\n'; exit 1; fi
 rollback=1
 stop_service
 for name in frp-sh frp-sh-net; do
