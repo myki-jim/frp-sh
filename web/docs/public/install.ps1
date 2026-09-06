@@ -1,4 +1,4 @@
-# frp-sh 0.4 installer. Elevation is confined to this installation process.
+﻿# frp-sh 0.4 installer. Elevation is confined to this installation process.
 param(
     [switch]$Elevated,
     [string]$OwnerSid = '',
@@ -37,7 +37,10 @@ if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') { throw 'Inv
 $base = 'https://github.com/myki-jim/frp-sh/releases/download/' + $tag
 function Download-Verified([string]$Asset,[string]$Output) {
     Invoke-WebRequest -Uri ($base + '/' + $Asset) -OutFile $Output -UseBasicParsing
-    $checksum = ((Invoke-WebRequest -Uri ($base + '/' + $Asset + '.sha256') -UseBasicParsing).Content.Trim() -split '\s+')[0]
+    # Binary Content-Type responses are byte[] in Windows PowerShell 5.1.
+    $checksumFile = $Output + '.sha256'
+    Invoke-WebRequest -Uri ($base + '/' + $Asset + '.sha256') -OutFile $checksumFile -UseBasicParsing
+    $checksum = ([IO.File]::ReadAllText($checksumFile, [Text.Encoding]::UTF8).Trim() -split '\s+')[0]
     if ($checksum -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -Algorithm SHA256 -LiteralPath $Output).Hash -ne $checksum) { throw "Checksum mismatch: $Asset" }
 }
 try {
