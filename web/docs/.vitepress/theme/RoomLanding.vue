@@ -1,4 +1,5 @@
 <script setup>
+import SiteIcon from "./SiteIcon.vue";
 import {
   ref,
   reactive,
@@ -262,7 +263,7 @@ onBeforeUnmount(() => {
       <a href="/" class="wordmark">frp.sh</a>
       <nav>
         <a :href="docs('quickstart')">{{ tr("Guide", "指南") }}</a
-        ><a href="https://github.com/myki-jim/frp-sh">GitHub ↗</a
+        ><a href="https://github.com/myki-jim/frp-sh">GitHub <SiteIcon /></a
         ><button
           @click="toggleLanguage"
           :aria-label="tr('切换到中文', 'Switch to English')"
@@ -274,14 +275,21 @@ onBeforeUnmount(() => {
           role="group"
           :aria-label="tr('Appearance', '外观')"
         >
-          <button @click="light($event, 'day')" :aria-pressed="mode === 'day'">
-            {{ tr("Day", "白天") }}
+          <button
+            @click="light($event, 'day')"
+            :aria-pressed="mode === 'day'"
+            :aria-label="tr('Day', '白天')"
+            :title="tr('Day', '白天')"
+          >
+            <SiteIcon name="sun" />
           </button>
           <button
             @click="light($event, 'night')"
             :aria-pressed="mode === 'night'"
+            :aria-label="tr('Night', '黑夜')"
+            :title="tr('Night', '黑夜')"
           >
-            {{ tr("Night", "黑夜") }}
+            <SiteIcon name="moon" />
           </button>
         </div>
       </nav>
@@ -307,10 +315,10 @@ onBeforeUnmount(() => {
         </p>
         <div class="hero-actions">
           <a href="#install" class="primary"
-            >{{ tr("Get frp-sh", "获取 frp-sh") }} <span>↗</span></a
+            >{{ tr("Get frp-sh", "获取 frp-sh") }} <span><SiteIcon /></span></a
           ><a :href="docs('architecture')" class="text-link"
-            >{{ tr("How it connects", "了解连接原理") }} ↗</a
-          >
+            >{{ tr("How it connects", "了解连接原理") }} <SiteIcon
+          /></a>
         </div>
       </div>
       <div class="studio-shell">
@@ -343,8 +351,8 @@ onBeforeUnmount(() => {
     </section>
     <div class="network-steps">
       <span>01 / {{ tr("DISCOVER", "发现伙伴") }}</span
-      ><i>↗</i><span>02 / {{ tr("CONNECT", "建立连接") }}</span
-      ><i>↗</i><span>03 / {{ tr("TOGETHER", "一起开始") }}</span>
+      ><i><SiteIcon /></i><span>02 / {{ tr("CONNECT", "建立连接") }}</span
+      ><i><SiteIcon /></i><span>03 / {{ tr("TOGETHER", "一起开始") }}</span>
     </div>
     <section class="connection reveal">
       <div>
@@ -368,15 +376,15 @@ onBeforeUnmount(() => {
           <span>YOU</span><i></i><span>{{ tr("YOUR ROOM", "你的房间") }}</span>
         </div>
         <a :href="docs('architecture')" class="text-link"
-          >{{ tr("Read the architecture", "阅读网络原理") }} ↗</a
-        >
+          >{{ tr("Read the architecture", "阅读网络原理") }} <SiteIcon
+        /></a>
       </div>
     </section>
     <div class="motion-band" aria-hidden="true">
       <div class="motion-track">
         <span>{{ tr("LESS WAITING", "少一点等待") }}</span
-        ><i>↗</i><span>{{ tr("MORE TOGETHER", "一起，即刻") }}</span
-        ><i>↗</i>
+        ><i><SiteIcon /></i><span>{{ tr("MORE TOGETHER", "一起，即刻") }}</span
+        ><i><SiteIcon /></i>
       </div>
     </div>
     <section class="use-section">
@@ -447,8 +455,8 @@ onBeforeUnmount(() => {
           {{ tr("See you", "房间里，") }}<br />{{ tr("in the room.", "见。") }}
         </h2>
         <a :href="docs('install')" class="text-link"
-          >{{ tr("Installation guide", "安装指南") }} ↗</a
-        >
+          >{{ tr("Installation guide", "安装指南") }} <SiteIcon
+        /></a>
       </div>
       <div class="install-box">
         <div
@@ -478,7 +486,7 @@ onBeforeUnmount(() => {
         <div class="copy-row">
           <span role="status">{{ message }}</span
           ><button @click="copy">
-            {{ tr("Copy command", "复制指令") }} ↗
+            {{ tr("Copy command", "复制指令") }} <SiteIcon />
           </button>
         </div>
         <p class="install-note">
@@ -494,7 +502,7 @@ onBeforeUnmount(() => {
     <footer>
       <a href="/" class="wordmark">frp.sh</a
       ><a href="https://github.com/myki-jim/frp-sh/releases/tag/v0.4.0"
-        >{{ tr("Downloads", "下载") }} ↗</a
+        >{{ tr("Downloads", "下载") }} <SiteIcon /></a
       ><a :href="docs('versioning')">{{ tr("Version policy", "版本策略") }}</a
       ><span>OPEN SOURCE / MIT</span>
     </footer>

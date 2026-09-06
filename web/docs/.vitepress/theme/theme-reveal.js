@@ -1,6 +1,6 @@
 import { nextTick } from "vue";
 import { gsap } from "gsap";
-import { dissolveLanguage } from "./language-ash.js";
+import { revealLanguage } from "./language-mask.js";
 import "./theme-reveal.css";
 export function createThemeReveal() {
   let tween,
@@ -15,6 +15,10 @@ export function createThemeReveal() {
         backgroundColor: el.style.backgroundColor,
         backgroundImage: el.style.backgroundImage,
         backgroundAttachment: el.style.backgroundAttachment,
+        borderTopColor: el.style.borderTopColor,
+        borderBottomColor: el.style.borderBottomColor,
+        borderLeftColor: el.style.borderLeftColor,
+        borderRightColor: el.style.borderRightColor,
       });
   }
   function clear() {
@@ -26,7 +30,8 @@ export function createThemeReveal() {
   }
   async function reveal(event, update, kind = "theme") {
     if (disposed) return;
-    if (kind === "language") return dissolveLanguage(update);
+    if (kind === "language" || document.querySelector(".doc-shell"))
+      return revealLanguage(event, update);
     const current = ++revision;
     clear();
     if (
@@ -46,7 +51,14 @@ export function createThemeReveal() {
       .slice(0, 350);
     const records = elements.map((el) => {
       const css = getComputedStyle(el);
-      return { el, color: css.color, bg: css.backgroundColor };
+      return {
+        el,
+        color: css.color,
+        bg: css.backgroundColor,
+        borders: ["Top", "Bottom", "Left", "Right"].map(
+          (side) => css[`border${side}Color`],
+        ),
+      };
     });
     const oldBg = getComputedStyle(root).backgroundColor;
     const box = event?.currentTarget?.getBoundingClientRect();
@@ -62,6 +74,9 @@ export function createThemeReveal() {
       const css = getComputedStyle(record.el);
       record.colorMix = gsap.utils.interpolate(record.color, css.color);
       record.bgMix = gsap.utils.interpolate(record.bg, css.backgroundColor);
+      record.borderMix = ["Top", "Bottom", "Left", "Right"].map((side, i) =>
+        gsap.utils.interpolate(record.borders[i], css[`border${side}Color`]),
+      );
       remember(record.el);
     });
     remember(root);
@@ -92,6 +107,9 @@ export function createThemeReveal() {
           (r + wave - Math.hypot(cx - x, cy - y) + 60) / 120,
         );
         record.el.style.setProperty("color", record.colorMix(t), "important");
+        ["Top", "Bottom", "Left", "Right"].forEach((side, i) => {
+          record.el.style[`border${side}Color`] = record.borderMix[i](t);
+        });
         if (record.bg !== "rgba(0, 0, 0, 0)")
           record.el.style.backgroundColor = record.bgMix(t);
       });
@@ -129,7 +147,7 @@ export function createThemeReveal() {
     paint();
     tween = gsap.to(state, {
       progress: 1,
-      duration: 1.45,
+      duration: 1.1,
       ease: "sine.inOut",
       onUpdate: paint,
       onComplete: clear,
