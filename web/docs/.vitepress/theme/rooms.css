@@ -1,196 +1,500 @@
-.room-journey {
-  height: 850svh;
-  background: #dad8cc;
-  color: #24372c;
-}
-.world-viewport {
-  position: sticky;
-  top: 0;
-  width: 100%;
-  height: 100svh;
+.site {
+  --bg: #f5f4ef;
+  --ink: #232a27;
+  --muted: #71766f;
+  --line: #d8dcd3;
+  --surface: #ebece4;
+  --accent: #a35232;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Arial, "Microsoft YaHei", sans-serif;
+  transition:
+    background 1.5s,
+    color 1.5s;
   overflow: hidden;
 }
-.world-host,
-.world-surfaces {
+.site.night {
+  --bg: #18201f;
+  --ink: #e7e9de;
+  --muted: #a3afa4;
+  --line: #3b4942;
+  --surface: #222e29;
+  --accent: #de9c79;
+}
+.site * {
+  box-sizing: border-box;
+}
+.site a {
+  text-decoration: none;
+  color: inherit;
+}
+.site button {
+  font: inherit;
+  cursor: pointer;
+}
+.site button:focus-visible,
+.site a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 5px;
+}
+.site-header {
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 6%;
+  border-bottom: 1px solid var(--line);
+}
+.wordmark {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -2px;
+}
+.wordmark span {
+  font-size: 10px;
+  vertical-align: top;
+  margin-left: 5px;
+  letter-spacing: 0;
+}
+.site-header nav {
+  display: flex;
+  gap: 28px;
+  align-items: center;
+  font-size: 13px;
+}
+.site-header button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 10px 0;
+}
+.light-switch {
+  min-width: 45px;
+}
+.hero {
+  padding: 75px 6% 0;
+}
+.hero-copy {
+  max-width: 1250px;
+  margin: auto;
+  position: relative;
+}
+.eyebrow {
+  font: 11px/1.5 monospace;
+  letter-spacing: 1.7px;
+  margin: 0 0 30px;
+  color: var(--muted);
+}
+.hero h1 {
+  font-size: clamp(60px, 7.6vw, 112px);
+  line-height: 1.04;
+  letter-spacing: -0.065em;
+  font-weight: 500;
+  margin: 0;
+}
+.hero h1 span {
+  color: var(--muted);
+}
+.intro {
   position: absolute;
-  inset: 0;
+  right: 0;
+  top: 60px;
+  width: 300px;
+  font-size: 16px;
+  line-height: 1.8;
+  margin: 0;
 }
-.world-host canvas {
-  display: block;
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 35px;
+  margin-top: 35px;
+}
+.primary {
+  display: inline-flex;
+  gap: 45px;
+  padding: 17px 24px;
+  background: var(--ink);
+  color: var(--bg) !important;
+  font-size: 13px;
+}
+.text-link {
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 6px;
+}
+.studio-shell {
+  position: relative;
+  margin-top: 5px;
+}
+.studios {
+  height: 570px;
   width: 100%;
-  height: 100%;
 }
-.world-surfaces {
-  pointer-events: none;
+.studios canvas {
+  display: block;
 }
-.world-loading {
+.model-caption {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 0 25px;
+  border-bottom: 1px solid var(--line);
+  font: 11px/1.5 monospace;
+  color: var(--muted);
+}
+.studio-fallback {
   position: absolute;
   inset: 0;
   display: grid;
   place-content: center;
-  font:
-    14px ui-monospace,
-    monospace;
-  background: #dad8cc;
+  font-size: 50px;
+  line-height: 1.6;
 }
-.world-access {
-  position: absolute;
-  width: 1px;
+.connection,
+.install {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10%;
+  padding: 110px 8%;
+}
+.site h2 {
+  font-size: clamp(38px, 4vw, 60px);
+  line-height: 1.15;
+  letter-spacing: -0.05em;
+  font-weight: 500;
+  margin: 0 0 30px;
+}
+.connection-copy {
+  padding-top: 40px;
+  font-size: 17px;
+  line-height: 1.8;
+}
+.route {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin: 45px 0;
+  font: 11px monospace;
+}
+.route i {
   height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
+  flex: 1;
+  background: var(--line);
+  position: relative;
 }
-.world-access:focus-within {
-  clip-path: none;
-  width: auto;
-  height: auto;
-  inset: 18px auto auto 18px;
-  background: #e8dfca;
-  border: 2px solid #5c6e56;
-  padding: 16px;
-  z-index: 5;
-  max-width: 330px;
+.route i:after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: travel 3s ease-in-out infinite;
 }
-.world-access button {
-  display: block;
-  margin: 8px;
-  padding: 8px;
-  text-decoration: underline;
+@keyframes travel {
+  0% {
+    left: 0;
+    opacity: 0;
+  }
+  15%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
 }
-.physical-hit {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: transparent;
-  cursor: pointer;
-  touch-action: manipulation;
+.use-section {
+  padding: 70px 8% 85px;
+  background: var(--surface);
 }
-.physical-hit:focus-visible {
-  outline: 10px solid #e5be7a;
-  outline-offset: 8px;
-  background: #ffefb422;
-}
-.physical-hit:hover {
-  background: #ffffff12;
-}
-.world-terminal {
-  box-sizing: border-box;
-  padding: 42px 44px;
-  background: #172b25;
-  color: #d6e3cc;
-  font-family: ui-monospace, "Microsoft YaHei", monospace;
-  overflow: hidden;
-  border: 1px solid #879b7820;
-  user-select: text !important;
-}
-.terminal-brand {
+.section-line {
   display: flex;
   justify-content: space-between;
-  color: #9eae94;
-  font-size: 26px;
-  letter-spacing: 1px;
+  align-items: baseline;
+  gap: 20px;
+  color: var(--muted);
+  font-size: 13px;
 }
-.world-terminal h1 {
-  font-size: 37px;
-  font-weight: 500;
-  line-height: 1.5;
-  margin: 30px 0 23px;
-  color: #edead6;
+.use-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8%;
+  margin-top: 45px;
+}
+.use-number {
+  font: 14px monospace;
+  color: var(--accent);
+}
+.use-grid h2 {
+  margin: 28px 0 20px;
+  font-size: 42px;
+}
+.use-grid p {
+  font-size: 15px;
+  line-height: 1.8;
+  max-width: 410px;
+  color: var(--muted);
+}
+.use-grid code {
+  display: block;
+  font: 12px/1.7 monospace;
+  border-top: 1px solid var(--line);
+  padding-top: 25px;
+  margin-top: 30px;
+  overflow-wrap: anywhere;
+}
+.details {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 7%;
+  padding: 90px 8%;
+  border-bottom: 1px solid var(--line);
+}
+.details > p {
+  font-size: 27px;
+  line-height: 1.3;
   letter-spacing: -1px;
-}
-.terminal-platform {
-  font-size: 25px;
-  margin: 0 0 17px;
-  color: #b2c1a4;
-}
-.world-terminal pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font:
-    30px/1.6 ui-monospace,
-    monospace;
   margin: 0;
-  padding: 10px 0;
-  color: #e3cf9b;
-  user-select: text;
 }
-.world-terminal pre:focus-visible {
-  outline: 3px solid #b6c692;
+.details h3 {
+  font-size: 17px;
+  margin: 0 0 18px;
+  font-weight: 500;
 }
-.terminal-status {
-  font-size: 24px;
-  margin: 16px 0;
-  color: #aebf9c;
-  min-height: 32px;
+.details div p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--muted);
 }
-.terminal-note {
-  font-size: 21px;
-  line-height: 1.5;
-  color: #9caa92;
-  margin: 18px 0 0;
+.install {
+  padding-top: 100px;
+  padding-bottom: 110px;
 }
-.world-failed {
-  height: 100svh;
+.install-box {
+  background: var(--surface);
+  align-self: center;
+  padding: 25px 28px;
 }
-.world-fallback {
-  position: absolute;
-  inset: 0;
+.platforms {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 8%;
-  background: #e7dfcd;
+  align-items: center;
+  gap: 22px;
+  font: 12px monospace;
 }
-.world-fallback h1 {
-  font-size: 48px;
+.platforms button {
+  border: 0;
+  padding: 8px 0;
+  color: var(--muted);
+  background: none;
 }
-.world-fallback pre {
-  max-width: 100%;
+.platforms button[aria-pressed="true"] {
+  color: var(--ink);
+  border-bottom: 2px solid var(--accent);
+}
+.platforms span {
+  margin-left: auto;
+  color: var(--muted);
+}
+.install pre {
+  font: 14px/1.7 monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  margin: 35px 0;
 }
-.world-fallback button,
-.world-fallback a {
-  padding: 10px;
-  border: 1px solid #556c59;
+.copy-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  min-height: 45px;
+}
+.copy-row button {
+  background: var(--ink);
+  color: var(--bg);
+  padding: 13px 17px;
+  border: 0;
+}
+.install-note {
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+  margin-top: 25px;
+}
+.site footer {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+  margin: 0 6%;
+  padding: 35px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.site footer .wordmark {
+  margin-right: auto;
+}
+.site footer span {
+  font: 10px monospace;
+  color: var(--muted);
+}
+@media (min-width: 1700px) {
+  .hero,
+  .site-header,
+  .connection,
+  .details,
+  .install,
+  .use-section,
+  .site footer {
+    max-width: 1550px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .studios {
+    height: 650px;
+  }
+}
+@media (max-width: 850px) {
+  .hero {
+    padding-top: 50px;
+  }
+  .intro {
+    position: static;
+    width: auto;
+    max-width: 420px;
+    margin-top: 25px;
+  }
+  .hero h1 {
+    font-size: 70px;
+  }
+  .studios {
+    height: 430px;
+  }
+  .connection,
+  .install {
+    gap: 6%;
+    padding: 75px 6%;
+  }
+  .details {
+    padding: 65px 6%;
+    gap: 5%;
+  }
+  .use-section {
+    padding: 60px 6%;
+  }
+  .site-header nav {
+    gap: 16px;
+  }
 }
 @media (max-width: 600px) {
-  .room-journey {
-    height: 720svh;
+  .site-header {
+    height: 76px;
+  }
+  .site-header nav {
+    gap: 14px;
+    font-size: 11px;
+  }
+  .site-header nav > a {
+    display: none;
+  }
+  .wordmark {
+    font-size: 28px;
+  }
+  .hero h1 {
+    font-size: 55px;
+  }
+  .hero {
+    padding-top: 40px;
+  }
+  .eyebrow {
+    font-size: 10px;
+    margin-bottom: 23px;
+  }
+  .intro {
+    font-size: 14px;
+    line-height: 1.8;
+  }
+  .hero-actions {
+    gap: 23px;
+  }
+  .primary {
+    padding: 15px 18px;
+    gap: 25px;
+  }
+  .text-link {
+    font-size: 12px;
+  }
+  .studios {
+    height: 315px;
+    width: 115%;
+    margin-left: -7.5%;
+  }
+  .model-caption {
+    font-size: 8px;
+    gap: 20px;
+  }
+  .connection,
+  .install {
+    grid-template-columns: 1fr;
+    gap: 25px;
+    padding: 65px 6%;
+  }
+  .connection-copy {
+    padding-top: 0;
+    font-size: 15px;
+  }
+  .site h2 {
+    font-size: 38px;
+  }
+  .section-line {
+    display: block;
+  }
+  .use-grid {
+    grid-template-columns: 1fr;
+    gap: 55px;
+    margin-top: 38px;
+  }
+  .use-grid h2 {
+    font-size: 34px;
+  }
+  .details {
+    grid-template-columns: 1fr;
+    gap: 30px;
+  }
+  .details > p {
+    margin-bottom: 10px;
+  }
+  .install-box {
+    padding: 20px;
+  }
+  .install pre {
+    font-size: 12px;
+  }
+  .platforms {
+    gap: 16px;
+    font-size: 11px;
+  }
+  .site footer {
+    flex-wrap: wrap;
+    gap: 22px;
+  }
+  .site footer .wordmark {
+    width: 100%;
+    margin: 0;
+  }
+  .site footer span {
+    font-size: 9px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .room-journey {
-    scroll-behavior: auto;
+  .site {
+    transition: none;
   }
-}
-.terminal-portrait {
-  padding: 38px;
-}
-.terminal-portrait .terminal-brand {
-  font-size: 32px;
-}
-.terminal-portrait h1 {
-  font-size: 48px;
-  line-height: 1.35;
-  margin: 35px 0;
-}
-.terminal-portrait .terminal-platform {
-  font-size: 39px;
-  margin: 25px 0;
-}
-.terminal-portrait pre {
-  font-size: 46px;
-  line-height: 1.5;
-}
-.terminal-portrait .terminal-status {
-  font-size: 35px;
-  line-height: 1.45;
-  margin: 30px 0;
-}
-.terminal-portrait .terminal-note {
-  font-size: 31px;
-  line-height: 1.5;
+  .route i:after {
+    animation: none;
+    left: 50%;
+  }
 }
