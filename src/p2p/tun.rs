@@ -191,7 +191,10 @@ pub(crate) fn local_address_route(ip: &str, add: bool) -> Result<()> {
             if add { "add" } else { "delete" },
             "-host",
             ip,
-            "127.0.0.1",
+            "-interface",
+            "lo0",
+            "-ifa",
+            ip,
         ],
     )
 }

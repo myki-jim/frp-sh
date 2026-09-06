@@ -29,14 +29,16 @@ async fn self_ping_uses_loopback_without_tunnel_traffic() {
         route(ip)
     );
     assert!(route("10.66.0.1").contains(&format!("interface: {}", device.name())));
+    println!("self route: {}", route(ip));
     let result = Command::new("/sbin/ping")
         .args(["-n", "-c", "3", "-W", "1000", ip])
         .output()
         .unwrap();
     assert!(
         result.status.success(),
-        "self ping failed: {}",
-        String::from_utf8_lossy(&result.stdout)
+        "self ping failed: {} {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
     );
     let mut packet = [0; 2048];
     assert!(
