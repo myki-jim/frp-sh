@@ -1106,3 +1106,133 @@
     display: none;
   }
 }
+/* Live optical field: no raster hero or simulated hardware. */
+.connection-field {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.landing .hero {
+  background: radial-gradient(
+    ellipse at 50% 85%,
+    #081f43 0%,
+    #05070d 38%,
+    #030407 72%
+  );
+}
+.landing .hero-art {
+  z-index: -1;
+  pointer-events: none;
+}
+.landing .hero-shade {
+  z-index: 0;
+  background: linear-gradient(180deg, #03040700 48%, #05060900 85%, #050609);
+  pointer-events: none;
+}
+.horizon-ring {
+  position: absolute;
+  left: 50%;
+  top: 73%;
+  width: 42%;
+  height: 16%;
+  border: 1px solid #4286e546;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) rotate(-15deg);
+  box-shadow:
+    0 0 32px #2770ec0b,
+    inset 0 0 28px #2a7aff08;
+}
+.ring-two {
+  width: 59%;
+  height: 25%;
+  transform: translate(-50%, -50%) rotate(15deg);
+  border-color: #4a8cee24;
+}
+.ring-three {
+  width: 77%;
+  height: 35%;
+  transform: translate(-50%, -50%) rotate(-15deg);
+  border-color: #4a8cee12;
+}
+.reading-progress {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, #1263ec, #aeeaff);
+  transform: scaleX(0);
+  transform-origin: left;
+  z-index: 100;
+  box-shadow: 0 0 12px #498fff;
+  pointer-events: none;
+}
+.language-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px !important;
+  color: #647088;
+}
+.language-toggle i {
+  font-style: normal;
+  opacity: 0.5;
+}
+.language-toggle .active {
+  color: #edf4ff;
+}
+.language-toggle:hover {
+  color: #83b8ff;
+}
+.landing[lang="zh-CN"] h1 {
+  letter-spacing: -0.045em;
+  font-weight: 550;
+}
+.landing[lang="zh-CN"] h2 {
+  letter-spacing: -0.035em;
+  line-height: 1.2;
+}
+.landing[lang="zh-CN"] h3 {
+  letter-spacing: -0.02em;
+}
+.landing[lang="zh-CN"] .game-core {
+  font-size: 48px;
+}
+.landing .spec {
+  transition: border-color 0.3s;
+}
+.landing .spec:hover {
+  border-color: #72aaff;
+}
+.landing .button:hover span {
+  transform: translate(3px, -3px);
+}
+.landing .button span {
+  transition: transform 0.2s;
+}
+@media (max-width: 580px) {
+  .landing .hero-art {
+    width: 100%;
+    left: 0;
+  }
+  .landing[lang="zh-CN"] .hero h1 {
+    font-size: 46px;
+  }
+  .horizon-ring {
+    width: 75%;
+    height: 12%;
+  }
+  .ring-two {
+    width: 105%;
+    height: 20%;
+  }
+  .ring-three {
+    width: 135%;
+    height: 30%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing .reading-progress {
+    display: none;
+  }
+}

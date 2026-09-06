@@ -1,8 +1,24 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from "vue";
+import { ref, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import "./landing.css";
+import ConnectionField from "./ConnectionField.vue";
+import zh from "./home-zh.json";
+const language = ref("en");
+const t = (text) => (language.value === "zh-CN" ? zh[text] || text : text);
+const docLink = (path) => (language.value === "zh-CN" ? "/" : "/en/") + path;
+async function toggleLanguage() {
+  const scrollPosition = window.scrollY;
+  language.value = language.value === "en" ? "zh-CN" : "en";
+  try {
+    localStorage.setItem("frpsh-site-language", language.value);
+  } catch {}
+  document.documentElement.lang = language.value;
+  await nextTick();
+  ScrollTrigger.refresh();
+  window.scrollTo({ top: scrollPosition, behavior: "instant" });
+}
 
 const root = ref(null);
 const platform = ref("unix");
@@ -25,11 +41,91 @@ async function copyCommand() {
   }
 }
 onMounted(() => {
+  try {
+    if (localStorage.getItem("frpsh-site-language") === "zh-CN")
+      language.value = "zh-CN";
+  } catch {}
+  document.documentElement.lang = language.value;
   gsap.registerPlugin(ScrollTrigger);
   mm = gsap.matchMedia();
   mm.add(
     "(prefers-reduced-motion: no-preference)",
     () => {
+      gsap.fromTo(
+        ".reading-progress",
+        { scaleX: 0 },
+        {
+          scaleX: 1,
+          ease: "none",
+          scrollTrigger: { start: 0, end: "max", scrub: true },
+        },
+      );
+      gsap.to(".horizon-ring", {
+        rotation: 180,
+        scale: 1.18,
+        stagger: 0.2,
+        ease: "none",
+        scrollTrigger: {
+          trigger: ".hero",
+          start: "top top",
+          end: "bottom top",
+          scrub: 1,
+        },
+      });
+      gsap.from(".story-copy", {
+        y: 35,
+        opacity: 0.2,
+        stagger: 0.1,
+        scrollTrigger: {
+          trigger: ".story",
+          start: "top 85%",
+          end: "top 15%",
+          scrub: 1,
+        },
+      });
+      gsap.utils
+        .toArray(".scene")
+        .forEach((el) =>
+          gsap.fromTo(
+            el,
+            { clipPath: "inset(8% 5% round 50px)" },
+            {
+              clipPath: "inset(0% 0% round 18px)",
+              scrollTrigger: {
+                trigger: el,
+                start: "top 90%",
+                end: "top 30%",
+                scrub: 1,
+              },
+            },
+          ),
+        );
+      gsap.to(".orbit-a", {
+        rotation: 325,
+        duration: 18,
+        repeat: -1,
+        ease: "none",
+        scrollTrigger: {
+          trigger: ".scene-play",
+          toggleActions: "play pause resume pause",
+        },
+      });
+      gsap.to(".orbit-b", {
+        rotation: -325,
+        duration: 23,
+        repeat: -1,
+        ease: "none",
+        scrollTrigger: {
+          trigger: ".scene-play",
+          toggleActions: "play pause resume pause",
+        },
+      });
+      gsap.from(".spec", {
+        clipPath: "inset(0% 0% 100% 0%)",
+        stagger: 0.13,
+        duration: 1.1,
+        scrollTrigger: { trigger: ".spec-grid", start: "top 85%", once: true },
+      });
       gsap.from(".hero-line > span", {
         yPercent: 110,
         rotate: 3,
@@ -55,16 +151,14 @@ onMounted(() => {
           scrub: true,
         },
       });
-      gsap.utils
-        .toArray(".reveal")
-        .forEach((el) =>
-          gsap.from(el, {
-            y: 45,
-            opacity: 0,
-            duration: 0.9,
-            scrollTrigger: { trigger: el, start: "top 90%", once: true },
-          }),
-        );
+      gsap.utils.toArray(".reveal").forEach((el) =>
+        gsap.from(el, {
+          y: 45,
+          opacity: 0,
+          duration: 0.9,
+          scrollTrigger: { trigger: el, start: "top 90%", once: true },
+        }),
+      );
       gsap.fromTo(
         ".manifesto-fill",
         { backgroundPosition: "100% 0%" },
@@ -145,77 +239,93 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="root" class="landing">
-    <a class="skip-link" href="#experience">Skip to content</a>
+  <div ref="root" class="landing" :lang="language">
+    <div class="reading-progress" aria-hidden="true"></div>
+    <a class="skip-link" href="#experience">{{ t("Skip to content") }}</a>
     <header class="site-header">
-      <a class="wordmark" href="/" aria-label="frp-sh home"
+      <a class="wordmark" href="/" :aria-label="t('frp-sh home')"
         ><span class="brand-glyph" aria-hidden="true">⌁</span> frp<span
           class="brand-dot"
           >.</span
         >sh</a
       >
-      <nav aria-label="Main navigation">
-        <a href="#experience">Experience</a
-        ><a href="/en/quickstart">Documentation ↗</a
-        ><a href="/intro" lang="zh-CN">中文</a>
+      <nav :aria-label="t('Main navigation')">
+        <a href="#experience">{{ t("Experience") }}</a
+        ><a :href="docLink('quickstart')">{{ t("Documentation ↗") }}</a
+        ><button
+          class="language-toggle"
+          @click="toggleLanguage"
+          :aria-label="language === 'en' ? '切换到中文' : 'Switch to English'"
+        >
+          <span :class="{ active: language === 'en' }">EN</span><i>/</i
+          ><span :class="{ active: language === 'zh-CN' }">中文</span>
+        </button>
       </nav>
-      <a class="nav-cta" href="#download">Get connected <span>↗</span></a>
+      <a class="nav-cta" href="#download"
+        >{{ t("Get connected") }} <span>↗</span></a
+      >
     </header>
 
     <main>
       <section class="hero" aria-labelledby="hero-title">
-        <img
-          class="hero-art"
-          src="/images/connection-beam.png"
-          width="1536"
-          height="1024"
-          alt=""
-          fetchpriority="high"
-        />
+        <div class="hero-art">
+          <ConnectionField />
+          <div class="horizon-ring ring-one"></div>
+          <div class="horizon-ring ring-two"></div>
+          <div class="horizon-ring ring-three"></div>
+        </div>
         <div class="hero-shade"></div>
         <div class="hero-copy">
           <a
             class="release-pill"
             href="https://github.com/myki-jim/frp-sh/releases/tag/v0.4.0"
-            ><i></i> INTRODUCING FRP-SH 0.4 <span>↗</span></a
+            ><i></i> {{ t("INTRODUCING FRP-SH 0.4") }} <span>↗</span></a
           >
           <h1 id="hero-title">
-            <span class="hero-line"><span>Less distance.</span></span
+            <span class="hero-line"
+              ><span>{{ t("Less distance.") }}</span></span
             ><span class="hero-line"
-              ><span class="blue-text">More connection.</span></span
+              ><span class="blue-text">{{ t("More connection.") }}</span></span
             >
           </h1>
           <p class="hero-sub">
-            Your machines. Your people. One room away.<br />A lean P2P tunnel
-            built to get you connected—and out of your way.
+            {{ t("Your machines. Your people. One room away.") }}<br />{{
+              t(
+                "A lean P2P tunnel built to get you connected—and out of your way.",
+              )
+            }}
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#download"
-              >Start connecting <span>↗</span></a
+              >{{ t("Start connecting") }} <span>↗</span></a
             ><a class="text-link" href="#experience"
-              >Explore the connection <span>↓</span></a
+              >{{ t("Explore the connection") }} <span>↓</span></a
             >
           </div>
         </div>
         <div class="hero-bottom">
-          <span>BUILT IN RUST. MADE FOR REAL CONNECTIONS.</span
-          ><span class="scroll-label">SCROLL TO DISCOVER <b>↓</b></span>
+          <span>{{ t("BUILT IN RUST. MADE FOR REAL CONNECTIONS.") }}</span
+          ><span class="scroll-label"
+            >{{ t("SCROLL TO DISCOVER") }} <b>↓</b></span
+          >
         </div>
-        <div class="image-label left-label"><i></i> YOUR DEVICE</div>
-        <div class="image-label right-label"><i></i> YOUR WORLD</div>
+        <div class="image-label left-label"><i></i> {{ t("YOUR DEVICE") }}</div>
+        <div class="image-label right-label"><i></i> {{ t("YOUR WORLD") }}</div>
       </section>
 
       <section id="experience" class="manifesto section-pad">
-        <div class="eyebrow reveal">01 / CLOSER BY DESIGN</div>
+        <div class="eyebrow reveal">{{ t("01 / CLOSER BY DESIGN") }}</div>
         <h2 class="manifesto-fill">
-          The best connection<br />is the one you<br />don’t have to think
-          about.
+          {{ t("The best connection") }}<br />{{ t("is the one you") }}<br />{{
+            t("don’t have to think about.")
+          }}
         </h2>
         <div class="manifesto-bottom reveal">
           <span class="little-cross">+</span>
           <p>
-            No port-forwarding ritual. No panel to babysit.<br />Create a room.
-            Share the code. Let the connection follow.
+            {{ t("No port-forwarding ritual. No panel to babysit.") }}<br />{{
+              t("Create a room. Share the code. Let the connection follow.")
+            }}
           </p>
         </div>
       </section>
@@ -223,15 +333,17 @@ onBeforeUnmount(() => {
       <section class="portal section-pad" aria-labelledby="direct-title">
         <div class="section-heading reveal">
           <div>
-            <span class="eyebrow">02 / TAKE THE DIRECT ROUTE</span>
+            <span class="eyebrow">{{ t("02 / TAKE THE DIRECT ROUTE") }}</span>
             <h2 id="direct-title">
-              A shorter path.<br /><span class="muted">A faster way in.</span>
+              {{ t("A shorter path.") }}<br /><span class="muted">{{
+                t("A faster way in.")
+              }}</span>
             </h2>
           </div>
           <p>
-            Parallel address discovery finds a way through.<br />Direct UDP
-            comes first. If your network says no,<br />automatic relay fallback
-            keeps you moving.
+            {{ t("Parallel address discovery finds a way through.") }}<br />{{
+              t("Direct UDP comes first. If your network says no,")
+            }}<br />{{ t("automatic relay fallback keeps you moving.") }}
           </p>
         </div>
         <div class="portal-art">
@@ -241,7 +353,7 @@ onBeforeUnmount(() => {
           <svg
             viewBox="0 0 1000 330"
             role="img"
-            aria-label="Two devices connected by a direct path"
+            :aria-label="t('Two devices connected by a direct path')"
           >
             <defs>
               <linearGradient id="beam">
@@ -259,39 +371,44 @@ onBeforeUnmount(() => {
             <text x="870" y="170">B</text>
           </svg>
           <div class="path-caption">
-            <span>01 — DISCOVER</span><strong><i></i> DIRECT BY DEFAULT</strong
-            ><span>02 — CONNECT</span>
+            <span>{{ t("01 — DISCOVER") }}</span
+            ><strong><i></i> {{ t("DIRECT BY DEFAULT") }}</strong
+            ><span>{{ t("02 — CONNECT") }}</span>
           </div>
-          <span class="diagram-note">CONNECTION VISUALIZATION</span>
+          <span class="diagram-note">{{ t("CONNECTION VISUALIZATION") }}</span>
         </div>
         <div class="route-features reveal">
           <div>
-            <b>Parallel discovery.</b>
-            <p>Less waiting on an unresponsive path.</p>
+            <b>{{ t("Parallel discovery.") }}</b>
+            <p>{{ t("Less waiting on an unresponsive path.") }}</p>
           </div>
           <div>
-            <b>Automatic fallback.</b>
-            <p>TURN or TCP relay when direct isn’t available.</p>
+            <b>{{ t("Automatic fallback.") }}</b>
+            <p>{{ t("TURN or TCP relay when direct isn’t available.") }}</p>
           </div>
           <div>
-            <b>Ready to reconnect.</b>
-            <p>Saved profiles. Fewer repeated steps.</p>
+            <b>{{ t("Ready to reconnect.") }}</b>
+            <p>{{ t("Saved profiles. Fewer repeated steps.") }}</p>
           </div>
         </div>
       </section>
 
-      <section class="story" aria-label="Connection use cases">
+      <section class="story" :aria-label="t('Connection use cases')">
         <div class="story-track">
           <article class="story-panel story-intro">
-            <span class="eyebrow">03 / ONE ROOM. MORE POSSIBILITIES.</span>
+            <span class="eyebrow">{{
+              t("03 / ONE ROOM. MORE POSSIBILITIES.")
+            }}</span>
             <h2>
-              Same room.<br />Different<br /><span class="blue-text"
-                >worlds.</span
+              {{ t("Same room.") }}<br />{{ t("Different") }}<br /><span
+                class="blue-text"
+                >{{ t("worlds.") }}</span
               >
             </h2>
             <p>
-              A connection that fits what you do.<br />Keep scrolling to find
-              your way in.
+              {{ t("A connection that fits what you do.") }}<br />{{
+                t("Keep scrolling to find your way in.")
+              }}
             </p>
             <span class="story-arrow">⟶</span>
           </article>
@@ -299,25 +416,28 @@ onBeforeUnmount(() => {
             <div class="scene scene-code">
               <div class="code-window">
                 <div class="window-dots">
-                  <i></i><i></i><i></i><span>your next idea</span>
+                  <i></i><i></i><i></i><span>{{ t("your next idea") }}</span>
                 </div>
-                <pre><span class="code-muted">// great things start locally</span>
+                <pre><span class="code-muted">{{ t("// great things start locally") }}</span>
 <span class="code-blue">const</span> idea = <span class="code-green">'something new'</span>
 
 localhost:<span class="code-green">3000</span>
-<span class="code-muted">         ↓ share a room</span>
+<span class="code-muted">         {{ t("↓ share a room") }}</span>
 your teammate<span class="code-blue">.connected</span></pre>
                 <div class="code-status">
-                  <i></i> LOCAL WORK. SHARED MOMENT.
+                  <i></i> {{ t("LOCAL WORK. SHARED MOMENT.") }}
                 </div>
               </div>
             </div>
             <div class="story-copy">
-              <span>01 / BUILD TOGETHER</span>
-              <h3>Localhost.<br />Meet the rest of us.</h3>
+              <span>{{ t("01 / BUILD TOGETHER") }}</span>
+              <h3>
+                {{ t("Localhost.") }}<br />{{ t("Meet the rest of us.") }}
+              </h3>
               <p>
-                Bring a local service to your collaborators.<br />Less setup
-                between an idea and a second pair of eyes.
+                {{ t("Bring a local service to your collaborators.") }}<br />{{
+                  t("Less setup between an idea and a second pair of eyes.")
+                }}
               </p>
             </div>
           </article>
@@ -325,36 +445,50 @@ your teammate<span class="code-blue">.connected</span></pre>
             <div class="scene scene-play">
               <div class="game-orbit orbit-a"></div>
               <div class="game-orbit orbit-b"></div>
-              <div class="game-core">PLAY<span>TOGETHER</span></div>
-              <span class="player player-one">YOU <i></i></span
-              ><span class="player player-two"><i></i> PLAYER 02</span>
+              <div class="game-core">
+                {{ t("PLAY") }}<span>{{ t("TOGETHER") }}</span>
+              </div>
+              <span class="player player-one">{{ t("YOU") }} <i></i></span
+              ><span class="player player-two"
+                ><i></i> {{ t("PLAYER 02") }}</span
+              >
             </div>
             <div class="story-copy">
-              <span>02 / BRING YOUR PEOPLE</span>
-              <h3>Different places.<br />Same game night.</h3>
+              <span>{{ t("02 / BRING YOUR PEOPLE") }}</span>
+              <h3>
+                {{ t("Different places.") }}<br />{{ t("Same game night.") }}
+              </h3>
               <p>
-                Create a virtual LAN for your group.<br />The room code is the
-                invitation.
+                {{ t("Create a virtual LAN for your group.") }}<br />{{
+                  t("The room code is the invitation.")
+                }}
               </p>
             </div>
           </article>
           <article class="story-panel">
             <div class="scene scene-terminal">
               <div class="terminal-demo">
-                <span class="terminal-label">frp-sh / CONNECTION EXAMPLE</span>
+                <span class="terminal-label">{{
+                  t("frp-sh / CONNECTION EXAMPLE")
+                }}</span>
                 <p><em>❯</em> frp-sh</p>
-                <p class="code-muted">Room ready. Share your code.</p>
+                <p class="code-muted">
+                  {{ t("Room ready. Share your code.") }}
+                </p>
                 <div class="room-code">orbit-2048</div>
-                <p class="code-green">✓ Peer connected</p>
-                <p class="code-muted">P2P tunnel · direct route</p>
+                <p class="code-green">{{ t("✓ Peer connected") }}</p>
+                <p class="code-muted">{{ t("P2P tunnel · direct route") }}</p>
               </div>
             </div>
             <div class="story-copy">
-              <span>03 / STAY IN YOUR FLOW</span>
-              <h3>All connection.<br />No extra ceremony.</h3>
+              <span>{{ t("03 / STAY IN YOUR FLOW") }}</span>
+              <h3>
+                {{ t("All connection.") }}<br />{{ t("No extra ceremony.") }}
+              </h3>
               <p>
-                A focused terminal. Clear status.<br />Diagnostics in their own
-                log, not in your way.
+                {{ t("A focused terminal. Clear status.") }}<br />{{
+                  t("Diagnostics in their own log, not in your way.")
+                }}
               </p>
             </div>
           </article>
@@ -364,11 +498,11 @@ your teammate<span class="code-blue">.connected</span></pre>
       <section class="essentials section-pad">
         <div class="section-heading reveal">
           <div>
-            <span class="eyebrow">04 / LESS, BUT BETTER</span>
+            <span class="eyebrow">{{ t("04 / LESS, BUT BETTER") }}</span>
             <h2>
-              Powerful underneath.<br /><span class="muted"
-                >Light everywhere else.</span
-              >
+              {{ t("Powerful underneath.") }}<br /><span class="muted">{{
+                t("Light everywhere else.")
+              }}</span>
             </h2>
           </div>
         </div>
@@ -376,53 +510,67 @@ your teammate<span class="code-blue">.connected</span></pre>
           <article class="spec reveal">
             <span class="spec-index">01</span>
             <div class="spec-number">38.7<span>%</span></div>
-            <h3>Less binary. More possibility.</h3>
+            <h3>{{ t("Less binary. More possibility.") }}</h3>
             <p>
-              Smaller combined client and helper on Windows versus the previous
-              main binary. Same purpose, less baggage.
+              {{
+                t(
+                  "Smaller combined client and helper on Windows versus the previous main binary. Same purpose, less baggage.",
+                )
+              }}
             </p>
-            <small
-              >Measured Release builds. Excludes Wintun, configuration and
-              backups.</small
-            >
+            <small>{{
+              t(
+                "Measured Release builds. Excludes Wintun, configuration and backups.",
+              )
+            }}</small>
           </article>
           <article class="spec reveal">
             <span class="spec-index">02</span>
             <div class="spec-symbol">⌘</div>
-            <h3>Install once. Stay in your flow.</h3>
+            <h3>{{ t("Install once. Stay in your flow.") }}</h3>
             <p>
-              Authorize the network helper during installation. Run everyday
-              connections from your ordinary account.
+              {{
+                t(
+                  "Authorize the network helper during installation. Run everyday connections from your ordinary account.",
+                )
+              }}
             </p>
-            <small
-              >Updates use the installer. No repeated runtime elevation.</small
-            >
+            <small>{{
+              t("Updates use the installer. No repeated runtime elevation.")
+            }}</small>
           </article>
           <article class="spec reveal">
             <span class="spec-index">03</span>
             <div class="spec-symbol shield">◇</div>
-            <h3>Your tunnel. Your keys.</h3>
+            <h3>{{ t("Your tunnel. Your keys.") }}</h3>
             <p>
-              Enable end-to-end encryption with a matching shared key. A
-              restricted helper keeps network privileges contained.
+              {{
+                t(
+                  "Enable end-to-end encryption with a matching shared key. A restricted helper keeps network privileges contained.",
+                )
+              }}
             </p>
-            <a href="/en/architecture">Explore the architecture ↗</a>
+            <a :href="docLink('architecture')">{{
+              t("Explore the architecture ↗")
+            }}</a>
           </article>
         </div>
       </section>
 
       <section id="download" class="download section-pad">
         <div class="download-glow"></div>
-        <span class="eyebrow reveal">THE NEXT CONNECTION IS YOURS.</span>
-        <h2 class="reveal">Close the distance.</h2>
+        <span class="eyebrow reveal">{{
+          t("THE NEXT CONNECTION IS YOURS.")
+        }}</span>
+        <h2 class="reveal">{{ t("Close the distance.") }}</h2>
         <p class="reveal">
-          Open source. Native performance. Ready when you are.
+          {{ t("Open source. Native performance. Ready when you are.") }}
         </p>
         <div class="install-box reveal">
           <div
             class="platform-tabs"
             role="group"
-            aria-label="Installation platform"
+            :aria-label="t('Installation platform')"
           >
             <button
               :aria-pressed="platform === 'unix'"
@@ -447,38 +595,44 @@ your teammate<span class="code-blue">.connected</span></pre>
             ><button
               class="copy-button"
               @click="copyCommand"
-              :aria-label="copied ? 'Command copied' : 'Copy install command'"
+              :aria-label="
+                copied ? t('Command copied') : t('Copy install command')
+              "
             >
-              {{ copied ? "Copied ✓" : "Copy ↗" }}
+              {{ copied ? t("Copied ✓") : t("Copy ↗") }}
             </button>
           </div>
           <span class="copy-status" role="status">{{
             copyError
-              ? "Clipboard unavailable. Select and copy the command above."
+              ? t("Clipboard unavailable. Select and copy the command above.")
               : copied
-                ? "Install command copied."
+                ? t("Install command copied.")
                 : ""
           }}</span>
         </div>
         <div class="download-links">
-          <a href="/en/install">Read the install guide ↗</a
-          ><a href="https://github.com/myki-jim/frp-sh/releases/tag/v0.4.0"
-            >All downloads ↗</a
-          >
+          <a :href="docLink('install')">{{ t("Read the install guide ↗") }}</a
+          ><a href="https://github.com/myki-jim/frp-sh/releases/tag/v0.4.0">{{
+            t("All downloads ↗")
+          }}</a>
         </div>
         <p class="install-note">
-          Installation configures a privileged network helper. Review the script
-          before running.<br />After installation, run <code>frp-sh</code> to
-          configure your signaling server.
+          {{
+            t(
+              "Installation configures a privileged network helper. Review the script before running.",
+            )
+          }}<br />{{ t("After installation, run") }} <code>frp-sh</code>
+          {{ t("to configure your signaling server.") }}
         </p>
       </section>
     </main>
     <footer class="site-footer">
       <a class="wordmark" href="/">⌁ frp.sh</a
-      ><span>LESS DISTANCE. MORE CONNECTION.</span>
+      ><span>{{ t("LESS DISTANCE. MORE CONNECTION.") }}</span>
       <div>
         <a href="https://github.com/myki-jim/frp-sh">GitHub ↗</a
-        ><a href="/en/versioning">0.x version policy</a><span>MIT LICENSE</span>
+        ><a :href="docLink('versioning')">{{ t("0.x version policy") }}</a
+        ><span>{{ t("MIT LICENSE") }}</span>
       </div>
     </footer>
   </div>
