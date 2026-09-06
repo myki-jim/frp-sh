@@ -54,7 +54,7 @@ jobs:
       - name: Linux isolated ordinary-user helper
         if: runner.os == 'Linux'
         run: |
-          docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -e FRPSH_CONTAINER_TEST=1 -v "$PWD:/work" -w /work rust:1-slim sh -c "apt-get update -qq && apt-get install -y -qq iproute2 procps >/dev/null && cargo test --locked --test helper_service helper_service_lifecycle -- --ignored --nocapture"
+          docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -e FRPSH_CONTAINER_TEST=1 -v "$PWD:/work" -w /work rust:1-slim sh -c "apt-get update -qq && apt-get install -y -qq iproute2 procps >/dev/null && cargo test --locked --test helper_service helper_service_lifecycle -- --ignored --nocapture && sh scripts/test-installer-linux.sh"
 
       - name: Release build
         run: cargo build --locked --release --bins
