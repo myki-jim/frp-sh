@@ -109,7 +109,7 @@ After joining:
 
 - `ping 10.66.0.1` / SSH / file sharing reach the host's whole machine
 - routes are added automatically to reach the host's LAN devices (NAS, printers, etc.)
-- root/admin is required (virtual NIC creation, routing changes)
+- install the restricted network helper once with administrator/root authorization; everyday LAN connections run from your ordinary account
 
 ```text
   Joined room : lan-a3f9c2
@@ -157,13 +157,13 @@ After a drop (network jitter, expired NAT mappings), both sides reconnect automa
 >>> 连接已断开，2 秒后自动重连（Ctrl-C 退出）...
 ```
 
-No manual action needed; the retry backoff is 2s, 4s, 8s... capped at 15s.
+Transient failures reconnect automatically with a jittered backoff of up to 8 seconds. Authentication failures require correcting the credentials.
 
 ## Minimal Commands
 
 | Role | Minimal command | Notes |
 |------|-----------------|-------|
-| Mesh host | `frp-sh lan create` | virtual-NIC whole-machine mesh (needs root/admin) |
+| Mesh host | `frp-sh lan create` | virtual-NIC mesh using the installed network helper |
 | Mesh guest | `frp-sh lan join lan-xxxxxx` | only the room code is required |
 | Game host | `frp-sh game create` | pure port forwarding (default 25565) |
 | Server | `frp-sh serve` | listens on 0.0.0.0:8080/8081 |

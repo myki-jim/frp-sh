@@ -66,6 +66,9 @@ const enSidebar = [
 ]
 
 export default withMermaid({
+  transformHtml(code, _id, { pageData }) {
+    return pageData.frontmatter.cinematic ? code.replace('<html lang="zh-CN"', '<html lang="en"') : code
+  },
   lang: 'zh-CN',
   title: 'frp-sh',
   description: '社交化 P2P 打洞工具使用手册 · Social P2P tunnel documentation',
