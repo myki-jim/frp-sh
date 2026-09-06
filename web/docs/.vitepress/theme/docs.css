@@ -536,3 +536,77 @@
     transform: translateY(-4px);
   }
 }
+
+@media (prefers-reduced-motion: no-preference) {
+  .doc-shell .VPNavBarSearch button {
+    transition:
+      border-color 0.3s,
+      box-shadow 0.3s,
+      transform 0.3s;
+  }
+  .doc-shell .VPNavBarSearch button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 18px #a3523215;
+  }
+  .VPLocalSearchBox .backdrop {
+    animation: search-backdrop-in 0.25s ease-out both;
+  }
+  .VPLocalSearchBox .shell {
+    transform-origin: 50% 10%;
+    animation: search-open 0.48s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .VPLocalSearchBox .search-bar {
+    transition:
+      border-color 0.3s,
+      box-shadow 0.3s;
+  }
+  .VPLocalSearchBox .search-bar:focus-within {
+    border-color: var(--vp-c-brand-1);
+    box-shadow: 0 0 0 3px var(--vp-c-brand-soft);
+  }
+  .VPLocalSearchBox .result {
+    animation: search-result-in 0.35s ease-out both;
+    transition:
+      background 0.2s,
+      border-color 0.2s;
+  }
+  .VPLocalSearchBox .result:nth-child(2) {
+    animation-delay: 0.04s;
+  }
+  .VPLocalSearchBox .result:nth-child(3) {
+    animation-delay: 0.08s;
+  }
+  .VPLocalSearchBox .result:nth-child(n + 4) {
+    animation-delay: 0.12s;
+  }
+}
+@keyframes search-open {
+  from {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.97);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+@keyframes search-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes search-result-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
