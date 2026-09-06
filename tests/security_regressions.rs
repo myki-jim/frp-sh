@@ -1,3 +1,4 @@
+#![cfg(feature = "server")]
 use frp_sh::{
     p2p::{enc::EncStream, stream::UdpStream, stun, turn_server::TurnServer},
     signaling::{server, SignalingClient},
@@ -7,6 +8,35 @@ use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
     time::{timeout, Duration},
 };
+
+#[tokio::test]
+async fn removed_panel_routes_are_not_exposed() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(server::run_http(listener, server::new_state(), None, None));
+    let client = reqwest::Client::new();
+    for path in ["/panel", "/api/traffic", "/api/debug", "/api/info", "/ws"] {
+        assert_eq!(
+            client
+                .get(format!("http://{addr}{path}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/health"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    task.abort();
+}
 
 #[tokio::test]
 async fn encrypted_stream_is_bounded_and_flush_waits() {
@@ -188,36 +218,6 @@ async fn builtin_stun_has_matching_transaction() {
     );
     task.abort();
 }
-#[tokio::test]
-async fn local_panel_rejects_foreign_origin_and_hides_password() {
-    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = l.local_addr().unwrap();
-    drop(l);
-    let task = tokio::spawn(frp_sh::panel::serve_client(addr));
-    let mut stream = timeout(Duration::from_secs(2), async {
-        loop {
-            if let Ok(s) = TcpStream::connect(addr).await {
-                break s;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    stream.write_all(format!("GET /ws HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nOrigin: https://untrusted.invalid\r\n\r\n").as_bytes()).await.unwrap();
-    let mut data = [0; 512];
-    let n = stream.read(&mut data).await.unwrap();
-    assert!(String::from_utf8_lossy(&data[..n]).contains("403"));
-    let info: serde_json::Value = reqwest::get(format!("http://{addr}/api/info"))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(info.get("password").is_none());
-    task.abort();
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn tcp_relay_rejects_mismatched_end_to_end_keys() {
     use frp_sh::{commands, config::Config, signaling::server};

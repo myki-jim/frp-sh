@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
 use frp_sh::cli::{self, Commands, DevCmd, GameCmd, LanCmd};
 use frp_sh::config::Config;
@@ -8,7 +8,15 @@ use frp_sh::config::Config;
 /// `#[tokio::main]` 的 `block_on` 会把 async main 的整个 future（包含所有
 /// 分支的异步状态机）压在主线程栈上（Windows 默认仅 1MB），分支增多后
 /// 会直接栈溢出（启动即崩溃）。改用大栈 worker 线程承载主逻辑即可规避。
-fn main() -> anyhow::Result<()> {
+fn main() {
+    let result = run_main();
+    log::logger().flush();
+    if let Err(e) = result {
+        frp_sh::terminal::error("E_RUNTIME", &e.to_string());
+        std::process::exit(1);
+    }
+}
+fn run_main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .thread_stack_size(8 * 1024 * 1024)
         .enable_all()
@@ -22,16 +30,75 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn real_main() -> anyhow::Result<()> {
-    let cli = cli::Cli::parse();
+    let args: Vec<_> = std::env::args_os().collect();
+    let arg_value = |flag: &str| -> Option<String> {
+        args.iter().enumerate().find_map(|(i, a)| {
+            let s = a.to_string_lossy();
+            if s == flag {
+                args.get(i + 1).map(|v| v.to_string_lossy().into_owned())
+            } else {
+                s.strip_prefix(&format!("{flag}=")).map(str::to_owned)
+            }
+        })
+    };
+    let config_path = arg_value("--config")
+        .or_else(|| arg_value("-c"))
+        .map(std::path::PathBuf::from)
+        .or_else(Config::default_path);
+    let language = config_path
+        .as_deref()
+        .and_then(|p| Config::load(Some(p)).ok())
+        .and_then(|c| c.language);
+    let requested = arg_value("--lang")
+        .or(language)
+        .or_else(|| std::env::var("FRPSH_LANG").ok())
+        .unwrap_or_else(|| "auto".into());
+    frp_sh::i18n::choose(&requested);
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    frp_sh::terminal::configure(has("--plain"), has("--json"), has("--no-color"));
+    for flag in ["--key", "--password"] {
+        if let Some(v) = arg_value(flag) {
+            frp_sh::debuglog::protect(&v);
+        }
+    }
+    let mut command = frp_sh::i18n::command(cli::Cli::command());
+    if has("--plain")
+        || has("--no-color")
+        || has("--json")
+        || std::env::var_os("NO_COLOR").is_some()
+    {
+        command = command.color(clap::ColorChoice::Never);
+    }
+    let matches = match command.try_get_matches_from(args) {
+        Ok(m) => m,
+        Err(e) => {
+            if e.exit_code() == 0 {
+                frp_sh::terminal::output(e.to_string(), false);
+                return Ok(());
+            }
+            frp_sh::terminal::error("E_ARGUMENT", &e.to_string());
+            std::process::exit(2);
+        }
+    };
+    let cli = cli::Cli::from_arg_matches(&matches)?;
+    if let Some(Commands::Logs { cmd }) = &cli.command {
+        match cmd {
+            cli::LogCmd::Path => frp_sh::ui_println!("{}", frp_sh::debuglog::directory().display()),
+            cli::LogCmd::Tail {
+                lines,
+                follow,
+                level,
+            } => frp_sh::debuglog::tail(*lines, *follow, level.as_deref()).await?,
+        }
+        return Ok(());
+    }
     let filter = if cli.verbose { "debug" } else { "info" };
-    // 日志终端静默：写入 <配置目录>/logs/frp-sh.log + 内存环形缓冲（面板 /api/debug）
+    // Diagnostic records go to bounded, rotating JSONL files.
     frp_sh::debuglog::init(filter);
 
     let cli::Cli {
         command,
         config,
-        panel_addr,
-        no_panel,
         name,
         punch_retries,
         ..
@@ -40,62 +107,40 @@ async fn real_main() -> anyhow::Result<()> {
 
     frp_sh::config::set_cli_name(name);
 
-    // 客户端 Web 面板（默认 127.0.0.1:6793）：随进程常驻，无会话时显示 idle。
-    // serve 模式不需要（服务端面板挂在 8080 的 /panel）。
-    if !no_panel && !matches!(command, Some(Commands::Serve { .. })) {
-        if let Ok(addr) = panel_addr.parse() {
-            tokio::spawn(frp_sh::panel::serve_client(addr));
-        } else {
-            eprintln!("  ⚠ bad --panel-addr {panel_addr}; panel disabled");
-        }
-    }
+    frp_sh::terminal::banner();
 
-    // 版本横幅：ASCII 字符画 logo + 版本/线协议
-    println!(
-        "{}",
-        r#"
- ______ _____  _____   _____ _    _
-|  ____|  __ \|  __ \ / ____| |  | |
-| |__  | |__) | |__) | (___ | |__| |
-|  __| |  _  /|  ___/ \___ \|  __  |
-| |    | | \ \| |     ____) | |  | |
-|_|    |_|  \_\_|    |_____/|_|  |_|"#
-            .green()
-    );
-    println!(
-        "  {} {}",
-        format!("frp-sh v{}", frp_sh::version::VERSION)
-            .cyan()
-            .bold(),
-        format!("protocol v{}", frp_sh::version::PROTOCOL_VERSION).dimmed()
-    );
-    println!();
-
-    // lan 组网需要管理员/root（创建虚拟网卡、设 IP、加路由）。
-    // 未提权时：Windows 自动弹 UAC 以管理员重启自身（用户点一次"是"）；
-    // macOS/Linux 提示用 sudo。
-    if frp_sh::commands::needs_elevation(&command) && !frp_sh::commands::is_elevated() {
-        if frp_sh::commands::handle_elevation(&command)? {
-            return Ok(()); // 已在提权子进程中继续运行，本进程结束
-        }
-        std::process::exit(1);
+    if frp_sh::commands::needs_network_helper(&command) {
+        frp_sh::helper::status().await?;
     }
 
     // 单实例锁（按角色）：同机同时只允许一个房主会话/一个访客会话/一个服务端，
     // 防止误开多个房间；host 与 guest 各一把锁，双端同机不受影响。
-    // 注意：必须放在提权门之后——Windows 提权父进程会等待子进程，不能持有锁。
+    // Each process owns only its own session role.
     if let Some(role) = frp_sh::commands::session_role(&command) {
-        if let Err(e) = frp_sh::commands::acquire_role_lock(role) {
-            eprintln!("\n  ✗ {e}\n");
-            std::process::exit(1);
-        }
+        frp_sh::commands::acquire_role_lock(role)?;
     }
 
-    // 更新检查（serve 只提示不询问；其余命令交互询问）
-    let interactive = !matches!(command, Some(Commands::Serve { .. }));
-    frp_sh::update::maybe_check_update(interactive).await?;
+    // Update checks are explicit and never delay a connection.
 
+    let _status = frp_sh::terminal::monitor();
     match command {
+        Some(Commands::Logs { .. }) => unreachable!(),
+        Some(Commands::Update) => frp_sh::update::maybe_check_update(true).await?,
+        Some(Commands::Doctor { network_test }) => {
+            frp_sh::helper::status().await?;
+            if network_test {
+                let device = frp_sh::p2p::tun::create(&frp_sh::p2p::tun::TunConfig {
+                    name: "frp0".into(),
+                    ip: "10.254.254.1".into(),
+                    netmask: "255.255.255.252".into(),
+                    mtu: 1400,
+                })
+                .await?;
+                drop(device);
+            }
+            frp_sh::ui_println!("Network helper is ready");
+        }
+        #[cfg(feature = "server")]
         Some(Commands::Serve {
             addr,
             relay_addr,
@@ -268,13 +313,13 @@ async fn real_main() -> anyhow::Result<()> {
         None => {
             // 首次运行：无子命令 → 配置向导；已有配置 → 显示概要
             if !Config::default_exists() {
-                println!(
+                frp_sh::ui_println!(
                     "Welcome to frp-sh! The first run requires configuring the signaling server.\n"
                 );
                 frp_sh::commands::run_config(config).await?;
             } else {
                 let cfg = Config::load_auto(config.as_deref())?;
-                println!("{}", "frp-sh - social P2P mesh tool".cyan().bold());
+                frp_sh::ui_println!("{}", "frp-sh - social P2P mesh tool".cyan().bold());
                 let mut home_rows: Vec<(&str, String)> = vec![
                     ("Signaling", cfg.signaling_addr.clone()),
                     ("Relay", cfg.relay_addr.clone()),
@@ -285,30 +330,30 @@ async fn real_main() -> anyhow::Result<()> {
                 if let Some(id) = &cfg.uuid {
                     home_rows.push(("Your ID", id.clone()));
                 }
-                println!("{}", frp_sh::utils::kv_table(&home_rows));
-                println!("\n  {}", "Common commands:".cyan());
-                println!(
+                frp_sh::ui_println!("{}", frp_sh::utils::kv_table(&home_rows));
+                frp_sh::ui_println!("\n  {}", "Common commands:".cyan());
+                frp_sh::ui_println!(
                     "    {}  mesh: create a room (virtual NIC puts the whole machine on the mesh)",
                     "frp-sh lan create".dimmed()
                 );
-                println!(
+                frp_sh::ui_println!(
                     "    {}  mesh: join a room (reach the peer's whole LAN)",
                     "frp-sh lan join 1234".dimmed()
                 );
-                println!(
+                frp_sh::ui_println!(
                     "    {}  development: application-layer port forwarding",
                     "frp-sh dev create".dimmed()
                 );
-                println!(
+                frp_sh::ui_println!(
                     "    {}  game: pure port forwarding (default 25565)",
                     "frp-sh game create".dimmed()
                 );
-                println!(
+                frp_sh::ui_println!(
                     "    {}  start the signaling server",
                     "frp-sh serve".dimmed()
                 );
-                println!("    {}  reconfigure", "frp-sh config".dimmed());
-                println!("    {}  show all commands\n", "frp-sh --help".dimmed());
+                frp_sh::ui_println!("    {}  reconfigure", "frp-sh config".dimmed());
+                frp_sh::ui_println!("    {}  show all commands\n", "frp-sh --help".dimmed());
             }
         }
     }
@@ -318,7 +363,7 @@ async fn real_main() -> anyhow::Result<()> {
 /// 未配置默认服务器时给出提示（不阻塞，使用内置默认 127.0.0.1）。
 fn check_config_hint(config: &Option<std::path::PathBuf>) {
     if config.is_none() && !Config::default_exists() {
-        println!(
+        frp_sh::ui_println!(
             "Note: no signaling server configured; using the built-in default 127.0.0.1:8080.\n\
              Run `frp-sh config` to configure your server interactively.\n"
         );

@@ -1,166 +1,124 @@
-#!/usr/bin/env sh
-# frp-sh one-line installer / updater (Linux / macOS)
-#
-#   curl -fsSL https://frp.sh/install.sh | sh
-#
-# Env:
-#   FRPSH_REPO         GitHub fallback repo (default myki-jim/frp-sh)
-#   FRPSH_INSTALL_DIR  install dir (default /usr/local/bin)
-#   FRPSH_SKIP_INIT=1  skip interactive first-run setup
-set -e
-
-REPO="${FRPSH_REPO:-myki-jim/frp-sh}"
-DEST_DIR="${FRPSH_INSTALL_DIR:-/usr/local/bin}"
-DEST="${DEST_DIR}/frp-sh"
-# Download sources: Cloudflare official source first, GitHub Releases fallback
-BASES="https://frp.sh/downloads https://github.com/${REPO}/releases/latest/download"
-
-# ---- colors & symbols (only when stdout is a TTY) ----
-if [ -t 1 ]; then
-  GREEN='\033[32m'; CYAN='\033[36m'; YELLOW='\033[33m'; RED='\033[31m'; DIM='\033[2m'; BOLD='\033[1m'; RST='\033[0m'
-  OKS='✓'; WARNS='⚠'; FAILS='✗'; STEPS='→'
-else
-  GREEN=''; CYAN=''; YELLOW=''; RED=''; DIM=''; BOLD=''; RST=''
-  OKS='[ok]'; WARNS='[warn]'; FAILS='[error]'; STEPS='[step]'
+#!/bin/sh
+# frp-sh 0.4: installation authorization, ordinary-user runtime.
+set -eu
+lang="${FRPSH_LANG:-${LC_ALL:-${LANG:-en}}}"
+say() { case "$lang" in zh*) printf '%s\n' "$2";; *) printf '%s\n' "$1";; esac; }
+if [ "$(id -u)" != 0 ]; then
+    say "Installing the network helper requires one administrator approval." "安装网络辅助服务需要一次管理员授权。"
+    bootstrap="$(mktemp)"
+    trap 'rm -f "$bootstrap"' EXIT HUP INT TERM
+    curl -fL --proto '=https' --tlsv1.2 https://frp.sh/install.sh -o "$bootstrap"
+    sudo env FRPSH_INSTALL_UID="$(id -u)" FRPSH_LANG="$lang" sh "$bootstrap"
+    say "Installed. LAN sessions do not need sudo." "安装完成，LAN 会话无需 sudo。"
+    exit 0
 fi
-say()  { printf "  ${GREEN}%s %s${RST}\n" "$OKS" "$*"; }
-info() { printf "  ${DIM}%s${RST}\n" "$*"; }
-warn() { printf "  ${YELLOW}%s %s${RST}\n" "$WARNS" "$*"; }
-fail() { printf "  ${RED}%s %s${RST}\n" "$FAILS" "$*" >&2; exit 1; }
-step() { printf "\n${BOLD}${CYAN}%s %s${RST}\n" "$STEPS" "$*"; }
-human() { b=$1; if [ "$b" -ge 1048576 ]; then echo "$((b/1048576)) MB"; elif [ "$b" -ge 1024 ]; then echo "$((b/1024)) KB"; else echo "${b} B"; fi; }
-
-# ---- banner ----
-printf "${GREEN}"
-printf '%s\n' \
-  ' ______ _____  _____   _____ _    _ ' \
-  '|  ____|  __ \|  __ \ / ____| |  | |' \
-  '| |__  | |__) | |__) | (___ | |__| |' \
-  '|  __| |  _  /|  ___/ \___ \|  __  |' \
-  '| |    | | \ \| |     ____) | |  | |' \
-  '|_|    |_|  \_\_|    |_____/|_|  |_|'
-printf "${RST}"
-
-# ---- detect OS / architecture ----
-uname_s="$(uname -s)"
-case "${uname_s}" in
-  Linux)  os="linux" ;;
-  Darwin) os="macos" ;;
-  *) fail "unsupported platform ${uname_s} (Windows: irm https://frp.sh/install.ps1 | iex)" ;;
-esac
-uname_m="$(uname -m)"
-# musl libc（OpenWrt / Alpine / 静态系统）优先选静态 musl 构建（若存在）
-musl=""
-case "${os}" in
-  linux)
-    case "${uname_m}" in
-      x86_64|aarch64|arm64)
-        if ls /lib/ld-musl-* >/dev/null 2>&1; then
-          musl="-musl"
-        fi
+owner="${FRPSH_INSTALL_UID:-${SUDO_UID:-}}"
+case "$owner" in ''|*[!0-9]*) say "Set FRPSH_INSTALL_UID to the account that will use frp-sh." "请用 FRPSH_INSTALL_UID 指定使用 frp-sh 的账户 UID。"; exit 1;; esac
+id "$owner" >/dev/null 2>&1 || { printf 'Unknown user ID: %s\n' "$owner"; exit 1; }
+os="$(uname -s)"; arch="$(uname -m)"
+case "$arch" in x86_64|amd64) arch=x86_64;; aarch64|arm64) arch=aarch64;; *) printf 'Unsupported architecture: %s\n' "$arch"; exit 1;; esac
+case "$os" in
+    Darwin) suffix="macos-$arch"; manager=launchd;;
+    Linux)
+        suffix="linux-$arch"
+        if ldd --version 2>&1 | grep -qi musl || [ -f /etc/openwrt_release ]; then suffix="$suffix-musl"; fi
+        if [ -d /run/systemd/system ]; then manager=systemd
+        elif [ -x /sbin/procd ]; then manager=procd
+        else printf 'No supported service manager (systemd/procd).\n'; exit 1; fi
+        command -v ip >/dev/null || { printf 'Install iproute2 first.\n'; exit 1; }
         ;;
-    esac
+    *) printf 'Unsupported OS: %s\n' "$os"; exit 1;;
+esac
+dest=/usr/local/lib/frp-sh
+umask 022
+mkdir -p "$dest" /usr/local/bin /etc/frp-sh
+chmod 755 "$dest" /etc/frp-sh
+stage="$(mktemp -d "$dest/staging.XXXXXXXX")"
+trap 'rm -rf "$stage"' EXIT HUP INT TERM
+base=https://github.com/myki-jim/frp-sh/releases/latest/download
+fetch() {
+    asset="$1"; out="$2"
+    curl -fL --proto '=https' --tlsv1.2 "$base/$asset" -o "$out"
+    curl -fL --proto '=https' --tlsv1.2 "$base/$asset.sha256" -o "$out.sha256"
+    expected="$(awk '{print $1}' "$out.sha256")"
+    case "$expected" in *[!a-fA-F0-9]*|'') printf 'Invalid checksum\n'; exit 1;; esac
+    [ "${#expected}" = 64 ] || exit 1
+    if command -v sha256sum >/dev/null; then actual="$(sha256sum "$out" | awk '{print $1}')"
+    else actual="$(shasum -a 256 "$out" | awk '{print $1}')"; fi
+    [ "$actual" = "$expected" ] || { printf 'Checksum mismatch: %s\n' "$asset"; exit 1; }
+    chmod 755 "$out"
+}
+say "Downloading and verifying client and network helper..." "正在下载并校验客户端和网络辅助程序…"
+fetch "frp-sh-$suffix" "$stage/frp-sh"
+fetch "frp-sh-net-$suffix" "$stage/frp-sh-net"
+case "$manager" in
+    systemd) systemctl stop frp-sh-network.service 2>/dev/null || true;;
+    launchd) launchctl bootout system/com.frpsh.network 2>/dev/null || true;;
+    procd) /etc/init.d/frp-sh-network stop 2>/dev/null || true;;
+esac
+for name in frp-sh frp-sh-net; do
+    [ ! -f "$dest/$name" ] || cp -p "$dest/$name" "$dest/$name.previous"
+    mv -f "$stage/$name" "$dest/$name"
+done
+printf 'allowed_uid = %s\n' "$owner" > /etc/frp-sh/helper.toml
+chmod 600 /etc/frp-sh/helper.toml
+ln -sf "$dest/frp-sh" /usr/local/bin/frp-sh
+case "$manager" in
+systemd)
+    cat > /etc/systemd/system/frp-sh-network.service <<'UNIT'
+[Unit]
+Description=frp-sh restricted network helper
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/frp-sh/frp-sh-net
+Restart=on-failure
+RestartSec=3
+User=root
+RuntimeDirectory=frp-sh
+RuntimeDirectoryMode=0755
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_CHOWN
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
+DevicePolicy=closed
+DeviceAllow=/dev/net/tun rw
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now frp-sh-network.service
+    systemctl is-active --quiet frp-sh-network.service
+    ;;
+launchd)
+    cat > /Library/LaunchDaemons/com.frpsh.network.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.frpsh.network</string>
+<key>ProgramArguments</key><array><string>/usr/local/lib/frp-sh/frp-sh-net</string></array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+</dict></plist>
+PLIST
+    chmod 644 /Library/LaunchDaemons/com.frpsh.network.plist
+    launchctl bootstrap system /Library/LaunchDaemons/com.frpsh.network.plist
+    ;;
+procd)
+    cat > /etc/init.d/frp-sh-network <<'INIT'
+#!/bin/sh /etc/rc.common
+START=95
+USE_PROCD=1
+start_service() {
+    procd_open_instance
+    procd_set_param command /usr/local/lib/frp-sh/frp-sh-net
+    procd_set_param respawn
+    procd_close_instance
+}
+INIT
+    chmod 755 /etc/init.d/frp-sh-network
+    /etc/init.d/frp-sh-network enable
+    /etc/init.d/frp-sh-network start
     ;;
 esac
-case "${os}-${uname_m}" in
-  linux-x86_64|linux-amd64)  asset="frp-sh-linux-x86_64${musl}" ;;
-  linux-aarch64|linux-arm64) asset="frp-sh-linux-aarch64${musl}" ;;
-  macos-x86_64|macos-amd64)  asset="frp-sh-macos-x86_64" ;;
-  macos-arm64|macos-aarch64) asset="frp-sh-macos-arm64" ;;
-  *) fail "unsupported platform/architecture ${os}/${uname_m}" ;;
-esac
-
-echo ""
-printf "  ${BOLD}frp-sh installer${RST} ${DIM}(${os}/${uname_m})${RST}\n"
-
-# ---- download ----
-step "Downloading ${asset}"
-# Snap 版 curl 的沙箱会隔离 /tmp：脚本在宿主 /tmp 建的临时文件它写不进，
-# 静默留下 0 字节文件。下载后校验最小体积（二进制约 6MB，阈值 1MB），
-# 失败自动切换下载器与下载源。
-TMP="$(mktemp)"
-MIN_BYTES=1000000
-ok=0
-for base in ${BASES}; do
-  info "source ${base}"
-  if command -v curl >/dev/null 2>&1; then
-    if curl -fsSL "${base}/${asset}" -o "${TMP}" 2>/dev/null &&
-       [ "$(wc -c < "${TMP}" | tr -d ' ')" -ge "${MIN_BYTES}" ]; then
-      ok=1
-      break
-    fi
-  fi
-  if command -v wget >/dev/null 2>&1; then
-    if wget -qO "${TMP}" "${base}/${asset}" 2>/dev/null &&
-       [ "$(wc -c < "${TMP}" | tr -d ' ')" -ge "${MIN_BYTES}" ]; then
-      ok=1
-      break
-    fi
-  fi
-  rm -f "${TMP}"
-done
-if [ "${ok}" != "1" ]; then
-  rm -f "${TMP}"
-  case "$(command -v curl 2>/dev/null)" in
-    /snap/*)
-      fail "download failed. You are using the Snap curl - its sandbox breaks file
-  downloads into /tmp (see https://github.com/boukendesho/curl-snap/issues/1).
-  Fix: sudo apt install curl && hash -r, then rerun this installer."
-      ;;
-    *)
-      fail "download failed ${asset} (tried frp.sh and GitHub Releases; check your network)"
-      ;;
-  esac
-fi
-say "downloaded $(human "$(wc -c < "${TMP}" | tr -d ' ')")"
-chmod +x "${TMP}"
-
-# ---- install ----
-step "Installing to ${DEST}"
-if [ -w "$(dirname "${DEST}")" ]; then
-  mv -f "${TMP}" "${DEST}"
-else
-  info "sudo required to write to ${DEST_DIR}"
-  sudo mv -f "${TMP}" "${DEST}"
-fi
-VER="$("${DEST}" --version 2>/dev/null | head -1 || true)"
-if [ -z "${VER}" ]; then
-  fail "installed binary is not runnable (empty or corrupted download). Remove it
-  with: sudo rm -f ${DEST} - then rerun this installer."
-fi
-say "installed ${DEST} (${VER})"
-
-# ---- first-run setup (interactive only) ----
-if [ -t 0 ] && [ -z "${FRPSH_SKIP_INIT:-}" ]; then
-  CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/frp-sh"
-  CFG="${CFG_DIR}/config.toml"
-  if [ ! -f "${CFG}" ]; then
-    step "First-run setup"
-    echo "  Which signaling server should frp-sh use?"
-    echo "  (the public VPS running 'frp-sh serve'; relay is derived as host:8081)"
-    printf "  ${CYAN}Signaling server address${RST} ${DIM}(e.g. 101.43.41.195:8080, Enter to skip)${RST}: "
-    SIG=""
-    # read from the TTY so this works under `curl ... | sh` (piped stdin is the script)
-    read -r SIG < /dev/tty || true
-    if [ -n "${SIG}" ]; then
-      case "${SIG}" in
-        http://*|https://*) : ;;
-        *) SIG="http://${SIG}" ;;
-      esac
-      HOST_ONLY="$(printf '%s' "${SIG}" | sed -E 's#^https?://##; s#:.*##')"
-      mkdir -p "${CFG_DIR}"
-      printf 'signaling_addr = "%s"\nrelay_addr = "%s:8081"\n' "${SIG}" "${HOST_ONLY}" > "${CFG}"
-      say "config saved: ${CFG}"
-    else
-      warn "skipped. Run 'frp-sh config' later to set up your server."
-    fi
-  fi
-fi
-
-# ---- done ----
-echo ""
-printf "  ${BOLD}${GREEN}All done.${RST} Next steps:\n"
-printf "    ${DIM}frp-sh --help${RST}        see all commands\n"
-printf "    ${DIM}frp-sh lan create${RST}    host a room (needs root: creates a virtual NIC)\n"
-printf "    ${DIM}frp-sh lan join 1234${RST}  join a friend's room\n"
-echo ""
+say "Installed. Run frp-sh from your normal account." "安装完成。请使用普通账户运行 frp-sh。"

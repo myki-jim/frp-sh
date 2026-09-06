@@ -1,219 +1,408 @@
-//! 进程内日志后端：**终端静默**，日志写入本地文件并保留在内存环形缓冲中，
-//! 供 Web 面板 `/api/debug` 实时查看。
-//!
-//! - 文件：`<配置目录>/logs/frp-sh.log`（追加；超过 5MB 轮转为 `.old`）
-//! - 环形缓冲：最近 [`RING_CAP`] 条（带全局递增序号，面板增量拉取）
-//! - `RUST_LOG` 过滤规则仍然生效（默认 `-v` 为 debug，否则 info）
+//! Bounded asynchronous JSONL logging. No diagnostic output reaches the terminal.
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, BufRead, Write},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Mutex, OnceLock,
+    },
+    time::Duration,
+};
+const FILE_LIMIT: u64 = 5 * 1024 * 1024;
+const TOTAL_LIMIT: u64 = 64 * 1024 * 1024;
+const QUEUE_CAP: usize = 1024;
+static SECRETS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static LOGGER: OnceLock<Backend> = OnceLock::new();
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+static WRITE_ERRORS: AtomicU64 = AtomicU64::new(0);
 
-use std::collections::VecDeque;
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::Mutex;
-
-/// 内存环形缓冲容量（条）。
-const RING_CAP: usize = 1000;
-/// 单个日志文件上限（字节），超过后轮转为 `.old`。
-const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
-
-/// 面板展示的一条日志。
-#[derive(Clone, serde::Serialize)]
-pub struct LogLine {
-    /// 全局递增序号（面板增量拉取的游标）
-    pub seq: u64,
-    /// unix 秒
-    pub ts: u64,
-    /// INFO / WARN / ERROR / DEBUG / TRACE
-    pub level: String,
-    /// 日志消息（已含 target 前缀）
-    pub msg: String,
+pub fn protect(value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    let mut values = SECRETS.get_or_init(Default::default).lock().unwrap();
+    if !values.iter().any(|v| v == value) {
+        values.push(value.into());
+        values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    }
 }
-
-struct Inner {
-    ring: VecDeque<LogLine>,
-    seq: u64,
-    file: Option<std::fs::File>,
-    file_path: Option<PathBuf>,
-    written: u64,
+pub fn redact(text: &str) -> String {
+    let mut s = text.to_owned();
+    if let Some(values) = SECRETS.get() {
+        for value in values.lock().unwrap().iter() {
+            s = s.replace(value, "[REDACTED]");
+        }
+    }
+    // Cover URL userinfo, including TURN URLs; retain the server address.
+    let mut pos = 0;
+    while let Some(i) = s[pos..].find("://") {
+        let start = pos + i + 3;
+        let end = s[start..]
+            .find(['/', ' ', '\n', '"', '\''])
+            .map(|n| start + n)
+            .unwrap_or(s.len());
+        if let Some(at) = s[start..end].rfind('@') {
+            s.replace_range(start..start + at, "[REDACTED]");
+        }
+        pos = start;
+        if pos >= s.len() {
+            break;
+        }
+    }
+    // Redact assignment/header values without including the value in diagnostics.
+    for key in [
+        "authorization",
+        "password",
+        "owner_token",
+        "owner-token",
+        "api_key",
+        "api-key",
+        "token",
+        "secret",
+        "--key",
+    ] {
+        let mut cursor = 0;
+        loop {
+            let lower = s.to_ascii_lowercase();
+            let Some(relative) = lower[cursor..].find(key) else {
+                break;
+            };
+            let at = cursor + relative;
+            let mut start = at + key.len();
+            cursor = start;
+            if at > 0 && s.as_bytes()[at - 1].is_ascii_alphanumeric() {
+                continue;
+            }
+            while start < s.len()
+                && matches!(
+                    s.as_bytes()[start],
+                    b' ' | b'\t' | b'"' | b'\'' | b':' | b'='
+                )
+            {
+                start += 1;
+            }
+            if start == cursor || start >= s.len() {
+                continue;
+            }
+            let mut end = start;
+            while end < s.len()
+                && !matches!(
+                    s.as_bytes()[end],
+                    b'\r' | b'\n' | b'"' | b'\'' | b',' | b'&' | b'}'
+                )
+            {
+                if key != "authorization" && s.as_bytes()[end].is_ascii_whitespace() {
+                    break;
+                }
+                end += 1;
+            }
+            if end > start {
+                s.replace_range(start..end, "[REDACTED]");
+                cursor = start + 10;
+            }
+        }
+    }
+    s
 }
-
-static INNER: std::sync::OnceLock<Mutex<Inner>> = std::sync::OnceLock::new();
-
-fn inner() -> &'static Mutex<Inner> {
-    INNER.get_or_init(|| {
-        Mutex::new(Inner {
-            ring: VecDeque::with_capacity(RING_CAP),
-            seq: 0,
-            file: None,
-            file_path: None,
-            written: 0,
-        })
-    })
+enum Event {
+    Line(String),
+    Flush(mpsc::Sender<()>),
 }
-
-/// 日志文件路径（`<配置目录>/logs/frp-sh.log`；无法定位配置目录时为 None）。
+struct Backend {
+    tx: mpsc::SyncSender<Event>,
+    path: PathBuf,
+    filters: Vec<(String, log::LevelFilter)>,
+}
+pub fn directory() -> PathBuf {
+    crate::config::Config::default_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("logs")
+}
 pub fn file_path() -> Option<PathBuf> {
-    inner().lock().unwrap().file_path.clone()
+    LOGGER.get().map(|l| l.path.clone())
 }
-
-fn level_str(level: log::Level) -> &'static str {
-    match level {
-        log::Level::Error => "ERROR",
-        log::Level::Warn => "WARN",
-        log::Level::Info => "INFO",
-        log::Level::Debug => "DEBUG",
-        log::Level::Trace => "TRACE",
-    }
+pub fn dropped() -> u64 {
+    DROPPED.load(Ordering::Relaxed)
 }
-
-fn stamp(ts: u64) -> String {
-    // 本地可读时间（进程内简单格式化，避免额外依赖）
-    match chrono_like(ts) {
-        Some(s) => s,
-        None => ts.to_string(),
-    }
+pub fn write_errors() -> u64 {
+    WRITE_ERRORS.load(Ordering::Relaxed)
 }
-
-/// unix 秒 → `YYYY-MM-DD HH:MM:SS`（UTC）。
-fn chrono_like(ts: u64) -> Option<String> {
-    let days = ts / 86400;
-    let secs = ts % 86400;
-    let (h, m, s) = (secs / 3600, secs % 3600 / 60, secs % 60);
-    // civil_from_days（Howard Hinnant 算法）
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mth = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if mth <= 2 { y + 1 } else { y };
-    Some(format!("{y:04}-{mth:02}-{d:02} {h:02}:{m:02}:{s:02}"))
-}
-
-/// 初始化全局日志后端（替换 env_logger —— 终端不再输出任何 log 行）。
-pub fn init(filter: &str) {
-    // 目录优先级：<配置目录>/logs → $HOME/.config/frp-sh/logs → /var/log/frp-sh（系统服务）→ ./logs
-    let dir = crate::config::Config::default_dir()
-        .map(|d| d.join("logs"))
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|h| PathBuf::from(h).join(".config").join("frp-sh").join("logs"))
-        })
-        .or_else(|| {
-            #[cfg(unix)]
-            {
-                Some(PathBuf::from("/var/log/frp-sh"))
-            }
-            #[cfg(not(unix))]
-            {
-                std::env::current_dir().ok().map(|c| c.join("logs"))
-            }
-        })
-        .or_else(|| std::env::current_dir().ok().map(|c| c.join("logs")));
-    if let Some(dir) = &dir {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let path = dir.map(|d| d.join("frp-sh.log"));
-    let file = path.as_ref().and_then(|p| {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(p)
-            .ok()
-            .map(|f| {
-                let written = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-                (f, written)
-            })
-    });
-    let (file, written) = match file {
-        Some((f, w)) => (Some(f), w),
-        None => (None, 0),
-    };
+fn open(path: &std::path::Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
     {
-        let mut g = inner().lock().unwrap();
-        g.file = file;
-        g.file_path = path;
-        g.written = written;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    let level = filter
-        .split(',')
-        .next()
-        .and_then(|s| s.parse::<log::LevelFilter>().ok())
-        .unwrap_or(log::LevelFilter::Info);
-    log::set_max_level(level);
-    let _ = log::set_boxed_logger(Box::new(DebugLogger));
+    options.open(path)
 }
-
-struct DebugLogger;
-
-impl log::Log for DebugLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        log::max_level() >= metadata.level()
+fn prune(dir: &std::path::Path, active: &std::path::Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<_> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("frp-sh-") || !name.contains(".jsonl") {
+                return None;
+            }
+            let m = e.metadata().ok()?;
+            if !m.is_file() {
+                return None;
+            }
+            Some((e.path(), m.len(), m.modified().ok()))
+        })
+        .collect();
+    files.sort_by_key(|f| f.2);
+    let mut bytes: u64 = files.iter().map(|f| f.1).sum();
+    for (path, size, _) in files {
+        if bytes <= TOTAL_LIMIT {
+            break;
+        }
+        let live = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.split_once(".jsonl"))
+            .and_then(|(stem, _)| stem.rsplit('-').next())
+            .and_then(|pid| pid.parse::<u32>().ok())
+            .is_some_and(process_alive);
+        if path != active && !live && fs::remove_file(path).is_ok() {
+            bytes = bytes.saturating_sub(size);
+        }
     }
-
-    fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) {
+}
+fn process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe {
+            libc::kill(pid as i32, 0) == 0
+                || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return io::Error::last_os_error().raw_os_error() == Some(5);
+        }
+        unsafe {
+            CloseHandle(handle);
+        }
+        true
+    }
+}
+fn worker(path: PathBuf, rx: mpsc::Receiver<Event>) {
+    let mut file = open(&path).ok();
+    let mut written = 0u64;
+    while let Ok(event) = rx.recv() {
+        match event {
+            Event::Flush(done) => {
+                if let Some(f) = file.as_mut() {
+                    let _ = f.flush();
+                }
+                let _ = done.send(());
+            }
+            Event::Line(line) => {
+                if written + line.len() as u64 > FILE_LIMIT {
+                    drop(file.take());
+                    for n in (1..=3).rev() {
+                        let from = if n == 1 {
+                            path.clone()
+                        } else {
+                            path.with_extension(format!("jsonl.{}", n - 1))
+                        };
+                        let to = path.with_extension(format!("jsonl.{n}"));
+                        if to.exists() {
+                            let _ = fs::remove_file(&to);
+                        }
+                        let _ = fs::rename(from, to);
+                    }
+                    if let Some(dir) = path.parent() {
+                        prune(dir, &path);
+                    }
+                    file = open(&path).ok();
+                    written = 0;
+                }
+                if file.is_none() {
+                    file = open(&path).ok();
+                }
+                match file.as_mut().map(|f| f.write_all(line.as_bytes())) {
+                    Some(Ok(())) => written += line.len() as u64,
+                    _ => {
+                        WRITE_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+}
+pub fn init(default: &str) {
+    if LOGGER.get().is_some() {
+        return;
+    }
+    let dir = directory();
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join(format!(
+        "frp-sh-{}-{}.jsonl",
+        crate::utils::now_unix(),
+        std::process::id()
+    ));
+    prune(&dir, &path);
+    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| default.into());
+    let mut filters: Vec<(String, log::LevelFilter)> = filter
+        .split(',')
+        .filter_map(|part| {
+            let (target, level) = part.split_once('=').unwrap_or(("", part));
+            Some((target.into(), level.parse::<log::LevelFilter>().ok()?))
+        })
+        .collect();
+    if filters.is_empty() {
+        filters.push(("".into(), log::LevelFilter::Info));
+    }
+    filters.sort_by_key(|(target, _)| target.len());
+    let max = filters.iter().map(|(_, level)| *level).max().unwrap();
+    let (tx, rx) = mpsc::sync_channel(QUEUE_CAP);
+    let worker_path = path.clone();
+    if std::thread::Builder::new()
+        .name("frpsh-log".into())
+        .spawn(move || worker(worker_path, rx))
+        .is_err()
+    {
+        return;
+    }
+    if LOGGER.set(Backend { tx, path, filters }).is_ok() {
+        let _ = log::set_boxed_logger(Box::new(Logger));
+        log::set_max_level(max);
+    }
+}
+struct Logger;
+impl log::Log for Logger {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        LOGGER
+            .get()
+            .and_then(|l| {
+                l.filters.iter().rev().find(|(t, _)| {
+                    t.is_empty() || m.target() == t || m.target().starts_with(&format!("{t}::"))
+                })
+            })
+            .is_some_and(|(_, level)| m.level() <= *level)
+    }
+    fn log(&self, r: &log::Record) {
+        if !self.enabled(r.metadata()) {
             return;
         }
-        let ts = crate::utils::now_unix();
-        let level = level_str(record.level()).to_string();
-        let msg = format!("[{}] {}", record.target(), record.args());
-        let line = LogLine {
-            seq: 0,
-            ts,
-            level,
-            msg,
-        };
-        // 终端静默：仅写入环形缓冲与文件（FRPSH_LOG_STDERR=1 时回显 stderr 调试用）
-        let stderr_echo = std::env::var_os("FRPSH_LOG_STDERR").is_some();
-        if stderr_echo {
-            eprintln!("{} [{}] {}", stamp(line.ts), line.level, line.msg);
-        }
-        let mut g = inner().lock().unwrap();
-        g.seq += 1;
-        let mut line = line;
-        line.seq = g.seq;
-        if g.ring.len() >= RING_CAP {
-            g.ring.pop_front();
-        }
-        g.ring.push_back(line.clone());
-        // 文件写入 + 轮转
-        if g.written > MAX_FILE_BYTES {
-            let old = g.file_path.as_ref().map(|p| p.with_extension("log.old"));
-            g.file = None;
-            if let (Some(p), Some(old)) = (&g.file_path, old) {
-                let _ = std::fs::rename(p, old);
-                g.file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(p)
-                    .ok();
+        let Some(l) = LOGGER.get() else { return };
+        let mut msg = redact(&format!("{}", r.args()));
+        if msg.len() > 16 * 1024 {
+            let mut n = 16 * 1024;
+            while !msg.is_char_boundary(n) {
+                n -= 1;
             }
-            g.written = 0;
+            msg.truncate(n);
+            msg.push_str(" [truncated]");
         }
-        if let Some(f) = g.file.as_mut() {
-            let text = format!("{} [{}] {}\n", stamp(line.ts), line.level, line.msg);
-            if f.write_all(text.as_bytes()).is_ok() {
-                g.written += text.len() as u64;
-            }
+        let line=serde_json::json!({"ts":crate::utils::now_unix(),"pid":std::process::id(),"level":r.level().as_str(),"target":r.target(),"message":msg,"dropped":dropped(),"write_errors":write_errors()}).to_string()+"\n";
+        if l.tx.try_send(Event::Line(line)).is_err() {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
         }
     }
-
     fn flush(&self) {
-        if let Some(f) = inner().lock().unwrap().file.as_mut() {
-            let _ = f.flush();
+        if let Some(l) = LOGGER.get() {
+            let (tx, rx) = mpsc::channel();
+            if l.tx.try_send(Event::Flush(tx)).is_ok() {
+                let _ = rx.recv_timeout(Duration::from_secs(1));
+            }
         }
     }
 }
-
-/// 面板 `/api/debug`：环形缓冲快照 + 日志文件路径。
-pub fn debug_json() -> serde_json::Value {
-    let g = inner().lock().unwrap();
-    serde_json::json!({
-        "total": g.seq,
-        "lines": g.ring.iter().collect::<Vec<_>>(),
-        "file": g.file_path.as_ref().map(|p| p.display().to_string()),
-    })
+pub fn latest_file() -> Option<PathBuf> {
+    fs::read_dir(directory())
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".jsonl"))
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+        .map(|e| e.path())
+}
+pub async fn tail(lines: usize, follow: bool, level: Option<&str>) -> anyhow::Result<()> {
+    use std::io::{Seek, SeekFrom};
+    let path =
+        latest_file().ok_or_else(|| anyhow::anyhow!("No log files; run a connection first."))?;
+    let text = fs::read_to_string(&path)?;
+    let selected: Vec<_> = text
+        .lines()
+        .filter(|s| {
+            level.is_none_or(|l| {
+                serde_json::from_str::<serde_json::Value>(s)
+                    .ok()
+                    .and_then(|v| v["level"].as_str().map(str::to_owned))
+                    .is_some_and(|s| s.eq_ignore_ascii_case(l))
+            })
+        })
+        .collect();
+    for s in selected.iter().skip(selected.len().saturating_sub(lines)) {
+        println!("{}", redact(s));
+    }
+    let mut position = text.len() as u64;
+    if !follow {
+        return Ok(());
+    }
+    loop {
+        tokio::select! {_ = tokio::signal::ctrl_c()=>break,_=tokio::time::sleep(Duration::from_millis(250))=>{}}
+        let Ok(mut f) = File::open(&path) else {
+            continue;
+        };
+        if f.metadata()?.len() < position {
+            position = 0;
+        }
+        f.seek(SeekFrom::Start(position))?;
+        let mut r = io::BufReader::new(f);
+        let mut s = String::new();
+        while r.read_line(&mut s)? > 0 {
+            if !s.ends_with('\n') {
+                break;
+            }
+            position += s.len() as u64;
+            let show = level.is_none_or(|l| {
+                serde_json::from_str::<serde_json::Value>(&s)
+                    .ok()
+                    .and_then(|v| v["level"].as_str().map(str::to_owned))
+                    .is_some_and(|s| s.eq_ignore_ascii_case(l))
+            });
+            if show {
+                print!("{}", redact(&s));
+            }
+            s.clear();
+        }
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn secrets_are_redacted() {
+        protect("unit-test-credential");
+        let s = redact(
+            "unit-test-credential turn://alice:abcd@127.0.0.1 password=\"hidden\" token=hidden&x=1",
+        );
+        assert!(!s.contains("unit-test-credential"));
+        assert!(!s.contains("abcd"));
+        assert!(!s.contains("hidden"));
+        assert!(s.contains("127.0.0.1"));
+    }
+    #[test]
+    fn headers_and_unicode_are_safe() {
+        assert_eq!(
+            redact("Authorization: Bearer confidential\n中文"),
+            "Authorization: [REDACTED]\n中文"
+        );
+        assert!(redact("{\"password\":\"测试密码\"}").contains("[REDACTED]"));
+    }
 }

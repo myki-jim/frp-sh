@@ -128,6 +128,9 @@ impl PunchEngine {
 /// 一些 NAT 对连续端口做连续映射，散布打洞可提高命中率；未命中的端口
 /// 通常无人监听，产生的 ICMP 错误已被上层忽略，无副作用。
 pub fn punch_targets(addr: SocketAddr, spread: u32) -> Vec<SocketAddr> {
+    if addr.ip().is_unspecified() || addr.ip().is_multicast() || addr.port() == 0 {
+        return Vec::new();
+    }
     let mut targets = vec![addr];
     if spread == 0 {
         return targets;

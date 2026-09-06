@@ -16,7 +16,12 @@ fn visible_width(s: &str) -> usize {
         } else if c == '\x1b' {
             in_esc = true;
         } else {
-            w += 1;
+            w += if ('\u{2e80}'..='\u{a4cf}').contains(&c) || ('\u{ff01}'..='\u{ff60}').contains(&c)
+            {
+                2
+            } else {
+                1
+            };
         }
     }
     w
@@ -34,9 +39,22 @@ fn visible_width(s: &str) -> usize {
 ///   └────────────┴──────────────────────────────┘
 /// ```
 pub fn kv_table(rows: &[(&str, String)]) -> String {
+    if crate::terminal::plain() {
+        return rows
+            .iter()
+            .map(|(label, value)| format!("  {}: {}", crate::i18n::message(label), value))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    let labels: Vec<_> = rows.iter().map(|(l, _)| crate::i18n::message(l)).collect();
+    let rows: Vec<_> = rows
+        .iter()
+        .zip(&labels)
+        .map(|((_, value), label)| (label.as_str(), value.clone()))
+        .collect();
     let lw = rows
         .iter()
-        .map(|(l, _)| l.chars().count())
+        .map(|(l, _)| visible_width(l))
         .max()
         .unwrap_or(0);
     let vw = rows
@@ -57,9 +75,9 @@ pub fn kv_table(rows: &[(&str, String)]) -> String {
     let mut out = String::new();
     out.push_str(&rule('┌', '┬', '┐'));
     out.push('\n');
-    for (l, v) in rows {
+    for (l, v) in &rows {
         let pad = " ".repeat(vw.saturating_sub(visible_width(v)));
-        let label = format!("{:<width$}", l, width = lw);
+        let label = format!("{}{}", l, " ".repeat(lw.saturating_sub(visible_width(l))));
         out.push_str(&format!("  │ {} │ {}{} │\n", label.cyan(), v, pad));
     }
     out.push_str(&rule('└', '┴', '┘'));

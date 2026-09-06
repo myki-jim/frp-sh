@@ -8,6 +8,7 @@ use crate::p2p::hole_punch::{
 use crate::p2p::relay::{self, RelayRole};
 use crate::p2p::stream;
 use crate::room::state::{Role, RoomState};
+#[cfg(feature = "server")]
 use crate::signaling::server;
 use crate::signaling::SignalingClient;
 use crate::tunnel;
@@ -20,7 +21,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::net::{TcpListener, UdpSocket};
+#[cfg(feature = "server")]
+use tokio::net::TcpListener;
+use tokio::net::UdpSocket;
 
 /// 打洞窗口时长（超时后转入中继）
 pub const PUNCH_WINDOW: Duration = Duration::from_secs(3);
@@ -34,12 +37,39 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// 由口令派生 32 字节共享密钥（SHA-256）。
 fn derive_key(passphrase: Option<&str>) -> Option<[u8; 32]> {
     passphrase.map(|p| {
+        crate::debuglog::protect(p);
         let mut h = Sha256::new();
         h.update(p.as_bytes());
         h.finalize().into()
     })
 }
 
+async fn probe_address(
+    signaling: &SignalingClient,
+    engine: &PunchEngine,
+    cfg: &Config,
+    token: &str,
+    relay: bool,
+) -> anyhow::Result<SocketAddr> {
+    if relay {
+        return Ok(engine.local_addr()?);
+    }
+    match signaling
+        .learn_public_addr_auto(
+            engine.socket(),
+            cfg.signaling_udp_addr()?,
+            token,
+            cfg.stun_addr_opt().ok().flatten(),
+        )
+        .await
+    {
+        Ok(addr) => Ok(addr),
+        Err(e) => {
+            log::warn!("Address discovery unavailable; local candidates and TCP relay remain available: {e}");
+            Ok(engine.local_addr()?)
+        }
+    }
+}
 // ---------- 数据面：端口转发 或 虚拟网卡 ----------
 
 /// 虚拟网卡（TUN）参数。
@@ -82,8 +112,9 @@ enum ForwardMode {
 
 /// 重连退避：1s, 2s, 4s, 8s, ... 上限 8s（首轮 1s，恢复速度优先）。
 fn reconnect_delay(attempt: u64) -> u64 {
-    let exp = 1u64 << (attempt.min(4) - 1);
-    exp.min(8)
+    let exp = 1u64 << attempt.saturating_sub(1).min(3);
+    use rand::Rng;
+    rand::thread_rng().gen_range(exp.div_ceil(2)..=exp)
 }
 
 // ---------- 输出着色与排版 ----------
@@ -130,23 +161,16 @@ pub fn kv(label: &str, value: impl std::fmt::Display) -> String {
 }
 
 /// 起一个步骤 spinner（`⣾ msg` 动画）。仅作过程动画：结束时用
-/// `finish_and_clear()` 清除本行，随后用 `println!("  {}", ok(..))` 输出结果——
+/// `finish_and_clear()` 清除本行，随后用 `crate::ui_println!("  {}", ok(..))` 输出结果——
 /// 管道/重定向下 indicatif 自动隐藏，结果行不受影响。
 fn spin(msg: impl Into<String>) -> indicatif::ProgressBar {
-    let pb = indicatif::ProgressBar::new_spinner();
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
-    pb.set_style(
-        indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .expect("static spinner template"),
-    );
-    pb.set_message(msg.into());
-    pb
+    crate::terminal::spinner(msg)
 }
 
-// ---------- 权限处理：lan 组网需要管理员/root ----------
+// ---------- Installed network helper ----------
 
-/// 该命令是否需要管理员/root 权限（Windows：UAC 提权；macOS/Linux：sudo）。
-pub fn needs_elevation(command: &Option<crate::cli::Commands>) -> bool {
+/// LAN operations need the installed helper; the CLI stays unprivileged.
+pub fn needs_network_helper(command: &Option<crate::cli::Commands>) -> bool {
     matches!(command, Some(crate::cli::Commands::Lan { .. }))
 }
 
@@ -154,6 +178,7 @@ pub fn needs_elevation(command: &Option<crate::cli::Commands>) -> bool {
 pub fn session_role(command: &Option<crate::cli::Commands>) -> Option<&'static str> {
     use crate::cli::{Commands, DevCmd, GameCmd, LanCmd};
     match command {
+        #[cfg(feature = "server")]
         Some(Commands::Serve { .. }) => Some("serve"),
         Some(Commands::Game {
             cmd: GameCmd::Create(_),
@@ -229,102 +254,12 @@ pub fn acquire_role_lock(role: &str) -> anyhow::Result<()> {
     }
 }
 
-/// 当前进程是否已具备管理员/root 权限。
-pub fn is_elevated() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        // IsUserAnAdmin：判断当前进程是否提升（UAC 提权后返回 true）
-        unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // 非 Windows：检查 euid 是否为 0（root）
-        std::process::Command::new("id")
-            .arg("-u")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-            .unwrap_or(false)
-    }
-}
-
-/// 需要提权但当前未提权时的处理：
-///
-/// - Windows：通过 UAC 以管理员身份重启自身（用户点一次"是"即可），
-///   原进程等待子进程结束后透传退出码，返回 `true`。
-/// - macOS/Linux：打印 `sudo` 提示，返回 `false`（调用方应退出）。
-pub fn handle_elevation(_command: &Option<crate::cli::Commands>) -> anyhow::Result<bool> {
-    #[cfg(target_os = "windows")]
-    {
-        relaunch_elevated()
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        println!(
-            "\nLAN mesh mode requires root privileges (to create a virtual NIC).\nPlease run with sudo, e.g.:\n  sudo frp-sh lan create\n"
-        );
-        Ok(false)
-    }
-}
-
-/// Windows：以管理员身份（UAC）重启自身并等待其退出。
-#[cfg(target_os = "windows")]
-fn relaunch_elevated() -> anyhow::Result<bool> {
-    use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, WaitForSingleObject, INFINITE,
-    };
-    use windows_sys::Win32::UI::Shell::{
-        ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-    };
-
-    let exe = std::env::current_exe()?;
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let cmdline = args.join(" ");
-    let cwd = std::env::current_dir()?;
-
-    let mut file: Vec<u16> = exe.to_string_lossy().encode_utf16().collect();
-    file.push(0);
-    let mut params: Vec<u16> = cmdline.encode_utf16().collect();
-    params.push(0);
-    let mut verb: Vec<u16> = "runas".encode_utf16().collect();
-    verb.push(0);
-    let mut dir: Vec<u16> = cwd.to_string_lossy().encode_utf16().collect();
-    dir.push(0);
-
-    let mut si: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    si.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    si.fMask = SEE_MASK_NOCLOSEPROCESS;
-    si.lpVerb = verb.as_ptr();
-    si.lpFile = file.as_ptr();
-    si.lpParameters = if cmdline.is_empty() {
-        std::ptr::null()
-    } else {
-        params.as_ptr()
-    };
-    si.lpDirectory = dir.as_ptr();
-    si.nShow = 1; // SW_SHOWNORMAL
-
-    println!("Administrator privileges required, requesting UAC elevation (click \"Yes\" in the popup) ...");
-    let launched = unsafe { ShellExecuteExW(&mut si) };
-    if launched == 0 || si.hProcess.is_null() {
-        eprintln!("elevation failed: possibly dismissed the UAC prompt. Please right-click \"Run as administrator\" and retry.");
-        return Ok(false);
-    }
-    unsafe {
-        WaitForSingleObject(si.hProcess, INFINITE);
-        let mut code: u32 = 0;
-        GetExitCodeProcess(si.hProcess, &mut code);
-        std::process::exit(code as i32);
-    }
-    #[allow(unreachable_code)]
-    Ok(true)
-}
-
 /// 打印直连建立信息，并区分本地局域网直连（同 WiFi/网线）与公网打洞直连。
 fn announce_direct(peer: SocketAddr) {
     if utils::is_local_ip(peer.ip()) {
-        println!("  {}", ok(format!("LAN direct with {peer}")));
+        crate::ui_println!("  {}", ok(format!("LAN direct with {peer}")));
     } else {
-        println!(
+        crate::ui_println!(
             "  {}",
             ok(format!("P2P direct link established with {peer}"))
         );
@@ -351,7 +286,8 @@ async fn run_data_plane(
             ip: o.ip.clone(),
             netmask: o.netmask.clone(),
             mtu: o.mtu,
-        })?;
+        })
+        .await?;
         // 实际设备名（macOS 为系统分配的 utunN；Linux 为自定义名；Windows 为 wintun 适配器名）
         let real_name = crate::p2p::tun::device_name(&dev).unwrap_or_else(|| dev_name.to_string());
         crate::stats::update_info(crate::stats::SessionInfo {
@@ -360,7 +296,7 @@ async fn run_data_plane(
             mtu: o.mtu as u32,
             ..Default::default()
         });
-        println!(
+        crate::ui_println!(
             "  {} IP {} / {} (MTU {}, device {real_name})",
             step("virtual NIC mode"),
             o.ip,
@@ -368,9 +304,9 @@ async fn run_data_plane(
             o.mtu
         );
         // Windows：放行虚拟网卡入站流量（否则对端 ping / 访问本机被防火墙拦截）
-        match crate::p2p::tun::allow_firewall(&real_name) {
+        match crate::p2p::tun::allow_firewall(&real_name).await {
             Ok(()) => {
-                println!(
+                crate::ui_println!(
                     "    {}",
                     hint(format!(
                         "firewall opened for {real_name} (peer can ping/access this host)"
@@ -378,17 +314,17 @@ async fn run_data_plane(
                 )
             }
             Err(e) => {
-                println!("    {}", warn(format!("firewall rule failed: {e}")))
+                crate::ui_println!("    {}", warn(format!("firewall rule failed: {e}")))
             }
         }
         // macOS：utun 点对点，需显式添加虚拟网段路由，否则对端回包路由失败（ping 不通）
         if let Some(cidr) = utils::cidr_from_ip_netmask(&o.ip, &o.netmask) {
-            match crate::p2p::tun::add_subnet_route(&cidr, &real_name) {
-                Ok(()) => println!("    subnet route {cidr} → {real_name} added"),
-                Err(e) => println!("    subnet route add failed: {e}"),
+            match crate::p2p::tun::add_subnet_route(&cidr, &real_name).await {
+                Ok(()) => crate::ui_println!("    subnet route {cidr} → {real_name} added"),
+                Err(e) => crate::ui_println!("    subnet route add failed: {e}"),
             }
         }
-        println!(
+        crate::ui_println!(
             "    peer can now access this virtual subnet (e.g. ping {})",
             o.ip
         );
@@ -396,22 +332,24 @@ async fn run_data_plane(
             ForwardMode::Host { .. } => {
                 // 房主：允许内核转发；若访客 --expose-lan，为其局域网子网加路由
                 if !guest_subnets.is_empty() {
-                    let fwd = crate::p2p::tun::enable_ip_forward();
+                    let fwd = crate::helper::forward(&real_name).await.is_ok();
                     for cidr in guest_subnets {
-                        match crate::p2p::tun::add_route(cidr, &real_name, &o.ip) {
+                        match crate::p2p::tun::add_route(cidr, &real_name, &o.ip).await {
                             Ok(()) => {
-                                println!("    route {cidr} → {real_name} added (access guest LAN)")
+                                crate::ui_println!(
+                                    "    route {cidr} → {real_name} added (access guest LAN)"
+                                )
                             }
-                            Err(e) => println!("    route {cidr} add failed: {e}"),
+                            Err(e) => crate::ui_println!("    route {cidr} add failed: {e}"),
                         }
                     }
                     if fwd {
-                        println!(
+                        crate::ui_println!(
                             "    {}",
                             ok("IPv4 forwarding enabled → guest LAN reachable")
                         );
                     } else {
-                        println!(
+                        crate::ui_println!(
                             "    hint: enable IPv4 forwarding to reach the guest LAN\n      Linux: sysctl -w net.ipv4.ip_forward=1"
                         );
                     }
@@ -420,15 +358,19 @@ async fn run_data_plane(
             ForwardMode::Guest { .. } => {
                 // 访客：为房主 --expose-lan 通告的局域网子网添加经 TUN 的路由
                 for cidr in &o.lan_routes {
-                    match crate::p2p::tun::add_route(cidr, &real_name, &o.ip) {
+                    match crate::p2p::tun::add_route(cidr, &real_name, &o.ip).await {
                         Ok(()) => {
-                            println!("    route {cidr} → {real_name} added (access host LAN)")
+                            crate::ui_println!(
+                                "    route {cidr} → {real_name} added (access host LAN)"
+                            )
                         }
-                        Err(e) => println!("    route {cidr} add failed: {e}"),
+                        Err(e) => crate::ui_println!("    route {cidr} add failed: {e}"),
                     }
                 }
                 if !o.lan_routes.is_empty() {
-                    println!("    host LAN is now reachable (e.g. ping a device in the host LAN)");
+                    crate::ui_println!(
+                        "    host LAN is now reachable (e.g. ping a device in the host LAN)"
+                    );
                 }
             }
         }
@@ -476,17 +418,17 @@ pub async fn run_profile(
     match cmd {
         ProfileCmd::List => {
             if cfg.profiles.is_empty() {
-                println!("no profiles yet — add one with:");
-                println!(
+                crate::ui_println!("no profiles yet — add one with:");
+                crate::ui_println!(
                     "  {}",
                     dim("frp-sh profile add --server http://<server>:8080 --room <id> --password <pw>")
                 );
                 return Ok(());
             }
-            println!("{}", "frp-sh profiles".cyan().bold());
+            crate::ui_println!("{}", "frp-sh profiles".cyan().bold());
             for p in cfg.profiles.values() {
                 let star = if p.default { "*" } else { " " };
-                println!(
+                crate::ui_println!(
                     "  {star}{}  [{}] {} · room {} · device {} · pw {}",
                     p.name,
                     p.mode,
@@ -496,7 +438,7 @@ pub async fn run_profile(
                     p.masked_password()
                 );
             }
-            println!(
+            crate::ui_println!(
                 "\n  {}",
                 dim("* = default; run with: frp-sh profile run <name>")
             );
@@ -506,8 +448,8 @@ pub async fn run_profile(
                 .profiles
                 .get(&name)
                 .ok_or_else(|| anyhow::anyhow!("profile {name} not found"))?;
-            println!("{}", format!("profile {name}").cyan().bold());
-            println!(
+            crate::ui_println!("{}", format!("profile {name}").cyan().bold());
+            crate::ui_println!(
                 "{}",
                 utils::kv_table(&[
                     ("Server", p.server.clone()),
@@ -586,11 +528,11 @@ pub async fn run_profile(
                     cfg.mark_default_profile(&n);
                 }
                 save_config(&cfg, config_path.as_deref())?;
-                println!(
+                crate::ui_println!(
                     "  {}",
                     ok(format!("profile {n} updated (duplicate removed)"))
                 );
-                println!(
+                crate::ui_println!(
                     "  {}",
                     hint(format!("start it with: frp-sh profile run {n}"))
                 );
@@ -611,13 +553,13 @@ pub async fn run_profile(
                 expose_lan,
                 default: false,
             };
-            println!("  {}", ok(format!("profile {name} saved")));
+            crate::ui_println!("  {}", ok(format!("profile {name} saved")));
             if set_default {
                 cfg.mark_default_profile(&name);
             }
             cfg.profiles.insert(name.clone(), p);
             save_config(&cfg, config_path.as_deref())?;
-            println!(
+            crate::ui_println!(
                 "  {}",
                 hint(format!("start it with: frp-sh profile run {name}"))
             );
@@ -686,13 +628,13 @@ pub async fn run_profile(
                     cfg.mark_default_profile(&new_name);
                 }
                 save_config(&cfg, config_path.as_deref())?;
-                println!("  {}", ok(format!("profile {new_name} updated")));
+                crate::ui_println!("  {}", ok(format!("profile {new_name} updated")));
             } else {
                 if set_default {
                     cfg.mark_default_profile(&name);
                 }
                 save_config(&cfg, config_path.as_deref())?;
-                println!("  {}", ok(format!("profile {name} updated")));
+                crate::ui_println!("  {}", ok(format!("profile {name} updated")));
             }
         }
         ProfileCmd::Remove { name } => {
@@ -700,7 +642,7 @@ pub async fn run_profile(
                 anyhow::bail!("profile {name} not found");
             }
             save_config(&cfg, config_path.as_deref())?;
-            println!("  {}", ok(format!("profile {name} removed")));
+            crate::ui_println!("  {}", ok(format!("profile {name} removed")));
         }
         ProfileCmd::Run { name } => {
             let p = match name {
@@ -716,7 +658,7 @@ pub async fn run_profile(
             };
             if p.room.trim().is_empty() {
                 anyhow::bail!(
-                    "profile {} has no room yet — open the room on the server panel and copy its join command (it will fill in the room on this profile)",
+                    "profile {} has no room yet — set its room with frp-sh profile edit <name> --room <room>",
                     p.name
                 );
             }
@@ -792,56 +734,13 @@ async fn run_profile_session(p: &crate::config::Profile, base: &Config) -> anyho
 }
 
 // ---------- 面板流量上报 ----------
-/// 周期（2s）把本机链路字节数上报给信令服务器（面板房间详情的设备上下行）。
-///
-/// - `host`：逐链路上报（peer = 对端设备名，mesh 直连/TURN/中继均已按设备名注册）
-/// - `guest`：汇总为单条（peer = "*"）
-///
-/// 房间失效（过期/被删）→ 服务器 404 → 上报循环自动退出。
-fn spawn_traffic_reporter(
-    signaling: SignalingClient,
-    room_id: String,
-    role: &'static str,
-    my_name: Arc<std::sync::RwLock<String>>,
-) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(2));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        tick.tick().await; // interval 首个 tick 立即完成，跳过
-        loop {
-            tick.tick().await;
-            let snap = crate::stats::links_snapshot();
-            if snap.is_empty() {
-                continue; // 尚无链路：不上报（服务器保留旧值）
-            }
-            let links: Vec<(String, u64, u64)> = if role == "guest" {
-                let (mut s, mut r) = (0u64, 0u64);
-                for e in &snap {
-                    s += e.4;
-                    r += e.5;
-                }
-                vec![("*".to_string(), s, r)]
-            } else {
-                snap.iter().map(|e| (e.0.clone(), e.4, e.5)).collect()
-            };
-            let name = my_name.read().unwrap().clone();
-            if let Err(e) = signaling
-                .report_traffic(&room_id, role, &name, &links)
-                .await
-            {
-                log::debug!("traffic reporter stopped: {e}");
-                break;
-            }
-        }
-    });
-}
-
 // ---------- serve ----------
 
 /// `frp-sh serve`：同时提供 HTTP REST、UDP 公网探测、TCP 中继与可选的内置 TURN。
 ///
 /// `udp_addr`：可选独立 UDP 探测端口（云防火墙无法同端口开 TCP+UDP 时使用）；
 /// `turn`：可选内置 TURN 监听地址（RFC 5766，认证复用 `--password`）。
+#[cfg(feature = "server")]
 pub async fn run_serve(
     http_addr: String,
     relay_addr: String,
@@ -850,14 +749,13 @@ pub async fn run_serve(
     turn: Option<String>,
     external_ip: Option<std::net::IpAddr>,
 ) -> anyhow::Result<()> {
-    crate::panel::init_uptime();
     let http_listener = TcpListener::bind(&http_addr).await?;
     let http_sock: SocketAddr = http_listener.local_addr()?;
     let udp = UdpSocket::bind(udp_addr.as_deref().unwrap_or(&http_addr)).await?;
     let relay_listener = TcpListener::bind(&relay_addr).await?;
     let relay_sock: SocketAddr = relay_listener.local_addr()?;
 
-    println!("{}", step("frp-sh signaling server"));
+    crate::ui_println!("{}", step("frp-sh signaling server"));
     let mut server_rows: Vec<(&str, String)> = vec![
         ("HTTP REST", http_sock.to_string()),
         ("UDP echo", udp.local_addr()?.to_string()),
@@ -890,8 +788,8 @@ pub async fn run_serve(
         )),
         None => server_rows.push(("Auth", dim("disabled (no password)"))),
     }
-    println!("{}", utils::kv_table(&server_rows));
-    println!("  {}", dim("(Ctrl-C to stop)"));
+    crate::ui_println!("{}", utils::kv_table(&server_rows));
+    crate::ui_println!("  {}", dim("(Ctrl-C to stop)"));
 
     let state = server::new_state();
     // 对客户端通告的内置 TURN 公网地址：仅在 `--turn` 且启用密码认证时下发。
@@ -923,7 +821,7 @@ pub async fn run_serve(
     let relay_task = tokio::spawn(server::run_relay(relay_listener, state, password));
 
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => { println!("\nshutting down ..."); }
+        _ = tokio::signal::ctrl_c() => { crate::ui_println!("\nshutting down ..."); }
         r = http_task => { r??; }
         r = udp_task => { r??; }
         r = relay_task => { r??; }
@@ -977,14 +875,17 @@ fn normalize_signaling(input: &str) -> anyhow::Result<String> {
 ///
 /// `save_path`：显式保存路径（`--config` 指定）；否则保存到平台默认路径。
 pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
+    if !crate::terminal::interactive() {
+        anyhow::bail!("Configuration requires an interactive terminal; use profile add with explicit arguments.");
+    }
     let mut out = std::io::stdout();
 
-    println!("\n  frp-sh configuration wizard");
-    println!("  ==================");
-    println!("  Enter signaling server info (press Enter for defaults):\n");
+    crate::ui_println!("\n  frp-sh configuration wizard");
+    crate::ui_println!("  ==================");
+    crate::ui_println!("  Enter signaling server info (press Enter for defaults):\n");
 
     // 1. 信令服务器地址
-    print!("  1. Signaling server address (HTTP) [default http://127.0.0.1:8080]\n  > ");
+    crate::ui_print!("  1. Signaling server address (HTTP) [default http://127.0.0.1:8080]\n  > ");
     out.flush()?;
     let signaling_input = read_line();
     let signaling_addr = normalize_signaling(&signaling_input)?;
@@ -995,7 +896,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         .unwrap_or("127.0.0.1")
         .to_string();
     let default_relay = format!("{host}:8081");
-    print!("  2. Relay server address (TCP) [default {default_relay}]\n  > ");
+    crate::ui_print!("  2. Relay server address (TCP) [default {default_relay}]\n  > ");
     out.flush()?;
     let relay_input = read_line();
     let relay_addr = if relay_input.trim().is_empty() {
@@ -1005,12 +906,12 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     };
 
     // 3. UDP 探测独立端口（可选）
-    print!("  3. Use a separate port for UDP probing? (y/N) ");
+    crate::ui_print!("  3. Use a separate port for UDP probing? (y/N) ");
     out.flush()?;
     let udp_input = read_line();
     let want_udp = matches!(udp_input.trim().to_lowercase().as_str(), "y" | "yes");
     let signaling_udp = if want_udp {
-        print!("     Separate UDP probe address (e.g. {host}:8082):\n  > ");
+        crate::ui_print!("     Separate UDP probe address (e.g. {host}:8082):\n  > ");
         out.flush()?;
         let udp_addr = read_line().trim().to_string();
         if udp_addr.is_empty() {
@@ -1023,7 +924,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     };
 
     // 4. 服务器密码（可选）
-    print!("  4. Server password (optional, if the server runs with --password):\n  > ");
+    crate::ui_print!("  4. Server password (optional, if the server runs with --password):\n  > ");
     out.flush()?;
     let pw_input = read_line();
     let password = if pw_input.trim().is_empty() {
@@ -1033,7 +934,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     };
 
     // 5. STUN 服务器（可选；公网地址学习优先走 STUN，失败回退自建 UDP 探测）
-    print!("  5. STUN server (optional, e.g. stun.cloudflare.com:3478):\n  > ");
+    crate::ui_print!("  5. STUN server (optional, e.g. stun.cloudflare.com:3478):\n  > ");
     out.flush()?;
     let stun_input = read_line();
     let stun_addr = if stun_input.trim().is_empty() {
@@ -1043,6 +944,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     };
 
     let cfg = Config {
+        language: None,
         room_tokens: Default::default(),
         signaling_addr,
         relay_addr,
@@ -1063,7 +965,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         })?,
     };
     cfg.save(&path)?;
-    println!(
+    crate::ui_println!(
         "\n  {} {}",
         ok("config saved"),
         dim(path.display().to_string())
@@ -1087,10 +989,10 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
             format!("{s} (public-address learning via STUN first)"),
         ));
     }
-    println!("{}", utils::kv_table(&cfg_rows));
+    crate::ui_println!("{}", utils::kv_table(&cfg_rows));
 
     // 软连通性检查（不阻塞）
-    println!("\n  {}", step("checking server connectivity ..."));
+    crate::ui_println!("\n  {}", step("checking server connectivity ..."));
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()?;
@@ -1100,21 +1002,21 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         .await
     {
         Ok(r) if r.status().is_success() => {
-            println!("  {}", ok("signaling server reachable"));
+            crate::ui_println!("  {}", ok("signaling server reachable"));
         }
-        Ok(_) => println!("  {}", warn("server returned an abnormal status")),
-        Err(_) => println!(
+        Ok(_) => crate::ui_println!("  {}", warn("server returned an abnormal status")),
+        Err(_) => crate::ui_println!(
             "  {} {}",
             warn("cannot reach the signaling server"),
             dim("(check the address and firewall; run frp-sh config again later)")
         ),
     }
 
-    println!("\n  {}", step("next steps"));
-    println!("    {}  host: create a room", dim("frp-sh game create"));
-    println!("    {}  guest: join a room", dim("frp-sh game join 1234"));
-    println!("    {}", dim("frp-sh config  (re-configure)"));
-    println!();
+    crate::ui_println!("\n  {}", step("next steps"));
+    crate::ui_println!("    {}  host: create a room", dim("frp-sh game create"));
+    crate::ui_println!("    {}  guest: join a room", dim("frp-sh game join 1234"));
+    crate::ui_println!("    {}", dim("frp-sh config  (re-configure)"));
+    crate::ui_println!();
     Ok(())
 }
 
@@ -1136,7 +1038,7 @@ async fn check_server_protocol(signaling: &SignalingClient) -> anyhow::Result<()
                 ))));
             }
             if server_ver != crate::version::VERSION {
-                println!(
+                crate::ui_println!(
                     "  {}",
                     warn(format!(
                         "server v{server_ver} differs from local v{} (protocol compatible)",
@@ -1144,7 +1046,7 @@ async fn check_server_protocol(signaling: &SignalingClient) -> anyhow::Result<()
                     ))
                 );
             } else {
-                println!(
+                crate::ui_println!(
                     "{}",
                     kv(
                         "Server",
@@ -1157,7 +1059,7 @@ async fn check_server_protocol(signaling: &SignalingClient) -> anyhow::Result<()
             }
             if auth {
                 if signaling.has_password() {
-                    println!(
+                    crate::ui_println!(
                         "{}",
                         kv("Auth", ok("server requires a password — authenticated"))
                     );
@@ -1169,7 +1071,7 @@ async fn check_server_protocol(signaling: &SignalingClient) -> anyhow::Result<()
             }
         }
         Ok(None) => {
-            println!("{}", kv("Server", dim("legacy (protocol v1 assumed)")));
+            crate::ui_println!("{}", kv("Server", dim("legacy (protocol v1 assumed)")));
         }
         Err(e) => {
             return Err(anyhow::anyhow!(err(format!(
@@ -1187,16 +1089,16 @@ fn show_host_version(host_version: &str) {
     }
     let local = crate::version::VERSION;
     if host_version == local {
-        println!("{}", kv("Host version", format!("v{host_version}")));
+        crate::ui_println!("{}", kv("Host version", format!("v{host_version}")));
     } else if crate::version::is_breaking_gap(local, host_version) {
-        println!(
+        crate::ui_println!(
             "  {}",
             warn(format!(
                 "host v{host_version} vs local v{local} (possible conflict, please align versions)"
             ))
         );
     } else {
-        println!(
+        crate::ui_println!(
             "  {}",
             warn(format!(
                 "host v{host_version} vs local v{local} ({})",
@@ -1210,13 +1112,14 @@ fn show_host_version(host_version: &str) {
 
 /// 中继连接的认证信息：服务器是否启用密码（决定加密）+ 本机配置的密码 token。
 async fn relay_auth_info(signaling: &SignalingClient, cfg: &Config) -> (bool, Option<String>) {
-    let auth = signaling
-        .get_version()
-        .await
-        .ok()
-        .flatten()
-        .map(|(_, _, a)| a)
-        .unwrap_or(false);
+    let auth = cfg.password.is_some()
+        || signaling
+            .get_version()
+            .await
+            .ok()
+            .flatten()
+            .map(|(_, _, a)| a)
+            .unwrap_or(false);
     let token = cfg.password.clone();
     (auth, token)
 }
@@ -1361,14 +1264,7 @@ pub async fn run_create(
     let engine = PunchEngine::bind().await?;
     let token = utils::rand_token();
     let probe_sp = spin("probing public address ...");
-    let my_ext = signaling
-        .learn_public_addr_auto(
-            engine.socket(),
-            cfg.signaling_udp_addr()?,
-            &token,
-            cfg.stun_addr_opt().ok().flatten(),
-        )
-        .await?;
+    let my_ext = probe_address(&signaling, &engine, &cfg, &token, force_relay).await?;
     probe_sp.finish_and_clear();
     log::info!("public address: {my_ext}");
     let tun_ip = tun.as_ref().map(|t| t.ip.clone());
@@ -1411,11 +1307,10 @@ pub async fn run_create(
         my_id: cfg.uuid.clone().unwrap_or_default(),
         device_name: crate::config::device_name(cfg.name.as_deref()),
         started_at: utils::now_unix() as i64,
-        password: cfg.password.clone().unwrap_or_default(),
         relay_addr: cfg.relay_addr.clone(),
         ..Default::default()
     });
-    println!("\n  {}", ok(format!("Room created : {room_id}")));
+    crate::ui_println!("\n  {}", ok(format!("Room created : {room_id}")));
     let mut host_rows: Vec<(&str, String)> = vec![("Signaling", cfg.signaling_addr.clone())];
     if let Some(u) = &cfg.uuid {
         host_rows.push(("Your ID", u.clone()));
@@ -1452,8 +1347,8 @@ pub async fn run_create(
     if key.is_some() {
         host_rows.push(("Encryption", "on (--key)".into()));
     }
-    println!("{}", utils::kv_table(&host_rows));
-    println!("\n  {}", dim("Waiting for a guest to join ..."));
+    crate::ui_println!("{}", utils::kv_table(&host_rows));
+    crate::ui_println!("\n  {}", dim("Waiting for a guest to join ..."));
 
     let session = host_session(
         &cfg,
@@ -1470,7 +1365,7 @@ pub async fn run_create(
     tokio::select! {
         r = session => r?,
         _ = tokio::signal::ctrl_c() => {
-            println!("\nstopped by user");
+            crate::ui_println!("\nstopped by user");
             let _ = signaling.delete_room(&room_id).await;
         }
     }
@@ -1517,19 +1412,10 @@ pub async fn host_session(
         device_name: crate::config::device_name(cfg.name.as_deref()),
         encryption: key.is_some(),
         started_at: utils::now_unix() as i64,
-        password: cfg.password.clone().unwrap_or_default(),
         relay_addr: cfg.relay_addr.clone(),
         ..Default::default()
     });
     // 面板房间详情：周期上报本机链路流量（设备上下行）
-    spawn_traffic_reporter(
-        signaling.clone(),
-        room_id.to_string(),
-        "host",
-        Arc::new(std::sync::RwLock::new(crate::config::device_name(
-            cfg.name.as_deref(),
-        ))),
-    );
 
     // lan 模式（虚拟网卡）→ 网格会话：多访客全互联
     if let Some(t) = &tun {
@@ -1555,7 +1441,7 @@ pub async fn host_session(
         });
         if attempt > 1 {
             let wait = reconnect_delay(attempt);
-            println!(
+            crate::ui_println!(
                 "\n  {}",
                 warn(format!(
                     "connection lost, reconnecting in {wait} seconds (Ctrl-C to exit)"
@@ -1567,14 +1453,7 @@ pub async fn host_session(
         let engine = PunchEngine::bind().await?;
         let token = utils::rand_token();
         let probe_sp = spin("probing public address ...");
-        let my_ext = signaling
-            .learn_public_addr_auto(
-                engine.socket(),
-                cfg.signaling_udp_addr()?,
-                &token,
-                cfg.stun_addr_opt().ok().flatten(),
-            )
-            .await?;
+        let my_ext = probe_address(&signaling, &engine, cfg, &token, force_relay).await?;
         probe_sp.finish_and_clear();
         log::info!("public address: {my_ext}");
         let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
@@ -1585,7 +1464,7 @@ pub async fn host_session(
             Vec::new()
         };
         // TURN：客户端自配供应商优先，否则用信令服务器下发的内置 TURN；refresh 时通告 relay 地址
-        if turn_client.is_none() {
+        if turn_client.is_none() && !force_relay {
             let offer = signaling
                 .get_room(room_id)
                 .await
@@ -1603,7 +1482,7 @@ pub async fn host_session(
             // 房间已失效（过期/被删）→ 无法继续，结束
             return Err(e.into());
         }
-        // 面板：本端公网/局域网地址 + 房内对端设备名
+        // 终端：本端公网/局域网地址 + 房内对端设备名
         crate::stats::update_info(crate::stats::SessionInfo {
             ext_addr: my_ext.to_string(),
             lan_addrs: utils::lan_socket_addrs(engine.local_addr()?.port())
@@ -1667,7 +1546,7 @@ pub async fn host_session(
                     None
                 };
                 if let (Some(tc), Some(gr)) = (turn_client.take(), guest_relay) {
-                    println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
+                    crate::ui_println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, gr, key_bytes).await {
                         Ok((stream, _st)) => {
                             let r = run_data_plane(
@@ -1693,7 +1572,7 @@ pub async fn host_session(
                         Err(e) => log::warn!("TURN relay failed: {e}"),
                     }
                 }
-                println!(
+                crate::ui_println!(
                     "  {}",
                     warn("UDP hole punching failed, falling back to relay")
                 );
@@ -1735,7 +1614,7 @@ pub async fn host_session(
                         continue;
                     }
                 };
-                println!("  {}", ok("relay connected, waiting for guest"));
+                crate::ui_println!("  {}", ok("relay connected, waiting for guest"));
                 run_data_plane(
                     stream,
                     tun.as_ref(),
@@ -1751,7 +1630,7 @@ pub async fn host_session(
         if let Err(e) = run_result {
             log::warn!("session ended abnormally: {e}");
         } else {
-            println!("\n  {}", warn("session ended, preparing to reconnect ..."));
+            crate::ui_println!("\n  {}", warn("session ended, preparing to reconnect ..."));
         }
         if let Some(n) = max_rounds {
             if attempt >= n {
@@ -1912,7 +1791,7 @@ pub async fn run_join(
         ));
     }
     if !pre_rows.is_empty() {
-        println!("{}", utils::kv_table(&pre_rows));
+        crate::ui_println!("{}", utils::kv_table(&pre_rows));
     }
     let session = guest_session(
         &cfg,
@@ -1930,7 +1809,7 @@ pub async fn run_join(
     tokio::select! {
         r = session => r?,
         _ = tokio::signal::ctrl_c() => {
-            println!("\nstopped by user");
+            crate::ui_println!("\nstopped by user");
         }
     }
     Ok(())
@@ -1982,20 +1861,10 @@ pub async fn guest_session(
         device_name: crate::config::device_name(cfg.name.as_deref()),
         encryption: key.is_some(),
         started_at: utils::now_unix() as i64,
-        password: cfg.password.clone().unwrap_or_default(),
         relay_addr: cfg.relay_addr.clone(),
         ..Default::default()
     });
     // 面板房间详情：周期上报自身上下行；join 成功后把名字换成服务器去重名
-    let traffic_name = Arc::new(std::sync::RwLock::new(crate::config::device_name(
-        cfg.name.as_deref(),
-    )));
-    spawn_traffic_reporter(
-        signaling.clone(),
-        room_id.to_string(),
-        "guest",
-        traffic_name.clone(),
-    );
     // TURN 链路异常断开的标记：TURN 建立（对端 relay 也在）但对端没在同一通道上
     // 收发（典型：房主端超时先走了 TCP 中继等配对，两端会师失败）时，访客若每轮
     // 固执重试 TURN 就会死循环。置位后后续轮次跳过 TURN，直走 TCP 中继与房主会师。
@@ -2012,7 +1881,7 @@ pub async fn guest_session(
         });
         if !first {
             let wait = reconnect_delay(attempt);
-            println!(
+            crate::ui_println!(
                 "\n  {}",
                 warn(format!(
                     "connection lost, reconnecting in {wait} seconds (Ctrl-C to exit)"
@@ -2030,6 +1899,7 @@ pub async fn guest_session(
             Err(FrpError::RoomNotFound(_)) => {
                 return Err(FrpError::RoomNotFound(room_id.to_string()).into());
             }
+            Err(e @ FrpError::Signaling(_)) => return Err(e.into()),
             Err(e) => {
                 log::warn!("failed to query room: {e}");
                 continue;
@@ -2058,7 +1928,7 @@ pub async fn guest_session(
                 .cloned()
                 .collect();
             if !skipped.is_empty() {
-                println!(
+                crate::ui_println!(
                     "  {}: {}",
                     warn("skipping host subnets overlapping local subnets"),
                     skipped.join(", ")
@@ -2069,25 +1939,17 @@ pub async fn guest_session(
         // 刷新本机公网地址并登记（NAT 映射可能已过期）
         let token = utils::rand_token();
         let probe_sp = spin("probing public address ...");
-        let my_ext = match signaling
-            .learn_public_addr_auto(
-                engine.socket(),
-                cfg.signaling_udp_addr()?,
-                &token,
-                cfg.stun_addr_opt().ok().flatten(),
-            )
-            .await
-        {
-            Ok(a) => a,
-            Err(e) => {
-                probe_sp.finish_and_clear();
-                log::warn!("public address probe failed: {e}");
-                continue;
-            }
-        };
+        let my_ext = probe_address(
+            &signaling,
+            &engine,
+            cfg,
+            &token,
+            force_relay || direct_broke || punch_exhausted,
+        )
+        .await?;
         probe_sp.finish_and_clear();
         let my_lan = utils::lan_socket_addrs(engine.local_addr()?.port());
-        // 面板：本端公网/局域网地址
+        // 终端：本端公网/局域网地址
         crate::stats::update_info(crate::stats::SessionInfo {
             ext_addr: my_ext.to_string(),
             lan_addrs: my_lan
@@ -2108,7 +1970,8 @@ pub async fn guest_session(
         // turn_broke 置位后不再分配/尝试 TURN；punch_exhausted 后同样不分配、
         // 也不通告（房主轮询 5s 拿不到即直接落 TCP 中继，避免在 TURN 上空等错位）。
         let mut turn_relay: Option<SocketAddr> = None;
-        if turn_client.is_none() && !turn_broke && !punch_exhausted {
+        if turn_client.is_none() && !force_relay && !direct_broke && !turn_broke && !punch_exhausted
+        {
             if let Ok(Some(c)) = try_turn_connect_with_offer(cfg, info.server_turn).await {
                 turn_relay = Some(c.relay);
                 turn_client = Some(c);
@@ -2133,11 +1996,8 @@ pub async fn guest_session(
             .await
         {
             Ok(join) => {
-                println!("\n  {}", ok(format!("Joined room : {}", join.room_id)));
+                crate::ui_println!("\n  {}", ok(format!("Joined room : {}", join.room_id)));
                 // 服务器侧去重后的设备名（流量上报按它归属）
-                if let Some(n) = &join.name {
-                    *traffic_name.write().unwrap() = n.clone();
-                }
                 let mut guest_rows: Vec<(&str, String)> =
                     vec![("Host address", join.host_addr.to_string())];
                 if let Some(ip) = &host_tun_ip {
@@ -2163,8 +2023,8 @@ pub async fn guest_session(
                     guest_rows.push(("Encryption", "on (--key)".into()));
                 }
                 show_host_version(&info.host_version);
-                println!("{}", utils::kv_table(&guest_rows));
-                println!("\n  {}", dim("Punching through NAT ..."));
+                crate::ui_println!("{}", utils::kv_table(&guest_rows));
+                crate::ui_println!("\n  {}", dim("Punching through NAT ..."));
             }
             Err(e) => {
                 log::warn!("failed to join room: {e}");
@@ -2195,7 +2055,7 @@ pub async fn guest_session(
                 state.peer_addr = Some(peer);
                 announce_direct(peer);
                 let stream = engine.into_stream(peer, first, key_bytes);
-                // 面板：访客视角链路对端是房主 → peer 统一显示 "host"
+                // 终端：访客视角链路对端是房主 → peer 统一显示 "host"
                 crate::stats::remove_link(&peer.to_string());
                 crate::stats::push_link(crate::stats::LinkEntry {
                     peer: "host".into(),
@@ -2229,7 +2089,7 @@ pub async fn guest_session(
                         log::info!(
                             "punch failed {punch_fails}/{retries} rounds: skipping punch and TURN from now on, using TCP relay directly"
                         );
-                        println!(
+                        crate::ui_println!(
                             "  {}",
                             warn(format!(
                                 "punch failed {punch_fails} time(s) — switching to TCP relay for good (tune with --punch-retries)"
@@ -2256,10 +2116,10 @@ pub async fn guest_session(
                     None
                 };
                 if let (Some(tc), Some(hr)) = (turn_client.take(), host_relay) {
-                    println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
+                    crate::ui_println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, hr, key_bytes).await {
                         Ok((stream, st)) => {
-                            // 面板：访客视角对端是房主
+                            // 终端：访客视角对端是房主
                             crate::stats::remove_link(&hr.to_string());
                             crate::stats::push_link(crate::stats::LinkEntry {
                                 peer: "host".into(),
@@ -2294,7 +2154,7 @@ pub async fn guest_session(
                     }
                 }
                 // 2) 私有 TCP 中继（现状）
-                println!("  {}", warn("UDP hole punching failed, trying relay"));
+                crate::ui_println!("  {}", warn("UDP hole punching failed, trying relay"));
                 let relay_addr = match cfg.relay_addr.parse() {
                     Ok(a) => a,
                     Err(e) => {
@@ -2341,7 +2201,7 @@ pub async fn guest_session(
                 };
                 if force_relay {
                     // 强制中继：不再尝试任何打洞
-                    println!("  {}", ok("relay connected, waiting for host"));
+                    crate::ui_println!("  {}", ok("relay connected, waiting for host"));
                     run_data_plane(
                         stream,
                         tun.as_ref(),
@@ -2371,7 +2231,7 @@ pub async fn guest_session(
                             .await
                         }
                         _ => {
-                            println!("  {}", ok("relay connected, waiting for host"));
+                            crate::ui_println!("  {}", ok("relay connected, waiting for host"));
                             run_data_plane(
                                 stream,
                                 tun.as_ref(),
@@ -2390,7 +2250,7 @@ pub async fn guest_session(
         if let Err(e) = run_result {
             log::warn!("session ended abnormally: {e}");
         } else {
-            println!("\n  {}", warn("session ended, preparing to reconnect ..."));
+            crate::ui_println!("\n  {}", warn("session ended, preparing to reconnect ..."));
         }
         if let Some(n) = max_rounds {
             if attempt >= n {
@@ -2619,14 +2479,6 @@ pub async fn host_mesh_session(
         .parse()
         .map_err(|e| anyhow::anyhow!("bad relay addr {}: {e}", cfg.relay_addr))?;
     // 面板房间详情：周期上报每条访客链路的流量（对端设备名 → 服务器按名归属）
-    spawn_traffic_reporter(
-        signaling.clone(),
-        room_id.to_string(),
-        "host",
-        Arc::new(std::sync::RwLock::new(crate::config::device_name(
-            cfg.name.as_deref(),
-        ))),
-    );
 
     // 网格数据平面：TUN 一次创建，重连只重建对端链路（测试可传 None 跳过 TUN）
     let (plane, mut dead_rx) = crate::p2p::tun::MeshPlane::new();
@@ -2638,18 +2490,19 @@ pub async fn host_mesh_session(
             ip: t.ip.clone(),
             netmask: t.netmask.clone(),
             mtu: t.mtu,
-        })?;
+        })
+        .await?;
         real_name = crate::p2p::tun::device_name(&dev).unwrap_or_else(|| "frp0".to_string());
-        println!(
+        crate::ui_println!(
             "  {} IP {} / {} (MTU {}, device {real_name})",
             step("virtual NIC mode"),
             t.ip,
             t.netmask,
             t.mtu
         );
-        match crate::p2p::tun::allow_firewall(&real_name) {
+        match crate::p2p::tun::allow_firewall(&real_name).await {
             Ok(()) => {
-                println!(
+                crate::ui_println!(
                     "    {}",
                     hint(format!(
                         "firewall opened for {real_name} (peer can ping/access this host)"
@@ -2657,16 +2510,16 @@ pub async fn host_mesh_session(
                 )
             }
             Err(e) => {
-                println!("    {}", warn(format!("firewall rule failed: {e}")))
+                crate::ui_println!("    {}", warn(format!("firewall rule failed: {e}")))
             }
         }
         if let Some(cidr) = utils::cidr_from_ip_netmask(&t.ip, &t.netmask) {
-            match crate::p2p::tun::add_subnet_route(&cidr, &real_name) {
-                Ok(()) => println!("    subnet route {cidr} → {real_name} added"),
-                Err(e) => println!("    subnet route add failed: {e}"),
+            match crate::p2p::tun::add_subnet_route(&cidr, &real_name).await {
+                Ok(()) => crate::ui_println!("    subnet route {cidr} → {real_name} added"),
+                Err(e) => crate::ui_println!("    subnet route add failed: {e}"),
             }
         }
-        println!(
+        crate::ui_println!(
             "    peer can now access this virtual subnet (e.g. ping {})",
             t.ip
         );
@@ -2687,7 +2540,7 @@ pub async fn host_mesh_session(
         });
         if attempt > 1 {
             let wait = reconnect_delay(attempt);
-            println!(
+            crate::ui_println!(
                 "\n  {}",
                 warn(format!(
                     "connection lost, reconnecting in {wait} seconds (Ctrl-C to exit)"
@@ -2698,14 +2551,7 @@ pub async fn host_mesh_session(
         let engine = PunchEngine::bind().await?;
         let token = utils::rand_token();
         let probe_sp = spin("probing public address ...");
-        let my_ext = signaling
-            .learn_public_addr_auto(
-                engine.socket(),
-                cfg.signaling_udp_addr()?,
-                &token,
-                cfg.stun_addr_opt().ok().flatten(),
-            )
-            .await?;
+        let my_ext = probe_address(&signaling, &engine, cfg, &token, force_relay).await?;
         probe_sp.finish_and_clear();
         log::info!("public address: {my_ext}");
         let lan_addrs = utils::lan_socket_addrs(engine.local_addr()?.port());
@@ -2953,7 +2799,8 @@ async fn mesh_host_loop(
                     &mut established,
                     tun,
                     real_name,
-                );
+                )
+                .await;
                 established_peer.insert(uuid, src);
             }
         }
@@ -3019,7 +2866,7 @@ async fn mesh_host_loop(
             }
             if let Some(gr) = gr {
                 if let Some(tc) = turn_client.take() {
-                    println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
+                    crate::ui_println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, gr, key_bytes).await {
                         Ok((stream, turn_st)) => {
                             if let Some(p) = pending.remove(&uuid) {
@@ -3114,7 +2961,7 @@ async fn mesh_host_loop(
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
                 if let (Some(gr), Some(tc)) = (gr, turn_client.take()) {
-                    println!("  {}", warn("switching to TURN relay"));
+                    crate::ui_println!("  {}", warn("switching to TURN relay"));
                     match turn_data_plane(tc, gr, key_bytes).await {
                         Ok((stream, turn_st)) => {
                             if let Some(p) = pending.remove(&uuid) {
@@ -3272,7 +3119,7 @@ async fn mesh_host_loop(
 
 /// 建立直连链路：注册网格流 + 数据平面路由 + 访客局域网内核路由。
 #[allow(clippy::too_many_arguments)]
-fn mesh_establish_link(
+async fn mesh_establish_link(
     mesh: &crate::p2p::stream::UdpMesh,
     plane: &Arc<crate::p2p::tun::MeshPlane>,
     dispatch_tx: &tokio::sync::mpsc::UnboundedSender<(String, Vec<u8>)>,
@@ -3287,9 +3134,11 @@ fn mesh_establish_link(
     // 访客 --expose-lan 通告的局域网子网 → 经虚拟网卡路由（本机访问访客局域网）
     if let Some(t) = tun {
         for cidr in &info.subnets {
-            match crate::p2p::tun::add_route(cidr, real_name, &t.ip) {
-                Ok(()) => println!("    route {cidr} → {real_name} added (access guest LAN)"),
-                Err(e) => println!("    route {cidr} add failed: {e}"),
+            match crate::p2p::tun::add_route(cidr, real_name, &t.ip).await {
+                Ok(()) => {
+                    crate::ui_println!("    route {cidr} → {real_name} added (access guest LAN)")
+                }
+                Err(e) => crate::ui_println!("    route {cidr} add failed: {e}"),
             }
         }
     }

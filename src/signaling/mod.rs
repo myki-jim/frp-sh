@@ -1,6 +1,7 @@
 //! 信令层：REST 客户端 + axum 服务端 + UDP 公网探测 + TCP 中继。
 
 pub mod client;
+#[cfg(feature = "server")]
 pub mod server;
 
 pub use client::SignalingClient;

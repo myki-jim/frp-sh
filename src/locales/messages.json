@@ -1,0 +1,338 @@
+[
+  [
+    "Server password (optional, if the server runs with --password)",
+    "服务器密码（可选，与服务端 --password 对应）"
+  ],
+  [
+    "Enter signaling server info (press Enter for defaults):",
+    "输入信令服务器信息（回车使用默认值）："
+  ],
+  [
+    "STUN server (optional, e.g. stun.cloudflare.com:3478)",
+    "STUN 服务器（可选，例如 stun.cloudflare.com:3478）"
+  ],
+  [
+    "UDP hole punching failed, trying TURN relay",
+    "UDP 打洞失败，正在尝试 TURN 中继"
+  ],
+  [
+    "session ended, preparing to reconnect ...",
+    "会话结束，准备重连…"
+  ],
+  [
+    "UDP hole punching failed, trying relay",
+    "UDP 打洞失败，正在尝试 TCP 中继"
+  ],
+  [
+    "Use a separate port for UDP probing?",
+    "UDP 探测使用独立端口？"
+  ],
+  [
+    "For more information, try '--help'.",
+    "更多信息请运行 --help。"
+  ],
+  [
+    "relay connected, waiting for guest",
+    "中继已连接，等待访客"
+  ],
+  [
+    "server returned an abnormal status",
+    "服务器返回异常状态"
+  ],
+  [
+    "cannot reach the signaling server",
+    "无法连接信令服务器"
+  ],
+  [
+    "relay connected, waiting for host",
+    "中继已连接，等待房主"
+  ],
+  [
+    "checking server connectivity ...",
+    "正在检查服务器连接…"
+  ],
+  [
+    "P2P direct link established with",
+    "公网直连已建立："
+  ],
+  [
+    "connection lost, reconnecting in",
+    "连接断开，即将重连，等待"
+  ],
+  [
+    "Signaling server address (HTTP)",
+    "信令服务器地址（HTTP）"
+  ],
+  [
+    "Waiting for a guest to join ...",
+    "等待访客加入…"
+  ],
+  [
+    "no profiles yet — add one with:",
+    "尚无连接配置，可用以下命令添加："
+  ],
+  [
+    "error: unrecognized subcommand",
+    "错误：未知子命令"
+  ],
+  [
+    "frp-sh configuration wizard",
+    "frp-sh 配置向导"
+  ],
+  [
+    "Relay server address (TCP)",
+    "中继服务器地址（TCP）"
+  ],
+  [
+    "Separate UDP probe address",
+    "独立 UDP 探测地址"
+  ],
+  [
+    "signaling server reachable",
+    "信令服务器可用"
+  ],
+  [
+    "probing public address ...",
+    "正在探测公网地址…"
+  ],
+  [
+    "room not found or expired:",
+    "房间不存在或已过期："
+  ],
+  [
+    "Network helper unavailable",
+    "网络辅助服务不可用"
+  ],
+  [
+    "error: unexpected argument",
+    "错误：未知参数"
+  ],
+  [
+    "allocating TURN relay ...",
+    "正在申请 TURN 中继…"
+  ],
+  [
+    "allocating TURN relay at",
+    "正在申请 TURN 中继："
+  ],
+  [
+    "Punching through NAT ...",
+    "正在穿透 NAT…"
+  ],
+  [
+    "seconds (Ctrl-C to exit)",
+    "秒（Ctrl-C 退出）"
+  ],
+  [
+    "learning public address",
+    "正在探测公网地址"
+  ],
+  [
+    "Network helper is ready",
+    "网络辅助服务就绪"
+  ],
+  [
+    "switching to TURN relay",
+    "正在切换到 TURN 中继"
+  ],
+  [
+    "frp-sh signaling server",
+    "frp-sh 信令服务器"
+  ],
+  [
+    "signaling server error:",
+    "信令服务器错误："
+  ],
+  [
+    "punching to guest ...",
+    "正在连接访客…"
+  ],
+  [
+    "punching to host ...",
+    "正在连接房主…"
+  ],
+  [
+    "error: invalid value",
+    "错误：无效参数值"
+  ],
+  [
+    "connecting to relay",
+    "正在连接中继"
+  ],
+  [
+    "waiting for guest",
+    "等待访客"
+  ],
+  [
+    "shutting down ...",
+    "正在关闭…"
+  ],
+  [
+    "TUN device error:",
+    "虚拟网卡错误："
+  ],
+  [
+    "virtual NIC mode",
+    "虚拟网卡模式"
+  ],
+  [
+    "Common commands:",
+    "常用命令："
+  ],
+  [
+    "waiting for host",
+    "等待房主"
+  ],
+  [
+    "(Ctrl-C to stop)",
+    "（Ctrl-C 停止）"
+  ],
+  [
+    "LAN direct with",
+    "局域网直连："
+  ],
+  [
+    "stopped by user",
+    "用户已停止"
+  ],
+  [
+    "frp-sh profiles",
+    "frp-sh 连接配置"
+  ],
+  [
+    "Room created :",
+    "房间已创建："
+  ],
+  [
+    "Public address",
+    "公网地址"
+  ],
+  [
+    "Local service",
+    "本地服务"
+  ],
+  [
+    "Joined room :",
+    "已加入房间："
+  ],
+  [
+    "LAN addresses",
+    "局域网地址"
+  ],
+  [
+    "config error:",
+    "配置错误："
+  ],
+  [
+    "config saved",
+    "配置已保存"
+  ],
+  [
+    "Host version",
+    "房主版本"
+  ],
+  [
+    "Join command",
+    "加入命令"
+  ],
+  [
+    "next steps",
+    "下一步"
+  ],
+  [
+    "Encryption",
+    "加密"
+  ],
+  [
+    "Arguments:",
+    "参数："
+  ],
+  [
+    "Max guests",
+    "访客上限"
+  ],
+  [
+    "Virtual IP",
+    "虚拟 IP"
+  ],
+  [
+    "UDP probe",
+    "UDP 探测"
+  ],
+  [
+    "Guest IPs",
+    "访客 IP"
+  ],
+  [
+    "Signaling",
+    "信令"
+  ],
+  [
+    "Encrypted",
+    "已加密"
+  ],
+  [
+    "Reconnect",
+    "重连"
+  ],
+  [
+    "Commands:",
+    "命令："
+  ],
+  [
+    "Transport",
+    "传输"
+  ],
+  [
+    "Password",
+    "密码"
+  ],
+  [
+    "Options:",
+    "选项："
+  ],
+  [
+    "Your ID",
+    "设备 ID"
+  ],
+  [
+    "Room ID",
+    "房间号"
+  ],
+  [
+    "Network",
+    "网络"
+  ],
+  [
+    "Usage:",
+    "用法："
+  ],
+  [
+    "Device",
+    "设备"
+  ],
+  [
+    "Listen",
+    "监听"
+  ],
+  [
+    "Server",
+    "服务器"
+  ],
+  [
+    "Relay",
+    "中继"
+  ],
+  [
+    "My IP",
+    "本机 IP"
+  ],
+  [
+    "Share",
+    "分享"
+  ],
+  [
+    "Mode",
+    "模式"
+  ]
+]
