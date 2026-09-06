@@ -1844,7 +1844,7 @@ pub async fn guest_session(
     // 避免每个重连轮都复现同样的 3s 死链、无限循环。
     let mut direct_broke = false;
     // 打洞降级策略（--punch-retries，默认 1）：打洞失败累计达到上限后，
-    // 后续轮次不再尝试打洞和 TURN，直接走 TCP 中继（更快到达稳定链路）。
+    // 后续轮次不再重复直连探测；TURN 与 TCP 按各自可用性回退。
     let mut punch_fails: u32 = 0;
     let mut punch_exhausted = false;
     // 终端基础信息
@@ -1961,11 +1961,10 @@ pub async fn guest_session(
         };
         // TURN：客户端自配供应商优先，否则用信令服务器下发的内置 TURN；
         // 加入时通告本端 relay 地址（房主据此建立 TURN 链路）。
-        // turn_broke 置位后不再分配/尝试 TURN；punch_exhausted 后同样不分配、
-        // 也不通告（房主轮询 5s 拿不到即直接落 TCP 中继，避免在 TURN 上空等错位）。
+        // Direct punch exhaustion does not imply TURN failure. Keep the advertised
+        // TURN allocation alive until it has actually been tried by both peers.
         let mut turn_relay: Option<SocketAddr> = None;
-        if turn_client.is_none() && !force_relay && !direct_broke && !turn_broke && !punch_exhausted
-        {
+        if turn_client.is_none() && !force_relay && !direct_broke && !turn_broke {
             if let Ok(Some(c)) = try_turn_connect_with_offer(cfg, info.server_turn).await {
                 turn_relay = Some(c.relay);
                 turn_client = Some(c);
@@ -2081,20 +2080,19 @@ pub async fn guest_session(
                     if !punch_exhausted && punch_fails >= retries {
                         punch_exhausted = true;
                         log::info!(
-                            "punch failed {punch_fails}/{retries} rounds: skipping punch and TURN from now on, using TCP relay directly"
+                            "punch failed {punch_fails}/{retries} rounds: skipping further direct probes; TURN remains eligible"
                         );
                         crate::ui_println!(
                             "  {}",
                             warn(format!(
-                                "punch failed {punch_fails} time(s) — switching to TCP relay for good (tune with --punch-retries)"
+                                "punch failed {punch_fails} time(s) — using relay fallback without repeating direct probes"
                             ))
                         );
                     }
                 }
-                // 1) TURN 中继（配置了供应商或服务器下发内置 TURN 时；punch 用尽后跳过，
-                //    直接走 TCP 中继——重试打洞只会重复同样的失败路径）。
+                // 1) TURN is an independent relay candidate, even after direct punching fails.
                 //    turn_broke（上一轮 TURN 链路异常断开）后同样跳过 TURN，与房主会师。
-                let host_relay = if turn_client.is_some() && !turn_broke && !punch_exhausted {
+                let host_relay = if turn_client.is_some() && !turn_broke {
                     let mut hr = None;
                     for _ in 0..20 {
                         if let Ok(r) = signaling.get_room(room_id).await {
@@ -2109,6 +2107,9 @@ pub async fn guest_session(
                 } else {
                     None
                 };
+                // No usable TURN path this round: reconnect through TCP without
+                // advertising another allocation that the host would wait for.
+                turn_broke = true;
                 if let (Some(tc), Some(hr)) = (turn_client.take(), host_relay) {
                     crate::ui_println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
                     match turn_data_plane(tc, hr, key_bytes).await {
@@ -2193,7 +2194,7 @@ pub async fn guest_session(
                         continue;
                     }
                 };
-                if force_relay {
+                if force_relay || punch_exhausted || direct_broke {
                     // 强制中继：不再尝试任何打洞
                     crate::ui_println!("  {}", ok("relay connected, waiting for host"));
                     run_data_plane(
@@ -2243,6 +2244,7 @@ pub async fn guest_session(
         };
         if let Err(e) = run_result {
             log::warn!("session ended abnormally: {e}");
+            crate::ui_println!("  {}", warn(format!("connection lost: {e}")));
         } else {
             crate::ui_println!("\n  {}", warn("session ended, preparing to reconnect ..."));
         }
@@ -2660,6 +2662,9 @@ async fn mesh_host_loop(
         .unwrap_or_else(Instant::now);
     // TURN 链路异常死亡锁存：置位后本会话不再尝试 TURN，一律走 TCP 中继
     let mut turn_dead = false;
+    // A guest without a usable TURN offer must proceed to TCP on the next pass.
+    // Track failures per guest so one peer cannot disable TURN for everyone.
+    let mut turn_failed = std::collections::HashSet::new();
     // 直连链路的规范对端地址（uuid → 建链时观察到的来源）：后续信号从其他通告地址
     // 到达时登记别名，保证数据帧从任一路径都能路由到同一条流
     let mut established_peer: HashMap<String, SocketAddr> = HashMap::new();
@@ -2826,14 +2831,14 @@ async fn mesh_host_loop(
                 // 有 TURN 客户端时优先走 TURN（UDP 中继，延迟优于 TCP 中继）；
                 // 在循环外处理（要 await 轮询 + remove pending，借用冲突）。
                 // turn_dead：本会话已有 TURN 链路异常死亡 → 一律走 TCP 中继会师。
-                if turn_client.is_some() && !turn_dead {
+                if turn_client.is_some() && !turn_dead && !turn_failed.contains(uuid) {
                     p.relay_attempted = true;
                     turn_attempt = Some(uuid.clone());
                     continue;
                 }
                 p.relay_attempted = true;
                 p.relay_at = Some(now);
-                if turn_client.is_some() {
+                if turn_client.is_some() && !turn_failed.contains(uuid) {
                     turn_retry.insert(uuid.clone(), now);
                 }
                 let uuid_c = uuid.clone();
@@ -2916,6 +2921,7 @@ async fn mesh_host_loop(
                 log::info!("guest {uuid} has no TURN relay advertised; falling back to TCP relay");
             }
             // TURN 不可用/失败 → 交还 TCP 中继路径（清除标记，下一轮立即 spawn）
+            turn_failed.insert(uuid.clone());
             if let Some(p) = pending.get_mut(&uuid) {
                 p.relay_attempted = false;
                 p.relay_at = None;
@@ -2946,6 +2952,7 @@ async fn mesh_host_loop(
             let mut retry: Option<String> = None;
             for (uuid, t) in turn_retry.iter() {
                 if pending.contains_key(uuid)
+                    && !turn_failed.contains(uuid)
                     && !established.contains_key(uuid)
                     && now.duration_since(*t) >= Duration::from_secs(5)
                 {

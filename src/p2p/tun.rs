@@ -16,6 +16,99 @@ use crate::error::{FrpError, Result};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn guest_answers_mesh_heartbeats_without_sending_them_to_helper() {
+        let (guest, mut host) = tokio::io::duplex(1024);
+        let (device, mut helper) = tokio::io::duplex(1024);
+        let session = tokio::spawn(run_packets(guest, device));
+        for _ in 0..3 {
+            crate::tunnel::write_frame(&mut host, b"FRPING")
+                .await
+                .unwrap();
+            let mut pong = [0; 10];
+            tokio::time::timeout(Duration::from_secs(1), host.read_exact(&mut pong))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(&pong, b"\0\0\0\x06FRPONG");
+            crate::tunnel::write_frame(&mut host, b"FRPONG")
+                .await
+                .unwrap();
+        }
+        let mut packet = [0u8; 20];
+        packet[0] = 0x45;
+        packet[3] = 20;
+        crate::tunnel::write_frame(&mut host, &packet)
+            .await
+            .unwrap();
+        let mut received = [0; 20];
+        tokio::time::timeout(Duration::from_secs(1), helper.read_exact(&mut received))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            received, packet,
+            "control frames must never reach the helper"
+        );
+        assert!(!session.is_finished());
+        crate::tunnel::write_frame(&mut host, &[]).await.unwrap();
+        session.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn encrypted_mesh_relay_stays_alive_across_heartbeats_and_reports_rtt() {
+        let (host, guest) = tokio::io::duplex(65536);
+        let key = [7; 32];
+        let host = crate::p2p::enc::EncStream::new(host, &key);
+        let guest = crate::p2p::enc::EncStream::new(guest, &key);
+        let (device, mut helper) = tokio::io::duplex(1024);
+        let session = tokio::spawn(run_packets(guest, device));
+        let (plane, mut dead) = MeshPlane::new();
+        let (dispatch, mut packets) = tokio::sync::mpsc::unbounded_channel();
+        let stats = crate::stats::StreamStats::new(crate::stats::KIND_RELAY);
+        plane.register(
+            "guest",
+            vec![],
+            Box::new(host),
+            dispatch,
+            Some(stats.clone()),
+        );
+        tokio::time::sleep(Duration::from_millis(6300)).await;
+        assert!(!session.is_finished(), "guest died after mesh heartbeat");
+        assert!(dead.try_recv().is_err());
+        assert!(stats.rtt_last.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        let mut packet = [0u8; 20];
+        packet[0] = 0x45;
+        packet[3] = 20;
+        helper.write_all(&packet).await.unwrap();
+        let (_, received) = tokio::time::timeout(Duration::from_secs(1), packets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received, packet);
+        plane.unregister("guest");
+        tokio::time::timeout(Duration::from_secs(1), session)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn helper_disconnect_is_reported_as_failure() {
+        let (guest, _host) = tokio::io::duplex(1024);
+        let (device, helper) = tokio::io::duplex(1024);
+        drop(helper);
+        let error = run_packets(guest, device).await.unwrap_err();
+        assert!(error.to_string().contains("network helper closed"));
+    }
+}
+
 /// TUN 设备参数。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,9 +202,17 @@ pub(crate) fn allow_firewall_local(_iface: &str) -> Result<()> {
 }
 
 /// 在 TUN 设备与数据通道之间双向转发 IP 包，直到会话结束。
-pub async fn run<TR>(mut transport: TR, mut dev: crate::helper::Device) -> Result<()>
+pub async fn run<TR>(transport: TR, dev: crate::helper::Device) -> Result<()>
 where
     TR: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    run_packets(transport, dev).await
+}
+
+async fn run_packets<TR, D>(mut transport: TR, mut dev: D) -> Result<()>
+where
+    TR: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    D: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut pkt = [0u8; 65536];
     let mut acc: Vec<u8> = Vec::new();
@@ -122,7 +223,8 @@ where
             biased;
             r = dev.read(&mut pkt) => {
                 match r {
-                    Ok(0) | Err(_) => break, // 设备关闭
+                    Ok(0) => return Err(FrpError::Tun("network helper closed the device session".into())),
+                    Err(e) => return Err(FrpError::Tun(format!("network helper read failed: {e}"))),
                     Ok(n) => {
                         crate::tunnel::write_frame(&mut transport, &pkt[..n])
                             .await
@@ -132,13 +234,20 @@ where
             }
             n = transport.read(&mut rbuf) => {
                 let n = match n {
-                    Ok(0) | Err(_) => break, // 对端关闭会话
+                    Ok(0) => return Err(FrpError::Protocol("peer transport closed".into())),
+                    Err(e) => return Err(FrpError::Io(e)),
                     Ok(n) => n,
                 };
                 acc.extend_from_slice(&rbuf[..n]);
                 loop {
                     match crate::tunnel::take_frame(&mut acc) {
                         Ok(Some(f)) if f.is_empty() => return Ok(()),
+                        // Mesh heartbeat frames belong to the transport, never the IPv4 helper.
+                        Ok(Some(f)) if f == b"FRPING" => {
+                            crate::tunnel::write_frame(&mut transport, b"FRPONG").await?;
+                            transport.flush().await?;
+                        }
+                        Ok(Some(f)) if f == b"FRPONG" => {}
                         Ok(Some(f)) => {
                             dev.write_all(&f).await.map_err(FrpError::Io)?;
                         }
@@ -151,7 +260,6 @@ where
             }
         }
     }
-    Ok(())
 }
 
 // ---------- 网格（多访客）数据平面 ----------
