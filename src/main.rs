@@ -12,7 +12,7 @@ fn main() {
     let result = run_main();
     log::logger().flush();
     if let Err(e) = result {
-        frp_sh::terminal::error("E_RUNTIME", &e.to_string());
+        frp_sh::terminal::error("E_RUNTIME", &format!("{e:#}"));
         std::process::exit(1);
     }
 }
@@ -348,6 +348,7 @@ async fn real_main() -> anyhow::Result<()> {
                     "    {}  game: pure port forwarding (default 25565)",
                     "frp-sh game create".dimmed()
                 );
+                #[cfg(feature = "server")]
                 frp_sh::ui_println!(
                     "    {}  start the signaling server",
                     "frp-sh serve".dimmed()

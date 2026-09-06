@@ -132,7 +132,7 @@ impl SignalingClient {
 
     /// 服务器需要密码但未提供/错误时的友好错误。
     fn auth_err() -> FrpError {
-        FrpError::Signaling(
+        FrpError::Authentication(
             "server requires a password (HTTP 401): configure 'password' in config (run `frp-sh config`)".into(),
         )
     }
@@ -352,7 +352,11 @@ impl SignalingClient {
                 _=tokio::time::sleep_until(deadline)=>return Err(FrpError::Signaling("Public-address probes timed out".into())),
                 _=tick.tick()=>{let _=udp.send_to(echo.as_bytes(),server_udp).await;if let Some(addr)=stun{let _=udp.send_to(&binding,addr).await;}},
                 received=udp.recv_from(&mut buf)=>{
-                    let (n,src)=received?;
+                    let (n,src)=match received {
+                        Ok(v)=>v,
+                        Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionRefused)=>continue,
+                        Err(e)=>return Err(e.into()),
+                    };
                     if src==server_udp{let text=String::from_utf8_lossy(&buf[..n]);let parts:Vec<_>=text.split_whitespace().collect();
                         if parts.len()==3&&parts[0]=="ADDR"&&parts[1]==token{if let Ok(addr)=parts[2].parse(){return Ok(addr);}}
                     }

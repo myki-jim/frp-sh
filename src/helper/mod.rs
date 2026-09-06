@@ -156,7 +156,12 @@ pub async fn forward(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 pub async fn status() -> anyhow::Result<()> {
-    request(Request::Status { version: VERSION }).await?;
+    use anyhow::Context;
+    request(Request::Status { version: VERSION })
+        .await
+        .context(
+            "Network helper unavailable: check the installed service or rerun the installer",
+        )?;
     Ok(())
 }
 pub struct Device {

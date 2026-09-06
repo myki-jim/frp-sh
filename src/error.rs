@@ -4,6 +4,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum FrpError {
+    #[error("authentication failed: {0}")]
+    Authentication(String),
     #[error("signaling server error: {0}")]
     Signaling(String),
 

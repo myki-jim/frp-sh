@@ -1899,7 +1899,7 @@ pub async fn guest_session(
             Err(FrpError::RoomNotFound(_)) => {
                 return Err(FrpError::RoomNotFound(room_id.to_string()).into());
             }
-            Err(e @ FrpError::Signaling(_)) => return Err(e.into()),
+            Err(e @ FrpError::Authentication(_)) => return Err(e.into()),
             Err(e) => {
                 log::warn!("failed to query room: {e}");
                 continue;

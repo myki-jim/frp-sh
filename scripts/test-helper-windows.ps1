@@ -23,7 +23,8 @@ try {
     if ($LASTEXITCODE -ne 0) {throw 'Service creation failed'}
     Start-Service FrpShNetwork
     Start-Sleep -Seconds 2
-    & icacls.exe $results /grant ($account.SID.Value+':(OI)(CI)M') | Out-Null
+    & icacls.exe $results /grant ('*'+$account.SID.Value+':(OI)(CI)M') | Out-Null
+    if ($LASTEXITCODE -ne 0) {throw 'Test output directory ACL failed'}
     $credential=New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$user",$password)
     $exe=Join-Path $destination 'frp-sh.exe'
     $child=Start-Process -FilePath $exe -ArgumentList '--lang en --json doctor --network-test' -Credential $credential -LoadUserProfile -WorkingDirectory $destination -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput (Join-Path $results 'out.json') -RedirectStandardError (Join-Path $results 'err.json')
