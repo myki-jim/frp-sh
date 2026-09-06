@@ -309,6 +309,8 @@ struct OwnedNetwork {
     ip: String,
     routes: Vec<String>,
     forward: bool,
+    #[cfg(target_os = "macos")]
+    local_route: bool,
 }
 impl Drop for OwnedNetwork {
     fn drop(&mut self) {
@@ -317,6 +319,10 @@ impl Drop for OwnedNetwork {
         }
         for cidr in self.routes.iter().rev() {
             let _ = crate::p2p::tun::delete_route_local(cidr, &self.name, &self.ip);
+        }
+        #[cfg(target_os = "macos")]
+        if self.local_route {
+            let _ = crate::p2p::tun::local_address_route(&self.ip, false);
         }
         let _ = crate::p2p::tun::remove_firewall_local(&self.name);
     }
@@ -407,7 +413,14 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     ip: config.ip.clone(),
                     routes: Vec::new(),
                     forward: false,
+                    #[cfg(target_os = "macos")]
+                    local_route: false,
                 };
+                #[cfg(target_os = "macos")]
+                {
+                    crate::p2p::tun::local_address_route(&config.ip, true)?;
+                    network.local_route = true;
+                }
                 crate::p2p::tun::allow_firewall_local(&name)?;
                 if let Some(cidr) = crate::utils::cidr_from_ip_netmask(&config.ip, &config.netmask)
                 {

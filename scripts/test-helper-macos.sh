@@ -14,6 +14,7 @@ trap 'sudo kill "$pid" 2>/dev/null || true' EXIT INT TERM
 sleep 2
 "$root/frp-sh" --json doctor --network-test
 sleep 1
+cargo test --locked --test helper_macos -- --ignored --nocapture
 sudo -u nobody "$root/frp-sh" --version >/dev/null
 if sudo -u nobody "$root/frp-sh" --json doctor >"$root/outsider.json" 2>&1; then exit 1; fi
 grep 'E_RUNTIME' "$root/outsider.json" >/dev/null
