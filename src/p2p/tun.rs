@@ -195,6 +195,8 @@ pub(crate) fn local_address_route(ip: &str, add: bool) -> Result<()> {
             "lo0",
             "-ifa",
             ip,
+            "-ifp",
+            "lo0",
         ],
     )
 }
