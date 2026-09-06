@@ -92,7 +92,17 @@
   font-weight: 500;
   margin: 0;
 }
-.hero h1 span {
+.hero h1 .headline-line {
+  display: block;
+  overflow: hidden;
+  padding: 0.06em 0.04em;
+  margin: -0.06em -0.04em;
+}
+.headline-line > span {
+  display: block;
+  transform-origin: left bottom;
+}
+.hero h1 .headline-muted {
   color: var(--muted);
 }
 .intro {
@@ -496,5 +506,65 @@
   .route i:after {
     animation: none;
     left: 50%;
+  }
+}
+
+/* Oversized type carries the transition between connection and use cases. */
+.motion-band {
+  overflow: hidden;
+  padding: 30px 0 55px;
+  border-top: 1px solid var(--line);
+}
+.motion-track {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  width: max-content;
+  font-size: clamp(76px, 12vw, 190px);
+  line-height: 1.15;
+  letter-spacing: -0.07em;
+  white-space: nowrap;
+}
+.motion-track i {
+  font-style: normal;
+  color: var(--accent);
+}
+.motion-track span:nth-of-type(2) {
+  color: var(--muted);
+}
+.install {
+  perspective: 1000px;
+  scroll-margin-top: 24px;
+}
+.primary,
+.copy-row button {
+  transition:
+    transform 0.3s,
+    background 0.3s;
+}
+.primary:hover,
+.copy-row button:hover {
+  transform: translateY(-4px);
+  background: var(--accent);
+}
+@media (max-width: 600px) {
+  .motion-band {
+    padding: 24px 0 35px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .motion-track {
+    width: auto;
+    flex-wrap: wrap;
+    font-size: clamp(30px, 6vw, 80px);
+    padding: 0 6%;
+  }
+  .primary,
+  .copy-row button {
+    transition: none;
+  }
+  .primary:hover,
+  .copy-row button:hover {
+    transform: none;
   }
 }
