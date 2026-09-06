@@ -1,6 +1,6 @@
 [package]
 name = "frp-sh"
-version = "0.3.7"
+version = "0.4.0"
 edition = "2021"
 description = "Social P2P tunnel: room-based UDP hole punching with relay fallback"
 license = "MIT"
@@ -9,7 +9,7 @@ license = "MIT"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 axum = { version = "0.8", features = ["ws"] }
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

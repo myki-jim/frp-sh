@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>frp-sh panel</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.7/gsap.min.js"></script>
 <style>
 /* frp-sh panel — black canvas / D-DIN display / ghost pill / hairlines only */
 @import url('https://fonts.cdnfonts.com/css/d-din');
@@ -129,9 +128,9 @@ svg .e-relay{stroke:#5a5a5f;stroke-width:2;stroke-dasharray:2 4}
   <div class="panel">
     <div class="wordmark">frp-sh</div>
     <h3 data-i18n="gate_t">Authentication required</h3>
-    <p data-i18n="gate_p">This server is protected by its password.</p>
+    <p data-i18n="gate_p">Enter the separate server administrator token.</p>
     <div class="err" id="gate-err"></div>
-    <input type="password" id="gate-pw" placeholder="SERVER PASSWORD" autocomplete="off">
+    <input type="password" id="gate-pw" placeholder="ADMIN TOKEN" autocomplete="off">
     <button class="btn" onclick="saveToken()" data-i18n="gate_go">Enter panel</button>
   </div>
 </div>
@@ -141,13 +140,13 @@ const I18N={
 en:{rooms:"Rooms",rooms_n:"Rooms",guests:"Guests",relays:"Relay links",turn:"TURN allocs",room:"Room",
 host:"Host",guests_n:"guests",ttl:"TTL",lang:"中文",no:"No active rooms",
 auth_on:"auth",auth_off:"auth off",auth_ok:"ok",auth_no:"pending",
-gate_t:"Authentication required",gate_p:"This server is protected by its password.",
+gate_t:"Authentication required",gate_p:"Enter the separate server administrator token.",
 gate_go:"Enter panel",back:"Back to overview",detail:"Room detail",topo:"Topology",
 pub:"Public address",lan:"LAN addresses",vnet:"Vnet IP",created:"Created",left:"Time left",
 device:"Device",turn_r:"TURN relay",relays_l:"Relay links",proto:"protocol",
 status:"Status",up:"Up",down:"Down",online:"online",idle:"idle",
 logs:"Logs",logfile:"Log file",nologs:"No logs yet",
-join_t:"One-click client join",join_note:"Run this on the client machine (installs frp-sh if missing, saves the profile and joins this room). The password is masked here and only filled in when you copy.",
+join_t:"One-click client join",join_note:"Run this on the client machine (installs frp-sh if missing, saves the profile and joins this room). Replace SERVER_PASSWORD with the server password before running.",
 setup_t:"One-click client setup",setup_note:"Installs frp-sh (if missing), saves this server as the default profile. No room included - to join a specific room, open it and copy the join command there. Re-running updates the same profile (deduped).",
 join_win:"Windows (PowerShell)",join_nix:"macOS / Linux (shell)",
 copy:"Copy",copied:"Copied!",
@@ -155,13 +154,13 @@ d:"d",h:"h",m:"m"},
 zh:{rooms:"房间",rooms_n:"房间数",guests:"访客数",relays:"中继链路",turn:"TURN 分配",room:"房间",
 host:"房主",guests_n:"位访客",ttl:"剩余",lang:"EN",no:"暂无活跃房间",
 auth_on:"鉴权",auth_off:"鉴权关",auth_ok:"通过",auth_no:"待输入",
-gate_t:"需要鉴权",gate_p:"该服务器已启用密码保护。",
+gate_t:"需要鉴权",gate_p:"请输入服务端独立管理员令牌。",
 gate_go:"进入面板",back:"返回总览",detail:"房间详情",topo:"拓扑",
 pub:"公网地址",lan:"局域网地址",vnet:"虚拟 IP",created:"创建于",left:"剩余时间",
 device:"设备",turn_r:"TURN 中继",relays_l:"中继链路",proto:"线协议",
 status:"状态",up:"上行",down:"下行",online:"在线",idle:"空闲",
 logs:"日志",logfile:"日志文件",nologs:"暂无日志",
-join_t:"客户端一键接入",join_note:"在客户端机器上运行（自动安装 frp-sh、保存配置并加入本房间）。此处密码打码，复制时才填入真实值。",
+join_t:"客户端一键接入",join_note:"在客户端机器上运行（自动安装 frp-sh、保存配置并加入本房间）。请将 SERVER_PASSWORD 替换为服务器密码；启用加密时还需补充 --key。",
 setup_t:"一键配置客户端",setup_note:"自动安装 frp-sh 并把本服务器存为默认配置档案（不含房间）。要进某个房间，请进入该房间后复制加入命令。重复运行只更新同一份档案（自动去重）。",
 join_win:"Windows (PowerShell)",join_nix:"macOS / Linux (shell)",
 copy:"复制",copied:"已复制!",
@@ -177,6 +176,7 @@ function fmtTtl(s){if(s<=0)return"—";const h=Math.floor(s/3600),m=Math.floor(s
 function fmtBytes(b){if(b==null)return"—";if(b>=1073741824)return(b/1073741824).toFixed(2)+" GB";if(b>=1048576)return(b/1048576).toFixed(1)+" MB";if(b>=1024)return(b/1024).toFixed(1)+" KB";return Math.round(b)+" B"}
 function fmtBps(b){if(b==null)return"";if(b>=1048576)return(b/1048576).toFixed(1)+" MB/S";if(b>=1024)return(b/1024).toFixed(1)+" KB/S";return Math.round(b)+" B/S"}
 /* GSAP（CDN 不可用时静默降级为无动画） */
+function shellArg(v,win){const q=String.fromCharCode(39);return q+String(v).split(q).join(win?q+q:String.fromCharCode(39,34,39,34,39))+q}
 const G=window.gsap||null;
 function animIn(els,stagger){if(!G||!els.length)return;G.from(els,{opacity:0,y:10,duration:.35,ease:"power2.out",stagger:stagger||.05,clearProps:"all"})}
 function flash(el){if(!G||!el)return;G.fromTo(el,{opacity:.25},{opacity:1,duration:.4,ease:"power1.out"})}
@@ -246,11 +246,11 @@ function renderHome(){
 function setupCmd(platform){
   const origin=location.origin;
   const relay=location.hostname+":8081";
-  const pw=TOKEN||"";
-  const shown=pw?(pw.slice(0,2)+"••••••"+pw.slice(-2)):"<server-password>";
-  const real=pw||"<server-password>";
-  const winCmd=p=>`$env:FRPSH_SKIP_INIT='1'; irm https://frp.sh/install.ps1 | iex; $env:Path += ";$env:LOCALAPPDATA\\frp-sh"; frp-sh profile add --server ${origin} --relay ${relay} --password ${p} --mode lan --set-default`;
-  const nixCmd=p=>`curl -fsSL https://frp.sh/install.sh | FRPSH_SKIP_INIT=1 sh && frp-sh profile add --server ${origin} --relay ${relay} --password ${p} --mode lan --set-default`;
+  const pw="";
+  const shown=pw?(pw.slice(0,2)+"••••••"+pw.slice(-2)):"SERVER_PASSWORD";
+  const real=pw||"SERVER_PASSWORD";
+  const winCmd=p=>`$env:FRPSH_SKIP_INIT='1'; irm https://frp.sh/install.ps1 | iex; $env:Path += ";$env:LOCALAPPDATA\\frp-sh"; frp-sh profile add --server ${shellArg(origin,true)} --relay ${shellArg(relay,true)} --password ${shellArg(p,true)} --mode lan --set-default`;
+  const nixCmd=p=>`curl -fsSL https://frp.sh/install.sh | FRPSH_SKIP_INIT=1 sh && frp-sh profile add --server ${shellArg(origin,false)} --relay ${shellArg(relay,false)} --password ${shellArg(p,false)} --mode lan --set-default`;
   if(platform==="win")return{shown:winCmd(shown),real:winCmd(real)};
   return{shown:nixCmd(shown),real:nixCmd(real)};
 }
@@ -270,7 +270,7 @@ async function copyHomeJoin(platform){
 }
 function openRoom(id){location.hash="#/room/"+id;route()}
 function goHome(){location.hash="";route()}
-/* 首页房间行内复制一键接入命令（不进详情页；密码走 TOKEN，profile 服务端去重） */
+/* 首页房间行内复制一键接入命令（不进详情页；密码使用占位符，profile 服务端去重） */
 async function copyHomeCmd(ev,roomId,platform){
   ev.stopPropagation();
   const c=joinCmd(roomId,platform).real;
@@ -322,11 +322,11 @@ function joinCmdBlock(roomId,platform,label){
 function joinCmd(roomId, platform){
   const origin=location.origin;
   const relay=location.hostname+":8081";
-  const pw=TOKEN||"";
-  const shown=pw?(pw.slice(0,2)+"••••••"+pw.slice(-2)):"<server-password>";
-  const real=pw||"<server-password>";
-  const winCmd=p=>`$env:FRPSH_SKIP_INIT='1'; irm https://frp.sh/install.ps1 | iex; $env:Path += ";$env:LOCALAPPDATA\\frp-sh"; frp-sh profile add --server ${origin} --relay ${relay} --room ${roomId} --password ${p} --mode lan --set-default; frp-sh profile run`;
-  const nixCmd=p=>`curl -fsSL https://frp.sh/install.sh | FRPSH_SKIP_INIT=1 sh && frp-sh profile add --server ${origin} --relay ${relay} --room ${roomId} --password ${p} --mode lan --set-default && frp-sh profile run`;
+  const pw="";
+  const shown=pw?(pw.slice(0,2)+"••••••"+pw.slice(-2)):"SERVER_PASSWORD";
+  const real=pw||"SERVER_PASSWORD";
+  const winCmd=p=>`$env:FRPSH_SKIP_INIT='1'; irm https://frp.sh/install.ps1 | iex; $env:Path += ";$env:LOCALAPPDATA\\frp-sh"; frp-sh profile add --server ${shellArg(origin,true)} --relay ${shellArg(relay,true)} --room ${shellArg(roomId,true)} --password ${shellArg(p,true)} --mode lan --set-default; frp-sh profile run`;
+  const nixCmd=p=>`curl -fsSL https://frp.sh/install.sh | FRPSH_SKIP_INIT=1 sh && frp-sh profile add --server ${shellArg(origin,false)} --relay ${shellArg(relay,false)} --room ${shellArg(roomId,false)} --password ${shellArg(p,false)} --mode lan --set-default && frp-sh profile run`;
   if(platform==="win")return{shown:winCmd(shown),real:winCmd(real)};
   return{shown:nixCmd(shown),real:nixCmd(real)};
 }

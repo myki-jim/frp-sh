@@ -3,10 +3,9 @@
 //!
 //! - STUN：连 `stun.cloudflare.com:3478` 学习公网地址（无需凭据）
 //! - TURN：连自建 coturn（VPS 或本地），验证 Allocate/CreatePermission/
-//!   Send-Data 全链路与 FRS1 流经 TURN 中继传输
+//!   Send-Data 全链路与 FRS2 流经 TURN 中继传输
 //!
-//! 运行前确保 TURN 服务器可用（`TURN_SERVER` 环境变量，默认 101.43.41.195:3478，
-//! 账号 frpshtest/REMOVED_CREDENTIAL，realm frp.sh）。
+//! Set TURN_SERVER, TURN_USERNAME and TURN_PASSWORD explicitly before running.
 
 use frp_sh::p2p::stun;
 use frp_sh::p2p::turn::{DatagramSocket, TurnClient, TurnCredentials};
@@ -21,11 +20,11 @@ fn init_log() {
 fn turn_cred() -> TurnCredentials {
     TurnCredentials {
         server: std::env::var("TURN_SERVER")
-            .unwrap_or_else(|_| "101.43.41.195:3478".into())
+            .expect("set TURN_SERVER for live tests")
             .parse()
             .unwrap(),
-        username: "frpshtest".into(),
-        password: "REMOVED_CREDENTIAL".into(),
+        username: std::env::var("TURN_USERNAME").expect("set TURN_USERNAME"),
+        password: std::env::var("TURN_PASSWORD").expect("set TURN_PASSWORD"),
     }
 }
 
@@ -36,7 +35,7 @@ async fn stun_binding() {
     // 也可改连 stun.cloudflare.com:3478 实测公共 STUN）
     let s = UdpSocket::bind("0.0.0.0:0").await.unwrap();
     let server: std::net::SocketAddr = std::env::var("TURN_SERVER")
-        .unwrap_or_else(|_| "101.43.41.195:3478".into())
+        .expect("set TURN_SERVER for live tests")
         .parse()
         .unwrap();
     let addr = stun::binding_probe(&s, server).await;
@@ -60,7 +59,7 @@ async fn dbg_raw_allocate() {
     println!("sending {} bytes, head: {:02x?}", req.len(), &req[..20]);
     std::io::stdout().flush().unwrap();
     let server: std::net::SocketAddr = std::env::var("TURN_SERVER")
-        .unwrap_or_else(|_| "101.43.41.195:3478".into())
+        .expect("set TURN_SERVER for live tests")
         .parse()
         .unwrap();
     s.send_to(&req, server).await.unwrap();
@@ -127,7 +126,7 @@ async fn turn_relay_roundtrip() {
     println!("B→A via TURN ok");
 }
 
-/// FRS1 可靠流经 TURN 中继传输（两段 UdpStream 跑在 TurnClient 之上）。
+/// FRS2 可靠流经 TURN 中继传输（两段 UdpStream 跑在 TurnClient 之上）。
 #[tokio::test]
 #[ignore]
 async fn frs1_stream_over_turn() {
@@ -144,7 +143,7 @@ async fn frs1_stream_over_turn() {
     a.create_permission(b.relay).await.unwrap();
     b.create_permission(a.relay).await.unwrap();
 
-    // 两段 FRS1 流：各自指向对端的 TURN relay 地址
+    // 两段 FRS2 流：各自指向对端的 TURN relay 地址
     let relay_a = a.relay;
     let relay_b = b.relay;
     let mut sa = UdpStream::new(a, relay_b, None, None);
@@ -159,6 +158,6 @@ async fn frs1_stream_over_turn() {
     let mut got = Vec::new();
     sb.read_to_end(&mut got).await.unwrap();
     writer.await.unwrap();
-    assert_eq!(got, payload, "FRS1 payload over TURN mismatch");
-    println!("FRS1 stream over TURN ok ({} bytes)", got.len());
+    assert_eq!(got, payload, "FRS2 payload over TURN mismatch");
+    println!("FRS2 stream over TURN ok ({} bytes)", got.len());
 }

@@ -163,7 +163,7 @@ pub struct SessionInfo {
     pub encryption: bool,
     pub started_at: i64,
     pub reconnects: u64,
-    /// 信令服务器密码（面板"分享/一键加入"命令生成用；本地面板 127.0.0.1 才可读）
+    /// Runtime-only signaling password; never serialize it into panel responses.
     pub password: String,
     /// TCP 中继地址（分享命令的 --relay）
     pub relay_addr: String,
@@ -205,8 +205,8 @@ pub fn update_info(patch: SessionInfo) {
     if patch.mtu > 0 {
         info.mtu = patch.mtu;
     }
-    info.encryption = patch.encryption || info.encryption;
     if patch.started_at > 0 {
+        info.encryption = patch.encryption;
         info.started_at = patch.started_at;
     }
     if patch.reconnects > 0 {

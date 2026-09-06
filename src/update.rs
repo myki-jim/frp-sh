@@ -6,14 +6,11 @@
 //! - 代差：`version::is_breaking_gap` 判定；代差过大时不可跳过（强提示）
 //! - 安装：Windows 下载新 exe 并在本进程退出后延迟替换；其他平台打印安装命令
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::time::Duration;
 
 /// 两次检查的最小间隔（秒）。
 const CHECK_INTERVAL_SECS: u64 = 6 * 3600;
-/// 下载超时（秒，仅 Windows 自动替换使用）。
-#[cfg(target_os = "windows")]
-const DOWNLOAD_TIMEOUT_SECS: u64 = 180;
 
 /// 版本来源（按顺序尝试）。
 fn latest_urls() -> [&'static str; 2] {
@@ -71,27 +68,35 @@ async fn fetch_latest() -> Option<String> {
         .build()
         .ok()?;
     for url in latest_urls() {
-        let resp = client
+        let Ok(resp) = client
             .get(url)
             .header("User-Agent", "frp-sh-update-check")
             .send()
             .await
-            .ok()?;
+        else {
+            continue;
+        };
         if !resp.status().is_success() {
             continue;
         }
         if url.contains("api.github.com") {
-            let v: serde_json::Value = resp.json().await.ok()?;
-            let tag = v.get("tag_name").and_then(|x| x.as_str())?;
+            let Ok(v) = resp.json::<serde_json::Value>().await else {
+                continue;
+            };
+            let Some(tag) = v.get("tag_name").and_then(|x| x.as_str()) else {
+                continue;
+            };
             let clean = tag.trim_start_matches('v').trim().to_string();
-            if !clean.is_empty() {
+            if crate::version::parse(&clean).is_some() {
                 return Some(clean);
             }
             continue;
         }
-        let text = resp.text().await.ok()?;
+        let Ok(text) = resp.text().await else {
+            continue;
+        };
         let clean = text.trim().to_string();
-        if !clean.is_empty() {
+        if crate::version::parse(&clean).is_some() {
             return Some(clean);
         }
     }
@@ -126,16 +131,14 @@ pub async fn maybe_check_update(interactive: bool) -> anyhow::Result<()> {
             ""
         }
     );
-    if !interactive {
+    if !interactive || !std::io::stdin().is_terminal() {
         println!("  On the server, update when convenient: curl -fsSL https://frp.sh/install.sh | sh (or the install script)\n");
         return Ok(());
     }
-    print!("  Update now? [Y/n] ");
+    print!("  Show update instructions? [y/N] ");
     std::io::stdout().flush().ok();
     let answer = read_stdin_line();
-    let yes = answer.trim().is_empty()
-        || answer.trim().eq_ignore_ascii_case("y")
-        || answer.trim().eq_ignore_ascii_case("yes");
+    let yes = answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes");
     if !yes {
         if breaking {
             println!("  [Warning] Skipping despite the big version gap; if you hit issues, upgrade to v{latest}.\n");
@@ -156,47 +159,12 @@ fn read_stdin_line() -> String {
 
 /// 下载并安装最新版。
 async fn install_latest(latest: &str) -> anyhow::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        let url = "https://frp.sh/downloads/frp-sh-windows-x86_64.exe";
-        let exe = std::env::current_exe()?;
-        let tmp = std::env::temp_dir().join(format!("frp-sh-{latest}.exe"));
-        println!("  Downloading v{latest} ...");
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
-            .build()?;
-        let bytes = client.get(url).send().await?.bytes().await?;
-        if bytes.len() < 1_000_000 {
-            anyhow::bail!("download error (file too small); run manually: irm https://frp.sh/install.ps1 | iex");
-        }
-        std::fs::write(&tmp, &bytes)?;
-        println!("  Download complete ({} bytes).", bytes.len());
-        // 本进程退出后延迟替换（运行中的 exe 被锁定）
-        let cmd = format!(
-            "timeout /t 2 /nobreak >nul & move /y \"{}\" \"{}\"",
-            tmp.display(),
-            exe.display()
-        );
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            std::process::Command::new("cmd")
-                .args(["/c", &cmd])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()?;
-        }
-        #[cfg(not(target_os = "windows"))]
-        let _ = cmd;
-        println!("  Update complete; takes effect after restarting frp-sh.\n");
-        Ok(())
+    println!("  Version {latest} is available. Stop active sessions, then run the installer:");
+    if cfg!(target_os = "windows") {
+        println!("    irm https://frp.sh/install.ps1 | iex");
+    } else {
+        println!("    curl -fsSL https://frp.sh/install.sh | sh");
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = latest;
-        println!(
-            "  To update, run the following command (after this process exits):\n    curl -fsSL https://frp.sh/install.sh | sh\n"
-        );
-        Ok(())
-    }
+    println!("  The running executable has not been replaced.");
+    Ok(())
 }

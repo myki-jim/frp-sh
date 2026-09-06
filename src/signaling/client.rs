@@ -17,9 +17,22 @@ pub struct SignalingClient {
     base_url: String,
     http: reqwest::Client,
     password: Option<String>,
+    owners: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
 }
 
 impl SignalingClient {
+    pub fn set_room_token(&self, room: &str, token: String) {
+        self.owners.lock().unwrap().insert(room.into(), token);
+    }
+    fn owner_header(&self, room: &str) -> String {
+        self.owners
+            .lock()
+            .unwrap()
+            .get(room)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// 不带密码的客户端。
     pub fn new(base_url: &str) -> Self {
         Self::new_with_password(base_url, None)
@@ -36,6 +49,7 @@ impl SignalingClient {
             builder = builder.default_headers(headers);
         }
         Self {
+            owners: Default::default(),
             base_url: base_url.trim_end_matches('/').to_string(),
             http: builder.build().expect("build reqwest client"),
             password: password.map(str::to_string),
@@ -94,9 +108,12 @@ impl SignalingClient {
                 resp.status()
             )));
         }
-        resp.json()
+        let created: CreateRoomResponse = resp
+            .json()
             .await
-            .map_err(|e| FrpError::Signaling(format!("bad create response: {e}")))
+            .map_err(|e| FrpError::Signaling(format!("bad create response: {e}")))?;
+        self.set_room_token(&created.room_id, created.owner_token.clone());
+        Ok(created)
     }
 
     /// 服务器需要密码但未提供/错误时的友好错误。
@@ -174,6 +191,7 @@ impl SignalingClient {
         let resp = self
             .http
             .delete(format!("{}/room/{}", self.base_url, room_id))
+            .header("X-Frp-Sh-Room-Token", self.owner_header(room_id))
             .send()
             .await
             .map_err(|e| FrpError::Signaling(format!("delete room: {e}")))?;
@@ -199,6 +217,7 @@ impl SignalingClient {
         let resp = self
             .http
             .post(format!("{}/room/{}/refresh", self.base_url, room_id))
+            .header("X-Frp-Sh-Room-Token", self.owner_header(room_id))
             .json(&RefreshRoomRequest {
                 addr,
                 host_lan,
@@ -243,6 +262,7 @@ impl SignalingClient {
         let resp = self
             .http
             .post(format!("{}/api/traffic", self.base_url))
+            .header("X-Frp-Sh-Room-Token", self.owner_header(room_id))
             .json(&body)
             .send()
             .await

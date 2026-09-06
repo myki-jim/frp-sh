@@ -11,7 +11,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 线协议版本。向后兼容的新增（如 serde default 字段）不递增；
 /// 破坏性变更（改路由、改帧格式、改语义）必须递增，并发布说明。
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// 解析 `major.minor.patch`（可含 `-pre` 后缀，忽略后缀）。
 pub fn parse(version: &str) -> Option<(u32, u32, u32)> {

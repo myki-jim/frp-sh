@@ -126,9 +126,14 @@ impl TurnServer {
                 if msg.method != stun::METHOD_BINDING
                     && (!verify_integrity(packet, &auth.key) || !self.valid_credentials(&msg))
                 {
-                    self.challenge(src).await;
+                    self.challenge(&msg, src).await;
                     continue;
                 }
+            }
+            if msg.class != stun::CLASS_REQUEST
+                && !(msg.method == stun::METHOD_SEND && msg.class == stun::CLASS_INDICATION)
+            {
+                continue;
             }
             match msg.method {
                 stun::METHOD_ALLOCATE => self.handle_allocate(&msg, src).await,
@@ -151,7 +156,7 @@ impl TurnServer {
             && msg.get_str(stun::ATTR_NONCE).as_deref() == Some(auth.nonce.as_str())
     }
 
-    async fn handle_allocate(&self, _msg: &stun::Message, src: SocketAddr) {
+    async fn handle_allocate(&self, msg: &stun::Message, src: SocketAddr) {
         // 分配 relay socket（随机端口）
         let Ok(relay_socket) = UdpSocket::bind("0.0.0.0:0").await else {
             return;
@@ -210,7 +215,7 @@ impl TurnServer {
             }
         });
         // 200 响应
-        let txid2 = stun::new_txid();
+        let txid2 = msg.txid;
         let xrel = stun::encode_xor_addr(relay, &txid2);
         let lt = stun::encode_lifetime(LIFETIME);
         let resp = stun::build(
@@ -243,7 +248,7 @@ impl TurnServer {
         }
         a.permissions.insert(peer);
         drop(map);
-        let txid = stun::new_txid();
+        let txid = msg.txid;
         let resp = stun::build(
             stun::METHOD_CREATE_PERMISSION,
             stun::CLASS_SUCCESS,
@@ -278,14 +283,14 @@ impl TurnServer {
         let _ = sock.send_to(dv, peer).await;
     }
 
-    async fn handle_refresh(&self, _msg: &stun::Message, src: SocketAddr) {
+    async fn handle_refresh(&self, msg: &stun::Message, src: SocketAddr) {
         let mut map = self.allocs.lock().await;
         let Some(a) = map.get_mut(&src) else {
             return;
         };
         a.expires = Instant::now() + Duration::from_secs(LIFETIME as u64);
         drop(map);
-        let txid = stun::new_txid();
+        let txid = msg.txid;
         let lt = stun::encode_lifetime(LIFETIME);
         let resp = stun::build(
             stun::METHOD_REFRESH,
@@ -296,8 +301,8 @@ impl TurnServer {
         let _ = self.listen.send_to(&resp, src).await;
     }
 
-    async fn handle_binding(&self, _msg: &stun::Message, src: SocketAddr) {
-        let txid = stun::new_txid();
+    async fn handle_binding(&self, msg: &stun::Message, src: SocketAddr) {
+        let txid = msg.txid;
         let xma = stun::encode_xor_addr(src, &txid);
         let resp = stun::build(
             stun::METHOD_BINDING,
@@ -309,11 +314,11 @@ impl TurnServer {
     }
 
     /// 回 401 挑战（带 realm + nonce）。
-    async fn challenge(&self, src: SocketAddr) {
+    async fn challenge(&self, msg: &stun::Message, src: SocketAddr) {
         let Some(auth) = &self.auth else {
             return;
         };
-        let txid = stun::new_txid();
+        let txid = msg.txid;
         let attrs: Vec<(u16, Vec<u8>)> = vec![
             (
                 stun::ATTR_ERROR_CODE,
@@ -326,7 +331,7 @@ impl TurnServer {
             (stun::ATTR_REALM, auth.realm.as_bytes().to_vec()),
         ];
         let refs: Vec<(u16, &[u8])> = attrs.iter().map(|(t, v)| (*t, v.as_slice())).collect();
-        let resp = stun::build(stun::METHOD_ALLOCATE, stun::CLASS_ERROR, &txid, &refs);
+        let resp = stun::build(msg.method, stun::CLASS_ERROR, &txid, &refs);
         let _ = self.listen.send_to(&resp, src).await;
     }
 }

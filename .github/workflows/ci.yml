@@ -24,7 +24,10 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Security regressions (no retry)
+        run: cargo test --locked --test security_regressions -- --test-threads=1
 
       - name: Test
         # e2e 依赖临时端口的打洞时序，偶发失败（重跑即过）→ 失败自动重试一次

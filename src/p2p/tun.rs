@@ -247,7 +247,7 @@ impl MeshPlane {
         tokio::spawn(async move {
             let mut acc: Vec<u8> = Vec::new();
             let mut rbuf = [0u8; 16384];
-            loop {
+            'reader: loop {
                 tokio::select! {
                     _ = close_r.notified() => break,
                     r = rd.read(&mut rbuf) => {
@@ -272,7 +272,7 @@ impl MeshPlane {
                                         }
                                         Ok(Some(f)) => { let _ = dt.send((uuid_r.clone(), f)); }
                                         Ok(None) => break,
-                                        Err(_) => break,
+                                        Err(_) => break 'reader,
                                     }
                                 }
                             }
