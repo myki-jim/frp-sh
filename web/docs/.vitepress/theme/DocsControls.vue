@@ -1,6 +1,8 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount } from "vue";
 import { useData, useRoute } from "vitepress";
+import { createThemeReveal } from "./theme-reveal.js";
+let themeReveal;
 const { lang, isDark } = useData();
 const route = useRoute();
 const mode = ref("auto");
@@ -26,13 +28,15 @@ function apply() {
   isDark.value =
     mode.value === "night" || (mode.value === "auto" && media.matches);
 }
-function cycle() {
-  const modes = ["auto", "day", "night"];
-  mode.value = modes[(modes.indexOf(mode.value) + 1) % 3];
-  try {
-    localStorage.setItem("frpsh-world-light", mode.value);
-  } catch {}
-  apply();
+function cycle(event) {
+  themeReveal.reveal(event, () => {
+    const modes = ["auto", "day", "night"];
+    mode.value = modes[(modes.indexOf(mode.value) + 1) % 3];
+    try {
+      localStorage.setItem("frpsh-world-light", mode.value);
+    } catch {}
+    apply();
+  });
 }
 function remember() {
   try {
@@ -40,6 +44,7 @@ function remember() {
   } catch {}
 }
 onMounted(() => {
+  themeReveal = createThemeReveal();
   try {
     const saved = localStorage.getItem("frpsh-world-light");
     if (["auto", "day", "night"].includes(saved)) mode.value = saved;
@@ -48,7 +53,10 @@ onMounted(() => {
   media.addEventListener("change", apply);
   apply();
 });
-onBeforeUnmount(() => media?.removeEventListener("change", apply));
+onBeforeUnmount(() => {
+  themeReveal?.dispose();
+  media?.removeEventListener("change", apply);
+});
 </script>
 <template>
   <div class="docs-controls">
