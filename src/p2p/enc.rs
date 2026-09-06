@@ -1,195 +1,240 @@
-//! 中继流量加密：ChaCha20-Poly1305 逐块 AEAD 流。
-//!
-//! 服务器设置 `--password` 后，中继通道（客户端 ↔ 服务器）的流量以
-//! 密码派生密钥加密，防止第三方嗅探（服务器持有密码，可解密转发；
-//! 需要防服务器时请另加 `--key` 做端到端加密）。
-//!
-//! 帧格式：`[u32 BE len][ChaCha20-Poly1305 密文+tag]`，nonce 为
-//! 12 字节（4 字节零 + 8 字节发送方计数器）。
+//! Authenticated bounded byte stream, protocol 2. Fresh mutual challenges
+//! derive independent directional keys before application data is forwarded.
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    ChaCha20Poly1305, Nonce,
+};
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256};
+use std::{
+    io,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
-use chacha20poly1305::aead::{Aead, KeyInit};
-use chacha20poly1305::{ChaCha20Poly1305, Nonce};
-use std::io;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-
-/// 由口令派生 32 字节密钥（SHA-256）。
 pub fn key_from_password(pw: &str) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(pw.as_bytes());
-    h.finalize().into()
+    Sha256::digest(pw.as_bytes()).into()
 }
-
-/// 单块密文上限（1 MB），防止恶意长度头撑爆内存。
-const MAX_BLOCK: usize = 1 << 20;
-
-/// 加密流：包装任意 `AsyncRead + AsyncWrite`，按块加解密。
-pub struct EncStream<S> {
-    inner: S,
-    cipher: ChaCha20Poly1305,
-    enc_counter: u64,
-    dec_counter: u64,
-    // 读侧状态
-    rd_header: [u8; 4],
-    rd_header_len: usize,
-    rd_body: Vec<u8>,
-    rd_body_len: usize,
-    rd_plain: Vec<u8>,
-    rd_plain_pos: usize,
-    // 写侧缓冲（待发送密文）
-    wr_buf: Vec<u8>,
-    wr_pos: usize,
+pub(crate) fn proof(key: &[u8; 32], label: &[u8], a: &[u8], b: &[u8]) -> [u8; 32] {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("key length");
+    mac.update(label);
+    mac.update(a);
+    mac.update(b);
+    mac.finalize().into_bytes().into()
 }
-
-impl<S: AsyncRead + AsyncWrite + Unpin> EncStream<S> {
-    pub fn new(inner: S, key: &[u8; 32]) -> Self {
-        let cipher = ChaCha20Poly1305::new(key.into());
-        Self {
-            inner,
-            cipher,
-            enc_counter: 0,
-            dec_counter: 0,
-            rd_header: [0; 4],
-            rd_header_len: 0,
-            rd_body: Vec::new(),
-            rd_body_len: 0,
-            rd_plain: Vec::new(),
-            rd_plain_pos: 0,
-            wr_buf: Vec::new(),
-            wr_pos: 0,
+pub(crate) fn verify(key: &[u8; 32], label: &[u8], a: &[u8], b: &[u8], tag: &[u8]) -> bool {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("key length");
+    mac.update(label);
+    mac.update(a);
+    mac.update(b);
+    mac.verify_slice(tag).is_ok()
+}
+const BLOCK: usize = 16 * 1024;
+#[derive(Default)]
+struct Progress {
+    accepted: u64,
+    flushed: u64,
+    closed: bool,
+    error: Option<String>,
+    waker: Option<Waker>,
+}
+impl Progress {
+    fn wake(&mut self) {
+        if let Some(w) = self.waker.take() {
+            w.wake();
         }
     }
-
-    fn next_nonce(counter: u64) -> Nonce {
-        let mut n = [0u8; 12];
-        n[4..].copy_from_slice(&counter.to_be_bytes());
-        *Nonce::from_slice(&n)
+}
+pub struct EncStream {
+    io: tokio::io::DuplexStream,
+    task: tokio::task::JoinHandle<()>,
+    progress: Arc<Mutex<Progress>>,
+}
+impl EncStream {
+    pub fn new<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+        mut inner: S,
+        key: &[u8; 32],
+    ) -> Self {
+        let (io, mut bridge) = tokio::io::duplex(64 * 1024);
+        let progress = Arc::new(Mutex::new(Progress::default()));
+        let state = progress.clone();
+        let key = *key;
+        let task = tokio::spawn(async move {
+            let result = run(&mut inner, &mut bridge, &key, &state).await;
+            if let Err(e) = result {
+                let mut s = state.lock().unwrap();
+                s.error = Some(e.to_string());
+                s.wake();
+            }
+        });
+        Self { io, task, progress }
     }
-
-    /// 将写缓冲中的密文尽量写入底层。
-    fn flush_wr(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        while self.wr_pos < self.wr_buf.len() {
-            match Pin::new(&mut self.inner).poll_write(cx, &self.wr_buf[self.wr_pos..]) {
-                Poll::Pending => return Ok(()),
-                Poll::Ready(Ok(0)) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "write zero during flush",
-                    ));
+}
+impl Drop for EncStream {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+fn invalid(msg: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+fn nonce(counter: u64) -> Nonce {
+    let mut n = [0; 12];
+    n[4..].copy_from_slice(&counter.to_be_bytes());
+    *Nonce::from_slice(&n)
+}
+async fn run<S: AsyncRead + AsyncWrite + Unpin>(
+    inner: &mut S,
+    bridge: &mut tokio::io::DuplexStream,
+    key: &[u8; 32],
+    state: &Arc<Mutex<Progress>>,
+) -> io::Result<()> {
+    let (send_key, recv_key) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let local: [u8; 32] = rand::random();
+        let mut remote = [0; 32];
+        let (mut hr, mut hw) = tokio::io::split(&mut *inner);
+        tokio::try_join!(
+            async {
+                hw.write_all(&local).await?;
+                hw.flush().await
+            },
+            async { hr.read_exact(&mut remote).await.map(|_| ()) }
+        )?;
+        if remote == local {
+            return Err(invalid("reflected stream handshake"));
+        }
+        let confirm = proof(key, b"frpsh-v2-confirm", &local, &remote);
+        let mut tag = [0; 32];
+        tokio::try_join!(
+            async {
+                hw.write_all(&confirm).await?;
+                hw.flush().await
+            },
+            async { hr.read_exact(&mut tag).await.map(|_| ()) }
+        )?;
+        if !verify(key, b"frpsh-v2-confirm", &remote, &local, &tag) {
+            return Err(invalid("stream authentication failed"));
+        }
+        Ok((
+            proof(key, b"frpsh-v2-key", &local, &remote),
+            proof(key, b"frpsh-v2-key", &remote, &local),
+        ))
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "stream authentication timeout"))??;
+    let (mut nr, mut nw) = tokio::io::split(inner);
+    let (mut ar, mut aw) = tokio::io::split(bridge);
+    let send = async {
+        let cipher = ChaCha20Poly1305::new((&send_key).into());
+        let mut seq = 0u64;
+        let mut buf = [0; BLOCK];
+        loop {
+            let n = ar.read(&mut buf).await?;
+            let ct = cipher
+                .encrypt(&nonce(seq), &buf[..n])
+                .map_err(|_| invalid("encryption failed"))?;
+            seq = seq
+                .checked_add(1)
+                .ok_or_else(|| invalid("stream sequence exhausted"))?;
+            nw.write_u32(ct.len() as u32).await?;
+            nw.write_all(&ct).await?;
+            nw.flush().await?;
+            {
+                let mut s = state.lock().unwrap();
+                s.flushed += n as u64;
+                if n == 0 {
+                    s.closed = true;
                 }
-                Poll::Ready(Ok(n)) => self.wr_pos += n,
-                Poll::Ready(Err(e)) => return Err(e),
+                s.wake();
+            }
+            if n == 0 {
+                nw.shutdown().await?;
+                break;
             }
         }
-        self.wr_buf.clear();
-        self.wr_pos = 0;
-        Ok(())
-    }
+        Ok::<(), io::Error>(())
+    };
+    let recv = async {
+        let cipher = ChaCha20Poly1305::new((&recv_key).into());
+        let mut seq = 0u64;
+        loop {
+            let n = nr.read_u32().await? as usize;
+            if !(16..=BLOCK + 16).contains(&n) {
+                return Err(invalid("invalid encrypted block length"));
+            }
+            let mut ct = vec![0; n];
+            nr.read_exact(&mut ct).await?;
+            let pt = cipher
+                .decrypt(&nonce(seq), ct.as_slice())
+                .map_err(|_| invalid("stream authentication failed"))?;
+            seq = seq
+                .checked_add(1)
+                .ok_or_else(|| invalid("stream sequence exhausted"))?;
+            if pt.is_empty() {
+                aw.shutdown().await?;
+                break;
+            }
+            aw.write_all(&pt).await?;
+        }
+        Ok::<(), io::Error>(())
+    };
+    tokio::try_join!(send, recv)?;
+    Ok(())
 }
-
-impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for EncStream<S> {
+impl AsyncRead for EncStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        // 通过 get_mut 取得 &mut Self 以便字段级拆分借用（Pin 的字段访问走 Deref 无法拆分）
-        let this = self.as_mut().get_mut();
-        loop {
-            // 1) 已有解密数据 → 直接返回
-            if this.rd_plain_pos < this.rd_plain.len() {
-                let n = std::cmp::min(buf.remaining(), this.rd_plain.len() - this.rd_plain_pos);
-                buf.put_slice(&this.rd_plain[this.rd_plain_pos..this.rd_plain_pos + n]);
-                this.rd_plain_pos += n;
-                if this.rd_plain_pos == this.rd_plain.len() {
-                    this.rd_plain.clear();
-                    this.rd_plain_pos = 0;
-                }
-                return Poll::Ready(Ok(()));
-            }
-            // 2) 读 4 字节长度头
-            while this.rd_header_len < 4 {
-                let mut hbuf = ReadBuf::new(&mut this.rd_header[this.rd_header_len..]);
-                match Pin::new(&mut this.inner).poll_read(cx, &mut hbuf) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Ok(())) => {
-                        if hbuf.filled().is_empty() {
-                            return Poll::Ready(Ok(())); // EOF
-                        }
-                        this.rd_header_len += hbuf.filled().len();
-                    }
-                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                }
-            }
-            let len = u32::from_be_bytes(this.rd_header) as usize;
-            if len > MAX_BLOCK {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "encrypted block too large",
-                )));
-            }
-            // 3) 读密文
-            this.rd_body.resize(len, 0);
-            while this.rd_body_len < len {
-                let mut bbuf = ReadBuf::new(&mut this.rd_body[this.rd_body_len..]);
-                match Pin::new(&mut this.inner).poll_read(cx, &mut bbuf) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Ok(())) => {
-                        if bbuf.filled().is_empty() {
-                            return Poll::Ready(Ok(())); // EOF
-                        }
-                        this.rd_body_len += bbuf.filled().len();
-                    }
-                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                }
-            }
-            // 4) 解密
-            let pt = this
-                .cipher
-                .decrypt(&Self::next_nonce(this.dec_counter), &this.rd_body[..len])
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "relay decryption failed")
-                })?;
-            this.dec_counter += 1;
-            this.rd_plain = pt;
-            this.rd_plain_pos = 0;
-            this.rd_header_len = 0;
-            this.rd_body_len = 0;
-            this.rd_body.clear();
+        if let Some(e) = &self.progress.lock().unwrap().error {
+            return Poll::Ready(Err(invalid(e)));
         }
+        Pin::new(&mut self.io).poll_read(cx, buf)
     }
 }
-
-impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for EncStream<S> {
+impl AsyncWrite for EncStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let this = self.as_mut().get_mut();
-        let ct = this
-            .cipher
-            .encrypt(&Self::next_nonce(this.enc_counter), buf)
-            .map_err(|_| io::Error::other("relay encryption failed"))?;
-        this.enc_counter += 1;
-        this.wr_buf
-            .extend_from_slice(&(ct.len() as u32).to_be_bytes());
-        this.wr_buf.extend_from_slice(&ct);
-        this.flush_wr(cx)?;
-        Poll::Ready(Ok(buf.len()))
+        if let Some(e) = &self.progress.lock().unwrap().error {
+            return Poll::Ready(Err(invalid(e)));
+        }
+        match Pin::new(&mut self.io).poll_write(cx, buf) {
+            Poll::Ready(Ok(n)) => {
+                self.progress.lock().unwrap().accepted += n as u64;
+                Poll::Ready(Ok(n))
+            }
+            r => r,
+        }
     }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.as_mut().get_mut();
-        this.flush_wr(cx)?;
-        Pin::new(&mut this.inner).poll_flush(cx)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let mut s = self.progress.lock().unwrap();
+        if let Some(e) = &s.error {
+            return Poll::Ready(Err(invalid(e)));
+        }
+        if s.flushed == s.accepted {
+            Poll::Ready(Ok(()))
+        } else {
+            s.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
     }
-
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.as_mut().get_mut();
-        this.flush_wr(cx)?;
-        Pin::new(&mut this.inner).poll_shutdown(cx)
+        std::task::ready!(Pin::new(&mut self.io).poll_shutdown(cx))?;
+        let mut s = self.progress.lock().unwrap();
+        if let Some(e) = &s.error {
+            return Poll::Ready(Err(invalid(e)));
+        }
+        if s.closed {
+            Poll::Ready(Ok(()))
+        } else {
+            s.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
     }
 }

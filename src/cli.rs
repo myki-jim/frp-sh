@@ -264,6 +264,9 @@ pub enum ProfileCmd {
         /// Server password
         #[arg(long)]
         password: Option<String>,
+        /// End-to-end key (shared by room members)
+        #[arg(long)]
+        key: Option<String>,
         /// Connection mode: lan | dev | game (default lan)
         #[arg(long, default_value = "lan")]
         mode: String,
@@ -299,6 +302,9 @@ pub enum ProfileCmd {
         /// Server password
         #[arg(long)]
         password: Option<String>,
+        /// End-to-end key (shared by room members)
+        #[arg(long)]
+        key: Option<String>,
         /// Device name shown to peers
         #[arg(long)]
         device: Option<String>,

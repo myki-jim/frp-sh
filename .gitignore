@@ -21,3 +21,10 @@ deploy/
 .wrangler/
 ci_publish_log.txt
 .crate-check/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem

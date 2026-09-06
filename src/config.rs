@@ -15,6 +15,8 @@ fn default_relay() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(skip)]
+    pub room_tokens: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     /// 信令服务器 HTTP 基地址（REST API）。
     #[serde(default = "default_signaling")]
     pub signaling_addr: String,
@@ -56,6 +58,8 @@ fn profiles_empty(m: &std::collections::BTreeMap<String, Profile>) -> bool {
 /// `frp-sh profile run <name>` 按它启动会话。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     /// 档案名（默认 profile1、profile2 … 顺序分配；可 `profile edit --rename` 改名）
     pub name: String,
     /// 信令服务器 URL（如 http://101.43.41.195:8080）
@@ -150,6 +154,7 @@ pub fn hostname() -> String {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            room_tokens: Default::default(),
             signaling_addr: default_signaling(),
             relay_addr: default_relay(),
             signaling_udp: None,
@@ -164,6 +169,10 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn room_token(&self, room: &str) -> Option<String> {
+        self.room_tokens.lock().unwrap().get(room).cloned()
+    }
+
     /// 默认配置文件路径（按平台）：
     /// - Windows：`%APPDATA%\frp-sh\config.toml`
     /// - Linux/macOS：`$XDG_CONFIG_HOME/frp-sh/config.toml` 或 `~/.config/frp-sh/config.toml`
@@ -303,8 +312,16 @@ impl Config {
         let host = url.host_str()?;
         let port = url.port().unwrap_or(80);
         // 常见约定：HTTP 8080 → 中继 8081；其他端口 +1
-        let relay_port = if port == 80 { 8081 } else { port + 1 };
-        Some(format!("{host}:{relay_port}"))
+        let relay_port = if port == 80 {
+            8081
+        } else {
+            port.checked_add(1)?
+        };
+        Some(if host.contains(':') {
+            format!("[{host}]:{relay_port}")
+        } else {
+            format!("{host}:{relay_port}")
+        })
     }
 
     /// 信令服务器主机名（用于推导中继地址等）。
@@ -337,7 +354,11 @@ impl Config {
                 }
             }
         };
-        addr.parse()
+        std::net::ToSocketAddrs::to_socket_addrs(&addr)
+            .and_then(|mut xs| {
+                xs.next()
+                    .ok_or_else(|| io::Error::other("no resolved address"))
+            })
             .map_err(|e| anyhow::anyhow!("bad udp addr {addr}: {e}"))
     }
 
@@ -345,7 +366,11 @@ impl Config {
     pub fn stun_addr_opt(&self) -> anyhow::Result<Option<SocketAddr>> {
         match &self.stun_addr {
             Some(s) => Ok(Some(
-                s.parse()
+                std::net::ToSocketAddrs::to_socket_addrs(s)
+                    .and_then(|mut xs| {
+                        xs.next()
+                            .ok_or_else(|| io::Error::other("no resolved address"))
+                    })
                     .map_err(|e| anyhow::anyhow!("bad stun addr {s}: {e}"))?,
             )),
             None => Ok(None),
@@ -410,6 +435,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("frpsh-test-{}", std::process::id()));
         let path = dir.join("config.toml");
         let cfg = Config {
+            room_tokens: Default::default(),
             signaling_addr: "http://1.2.3.4:9000".into(),
             relay_addr: "1.2.3.4:9001".into(),
             signaling_udp: Some("1.2.3.4:9002".into()),

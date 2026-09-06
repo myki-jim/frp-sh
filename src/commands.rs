@@ -527,6 +527,7 @@ pub async fn run_profile(
             server,
             room,
             password,
+            key,
             mode,
             device,
             relay,
@@ -557,6 +558,9 @@ pub async fn run_profile(
             };
             if let Some(n) = existing {
                 let p = cfg.profiles.get_mut(&n).unwrap();
+                if key.is_some() {
+                    p.key = key.clone();
+                }
                 // 只覆盖本次显式给出的字段，其余保留旧值
                 if password.is_some() {
                     p.password = password.clone();
@@ -599,6 +603,7 @@ pub async fn run_profile(
                 server,
                 room,
                 password,
+                key,
                 mode,
                 device_name: device,
                 relay_addr: relay,
@@ -623,6 +628,7 @@ pub async fn run_profile(
             server,
             room,
             password,
+            key,
             device,
             relay,
             listen,
@@ -639,6 +645,9 @@ pub async fn run_profile(
             }
             if let Some(v) = room {
                 p.room = v;
+            }
+            if let Some(v) = key {
+                p.key = Some(v);
             }
             if let Some(v) = password {
                 p.password = Some(v);
@@ -667,6 +676,9 @@ pub async fn run_profile(
                     anyhow::bail!("--rename cannot be empty");
                 }
                 let mut moved = p.clone();
+                if new_name != name && cfg.profiles.contains_key(&new_name) {
+                    anyhow::bail!("profile name already exists");
+                }
                 moved.name = new_name.clone();
                 cfg.profiles.remove(&name);
                 cfg.profiles.insert(new_name.clone(), moved);
@@ -750,7 +762,7 @@ async fn run_profile_session(p: &crate::config::Profile, base: &Config) -> anyho
                 room,
                 "127.0.0.1:25565".into(),
                 false,
-                None,
+                p.key.clone(),
                 0,
                 2,
                 tun_opts,
@@ -761,7 +773,19 @@ async fn run_profile_session(p: &crate::config::Profile, base: &Config) -> anyho
         }
         "dev" | "game" => {
             let listen = p.listen.clone().unwrap_or_else(|| "127.0.0.1:25565".into());
-            run_join(cfg, room, listen, false, None, 0, 2, None, None, false).await
+            run_join(
+                cfg,
+                room,
+                listen,
+                false,
+                p.key.clone(),
+                0,
+                2,
+                None,
+                None,
+                false,
+            )
+            .await
         }
         other => anyhow::bail!("bad profile mode {other}: expected lan | dev | game"),
     }
@@ -1019,6 +1043,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     };
 
     let cfg = Config {
+        room_tokens: Default::default(),
         signaling_addr,
         relay_addr,
         signaling_udp,
@@ -1369,6 +1394,10 @@ pub async fn run_create(
         )
         .await?;
     let room_id = resp.room_id.clone();
+    cfg.room_tokens
+        .lock()
+        .unwrap()
+        .insert(room_id.clone(), resp.owner_token.clone());
     // 面板基础信息（dev/game host；lan host 会在 host_session 再次填充同样的值）
     crate::stats::update_info(crate::stats::SessionInfo {
         mode: if tun.is_some() {
@@ -1467,6 +1496,10 @@ pub async fn host_session(
 ) -> anyhow::Result<()> {
     let signaling =
         SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
+    if let Some(token) = cfg.room_token(room_id) {
+        signaling.set_room_token(room_id, token);
+    }
+
     let service_addr: SocketAddr = service
         .parse()
         .map_err(|e| FrpError::Config(format!("bad service addr {service}: {e}")))?;
@@ -1679,7 +1712,8 @@ pub async fn host_session(
                     RelayRole::Host,
                     token_opt.as_deref(),
                     auth,
-                    None, // 单对端（game/dev）：单槽位配对
+                    None, // single-peer pairing
+                    cfg.room_token(room_id),
                 )
                 .await
                 {
@@ -1690,7 +1724,11 @@ pub async fn host_session(
                             detail: format!("tcp relay {relay_addr}"),
                             stats: st,
                         });
-                        s
+                        match key_bytes {
+                            Some(k) => Box::new(crate::p2p::enc::EncStream::new(s, &k))
+                                as relay::RelayStream,
+                            None => s,
+                        }
                     }
                     Err(e) => {
                         log::warn!("relay connect failed: {e}");
@@ -2279,6 +2317,7 @@ pub async fn guest_session(
                     token_opt.as_deref(),
                     auth,
                     relay_uuid.as_deref(),
+                    None,
                 )
                 .await
                 {
@@ -2289,7 +2328,11 @@ pub async fn guest_session(
                             detail: format!("tcp relay {relay_addr}"),
                             stats: st,
                         });
-                        s
+                        match key_bytes {
+                            Some(k) => Box::new(crate::p2p::enc::EncStream::new(s, &k))
+                                as relay::RelayStream,
+                            None => s,
+                        }
                     }
                     Err(e) => {
                         log::warn!("relay connect failed: {e}");
@@ -2565,6 +2608,10 @@ pub async fn host_mesh_session(
 ) -> anyhow::Result<()> {
     let signaling =
         SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
+    if let Some(token) = cfg.room_token(room_id) {
+        signaling.set_room_token(room_id, token);
+    }
+
     let key_bytes = derive_key(key.as_deref());
     let (auth, relay_token) = relay_auth_info(&signaling, cfg).await;
     let relay_addr: SocketAddr = cfg
@@ -2940,6 +2987,7 @@ async fn mesh_host_loop(
                 let tx = relay_tx.clone();
                 let addr = relay_addr;
                 let tok = relay_token.map(str::to_string);
+                let owner = cfg.room_token(room_id);
                 tokio::spawn(async move {
                     let r = relay::connect(
                         addr,
@@ -2948,6 +2996,7 @@ async fn mesh_host_loop(
                         tok.as_deref(),
                         auth,
                         Some(&uuid_c),
+                        owner,
                     )
                     .await;
                     let _ = tx.send((uuid_c, r));
@@ -3108,6 +3157,11 @@ async fn mesh_host_loop(
         while let Ok((uuid, res)) = relay_rx.try_recv() {
             match res {
                 Ok((stream, st)) => {
+                    let stream = match key_bytes {
+                        Some(k) => Box::new(crate::p2p::enc::EncStream::new(stream, &k))
+                            as relay::RelayStream,
+                        None => stream,
+                    };
                     if let Some(p) = pending.remove(&uuid) {
                         log::info!("relay link with {uuid} established");
                         established_peer.remove(&uuid); // 直连已被中继取代

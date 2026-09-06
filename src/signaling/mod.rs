@@ -41,6 +41,7 @@ pub struct CreateRoomRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRoomResponse {
+    pub owner_token: String,
     pub room_id: String,
     pub host_addr: SocketAddr,
 }

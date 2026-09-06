@@ -153,6 +153,10 @@ async fn debug_json_handler() -> Json<serde_json::Value> {
 
 /// 启动客户端面板服务（阻塞任务）。失败仅记日志，不影响会话。
 pub async fn serve_client(addr: std::net::SocketAddr) {
+    if !addr.ip().is_loopback() {
+        log::error!("client panel must bind a loopback address");
+        return;
+    }
     let app = Router::new()
         .route(
             "/",
@@ -169,7 +173,8 @@ pub async fn serve_client(addr: std::net::SocketAddr) {
             get(|| async { Json(json!({ "links": crate::stats::links_json() })) }),
         )
         .route("/api/debug", get(debug_json_handler))
-        .route("/ws", get(client_ws));
+        .route("/ws", get(client_ws))
+        .layer(axum::middleware::from_fn(local_panel_auth));
     match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => {
             log::info!("client panel listening on http://{addr}/");
@@ -198,7 +203,7 @@ fn client_info_json() -> serde_json::Value {
         "signaling": i.signaling,
         "relay_addr": i.relay_addr,
         // 本地面板（127.0.0.1）用：分享/一键加入命令生成
-        "password": i.password,
+        "password_configured": !i.password.is_empty(),
         "my_id": i.my_id,
         "device_name": i.device_name,
         "ext_addr": i.ext_addr,
@@ -234,4 +239,32 @@ async fn client_ws(ws: WebSocketUpgrade) -> impl axum::response::IntoResponse {
             }
         }
     })
+}
+
+async fn local_panel_auth(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, axum::http::StatusCode> {
+    let host = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(axum::http::StatusCode::FORBIDDEN)?;
+    let url = reqwest::Url::parse(&format!("http://{host}"))
+        .map_err(|_| axum::http::StatusCode::FORBIDDEN)?;
+    if !url.host_str().is_some_and(|h| {
+        h == "localhost"
+            || h.trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    }) {
+        return Err(axum::http::StatusCode::FORBIDDEN);
+    }
+    let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
+    if origin.is_some_and(|o| o != format!("http://{host}"))
+        || (req.uri().path() == "/ws" && origin.is_none())
+    {
+        return Err(axum::http::StatusCode::FORBIDDEN);
+    }
+    Ok(next.run(req).await)
 }

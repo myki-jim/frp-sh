@@ -6,7 +6,7 @@ use super::{
 };
 use crate::utils;
 use axum::extract::{Path, Request, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -33,6 +33,7 @@ pub static ACTIVE_RELAYS: std::sync::atomic::AtomicUsize = std::sync::atomic::At
 pub struct AppState {
     pub rooms: SharedState,
     pub password: Option<String>,
+    pub admin_token: Option<String>,
     /// 内置 TURN 的公网地址（`--turn` + 启用密码认证时下发 RoomInfo.server_turn；
     /// 凭据复用服务器密码，客户端无需任何配置即可使用）
     pub turn_public: Option<SocketAddr>,
@@ -40,6 +41,7 @@ pub struct AppState {
 
 #[derive(Debug)]
 pub struct Room {
+    pub owner_token: String,
     pub room_id: String,
     pub host_addr: SocketAddr,
     pub guest_addr: Option<SocketAddr>,
@@ -73,11 +75,11 @@ pub struct Room {
     /// 客户端经 `POST /api/traffic` 周期上报（计数单调，取 max 合并）。
     pub traffic: HashMap<String, TrafficRow>,
     /// 中继等待槽位（配对完成前持有连接）
-    pub relay_host: Option<TcpStream>,
-    pub relay_guest: Option<TcpStream>,
+    pub relay_host: Option<PendingRelay>,
+    pub relay_guest: Option<PendingRelay>,
     /// 网格模式中继：uuid -> 等待配对的对端连接（HOST/GUEST 各一张表）
-    pub relay_hosts: HashMap<String, TcpStream>,
-    pub relay_guests: HashMap<String, TcpStream>,
+    pub relay_hosts: HashMap<String, PendingRelay>,
+    pub relay_guests: HashMap<String, PendingRelay>,
     /// 配对完成通知
     pub pair_notify: Arc<Notify>,
 }
@@ -111,6 +113,9 @@ pub async fn run_http(
     let app_state = AppState {
         rooms: state,
         password: password.clone(),
+        admin_token: std::env::var("FRPSH_ADMIN_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty()),
         turn_public,
     };
     let app = Router::new()
@@ -144,7 +149,15 @@ async fn auth_middleware(
     if path == "/version" || path == "/health" || path == "/panel" || path == "/" {
         return Ok(next.run(req).await);
     }
-    if let Some(pw) = &state.password {
+    let required = if path.starts_with("/api/panel/") {
+        Some(state.admin_token.as_ref().ok_or((
+            StatusCode::FORBIDDEN,
+            "admin access is not configured".into(),
+        ))?)
+    } else {
+        state.password.as_ref()
+    };
+    if let Some(pw) = required {
         // 面板数据接口：token 可走 header 或 query（浏览器 WebSocket 友好）
         let token = req
             .headers()
@@ -153,14 +166,11 @@ async fn auth_middleware(
             .map(str::to_string)
             .or_else(|| {
                 req.uri().query().and_then(|q| {
-                    q.split('&').find_map(|kv| {
-                        let (k, v) = kv.split_once('=')?;
-                        if k == "token" {
-                            Some(v.to_string())
-                        } else {
-                            None
-                        }
-                    })
+                    reqwest::Url::parse(&format!("http://localhost/?{q}"))
+                        .ok()?
+                        .query_pairs()
+                        .find(|(k, _)| k == "token")
+                        .map(|(_, v)| v.into_owned())
                 })
             });
         match token {
@@ -197,6 +207,12 @@ async fn create_room(
     let mut map = state.rooms.lock().await;
     // 惰性清理过期房间
     map.retain(|_, r| !r.expired());
+    if map.len() >= 1024 || req.ttl == 0 || req.ttl > 7 * 24 * 3600 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "invalid TTL or room capacity".into(),
+        ));
+    }
     // 生成不冲突的房间号（4 位数字码空间小，撞号时重试；活房间数远小于 10000）
     let mut room_id = utils::new_room_id(&req.prefix);
     for _ in 0..50 {
@@ -205,9 +221,17 @@ async fn create_room(
         }
         room_id = utils::new_room_id(&req.prefix);
     }
+    if map.contains_key(&room_id) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "room capacity exhausted".into(),
+        ));
+    }
+    let owner_token = utils::random_hex(32);
     map.insert(
         room_id.clone(),
         Room {
+            owner_token: owner_token.clone(),
             room_id: room_id.clone(),
             host_addr: req.addr,
             guest_addr: None,
@@ -234,6 +258,7 @@ async fn create_room(
         },
     );
     Ok(Json(CreateRoomResponse {
+        owner_token,
         room_id,
         host_addr: req.addr,
     }))
@@ -373,10 +398,14 @@ async fn get_room(
 async fn refresh_room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<RefreshRoomRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let mut map = state.rooms.lock().await;
     let room = map.get_mut(&room_id).ok_or_else(|| not_found(&room_id))?;
+    if !owns(&headers, room) {
+        return Err((StatusCode::FORBIDDEN, "room owner required".into()));
+    }
     if room.expired() {
         map.remove(&room_id);
         return Err(not_found(&room_id));
@@ -389,14 +418,25 @@ async fn refresh_room(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_room(State(state): State<AppState>, Path(room_id): Path<String>) -> StatusCode {
+fn owns(headers: &HeaderMap, room: &Room) -> bool {
+    headers
+        .get("X-Frp-Sh-Room-Token")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| constant_time_eq(t, &room.owner_token))
+}
+async fn delete_room(
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    headers: HeaderMap,
+) -> StatusCode {
     let mut map = state.rooms.lock().await;
-    if map.remove(&room_id).is_some() {
-        log::info!("room {room_id}: removed (host left or expired)");
-        StatusCode::NO_CONTENT
-    } else {
-        StatusCode::NOT_FOUND
+    match map.get(&room_id) {
+        None => return StatusCode::NOT_FOUND,
+        Some(r) if !owns(&headers, r) => return StatusCode::FORBIDDEN,
+        _ => {}
     }
+    map.remove(&room_id);
+    StatusCode::NO_CONTENT
 }
 
 // ---------- 设备上下行上报（面板房间详情） ----------
@@ -447,6 +487,7 @@ fn record_traffic(room: &mut Room, key: &str, up: u64, down: u64) {
 /// 房主视角的 recv 即对端设备的发出量，sent 即对端设备的接收量。
 async fn report_traffic(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(rep): Json<TrafficReport>,
 ) -> StatusCode {
     let mut map = state.rooms.lock().await;
@@ -454,6 +495,9 @@ async fn report_traffic(
         Some(r) if !r.expired() => r,
         _ => return StatusCode::NOT_FOUND,
     };
+    if rep.role == "host" && !owns(&headers, room) {
+        return StatusCode::FORBIDDEN;
+    }
     match rep.role.as_str() {
         "host" => {
             let mut host_up = 0u64;
@@ -555,257 +599,176 @@ fn fmt_ip(addr: SocketAddr) -> String {
 /// 等待配对的最长时间
 const RELAY_PAIR_TIMEOUT: Duration = Duration::from_secs(600);
 
+pub struct PendingRelay {
+    id: String,
+    stream: crate::p2p::relay::RelayStream,
+}
+impl std::fmt::Debug for PendingRelay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PendingRelay")
+    }
+}
 pub async fn run_relay(
     listener: TcpListener,
     state: SharedState,
     password: Option<String>,
 ) -> anyhow::Result<()> {
+    let limits = Arc::new(tokio::sync::Semaphore::new(256));
     loop {
         let (stream, _) = listener.accept().await?;
-        // 短周期 TCP 保活：对端断网/切换网络后约 15s 内感知，关闭连接并让对端重连
-        let stream = match crate::p2p::relay::enable_keepalive(stream) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("relay keepalive setup failed, dropping connection: {e}");
-                continue;
-            }
+        let Ok(permit) = limits.clone().try_acquire_owned() else {
+            continue;
         };
         let state = state.clone();
         let password = password.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(e) = handle_relay_conn(stream, state, password).await {
-                log::debug!("relay connection ended: {e}");
+                log::debug!("relay ended: {e}");
             }
         });
     }
 }
-
-/// 将中继连接按需包装为加密流（服务器设置了密码时）。
-fn maybe_encrypt<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
-    stream: S,
-    password: Option<&str>,
-) -> Box<dyn crate::p2p::relay::AsyncReadWrite> {
-    match password {
-        Some(pw) => {
-            let key = crate::p2p::enc::key_from_password(pw);
-            Box::new(crate::p2p::enc::EncStream::new(stream, &key))
-        }
-        None => Box::new(stream),
-    }
-}
-
 async fn handle_relay_conn(
-    stream: TcpStream,
+    tcp: TcpStream,
     state: SharedState,
     password: Option<String>,
 ) -> anyhow::Result<()> {
-    let (room_id, role, mut stream, token, peer_uuid) = read_hello(stream).await?;
-
-    // 服务器设置了密码 → 校验客户端携带的 token，并启用中继流加密
-    if let Some(pw) = &password {
-        let ok = token.as_deref() == Some(pw.as_str());
-        if !ok {
-            let _ = stream.write_all(b"ERROR AUTH_FAILED\r\n").await;
-            return Ok(());
+    tcp.set_nodelay(true)?;
+    let tcp = crate::p2p::relay::enable_keepalive(tcp)?;
+    let mut stream: crate::p2p::relay::RelayStream = match password {
+        Some(p) => Box::new(crate::p2p::enc::EncStream::new(
+            tcp,
+            &crate::p2p::enc::key_from_password(&p),
+        )),
+        None => Box::new(tcp),
+    };
+    let (room_id, role, uuid, owner) = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut line = Vec::new();
+        loop {
+            let b = stream.read_u8().await?;
+            if b == b'\n' {
+                break;
+            }
+            if line.len() >= 512 {
+                anyhow::bail!("relay hello too long");
+            }
+            line.push(b);
         }
-    }
-
+        let text = String::from_utf8(line)?;
+        let v: Vec<_> = text.split_whitespace().collect();
+        if v.len() != 5 || v[0] != "HELLO2" || !matches!(v[2], "HOST" | "GUEST") {
+            anyhow::bail!("bad relay handshake");
+        }
+        Ok::<_, anyhow::Error>((
+            v[1].to_string(),
+            v[2].to_string(),
+            v[3].to_string(),
+            v[4].to_string(),
+        ))
+    })
+    .await??;
     let mut map = state.lock().await;
     let room = map
         .get_mut(&room_id)
-        .ok_or_else(|| anyhow::anyhow!("room {room_id} not found"))?;
-    if room.expired() {
-        let _ = stream.write_all(b"ERROR ROOM_EXPIRED\r\n").await;
+        .ok_or_else(|| anyhow::anyhow!("room not found"))?;
+    if room.expired() || (role == "HOST" && !constant_time_eq(&owner, &room.owner_token)) {
+        drop(map);
+        stream.write_all(b"ERROR AUTH\r\n").await?;
+        stream.flush().await?;
         return Ok(());
     }
-
-    // 对方已在等待 → 立即配对并转发（服务器有密码时两侧均加密）。
-    // 网格模式（携带 uuid）按 uuid 配对；旧协议用单槽位。
-    let other = if let Some(u) = &peer_uuid {
+    let other = if uuid == "-" {
         if role == "HOST" {
-            room.relay_guests.remove(u)
+            room.relay_guest.take()
         } else {
-            room.relay_hosts.remove(u)
+            room.relay_host.take()
         }
     } else if role == "HOST" {
-        room.relay_guest.take()
+        room.relay_guests.remove(&uuid)
     } else {
-        room.relay_host.take()
+        room.relay_hosts.remove(&uuid)
     };
     if let Some(other) = other {
-        let notify = room.pair_notify.clone();
-        let _ = stream.write_all(b"OK\r\n").await;
         drop(map);
-        log::info!(
-            "room {room_id}: relay pair established ({role}, uuid {})",
-            peer_uuid.as_deref().unwrap_or("-")
-        );
-        notify.notify_waiters();
-        let pw = password.clone();
+        stream.write_all(b"OK\r\n").await?;
+        stream.flush().await?;
         ACTIVE_RELAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tokio::spawn(async move {
-            let pw_opt = pw.as_deref();
-            let mut a = maybe_encrypt(stream, pw_opt);
-            let mut b = maybe_encrypt(other, pw_opt);
-            let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
-            ACTIVE_RELAYS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            log::info!("room closed after relay session ended");
-        });
+        let mut other = other.stream;
+        let _ = tokio::io::copy_bidirectional(&mut stream, &mut other).await;
+        ACTIVE_RELAYS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         return Ok(());
     }
-
-    // 尚未配对：占住槽位（uuid 键控或单槽），回复 WAIT，等待对端
-    let already = if let Some(u) = &peer_uuid {
-        let slot = if role == "HOST" {
-            &room.relay_hosts
-        } else {
-            &room.relay_guests
-        };
-        slot.contains_key(u)
-    } else if role == "HOST" {
-        room.relay_host.is_some()
-    } else {
-        room.relay_guest.is_some()
-    };
-    if already {
-        // 同 uuid 的新连接只可能来自客户端重连（旧连接必然已死）：
-        // 不再拒绝，改为顶掉旧槽位，避免僵尸 WAIT 连接把设备永久挡在门外。
-        if let Some(u) = &peer_uuid {
-            let slot = if role == "HOST" {
-                &mut room.relay_hosts
-            } else {
-                &mut room.relay_guests
-            };
-            slot.remove(u);
-        } else if role == "HOST" {
-            room.relay_host.take();
-        } else {
-            room.relay_guest.take();
-        }
+    if room.relay_hosts.len() + room.relay_guests.len() >= 128 {
+        anyhow::bail!("room relay capacity");
     }
-    let _ = stream.write_all(b"WAIT\r\n").await;
-    {
-        if let Some(u) = &peer_uuid {
-            let slot = if role == "HOST" {
-                &mut room.relay_hosts
-            } else {
-                &mut room.relay_guests
-            };
-            slot.insert(u.clone(), stream);
+    drop(map);
+    stream.write_all(b"WAIT\r\n").await?;
+    stream.flush().await?;
+    let id = utils::random_hex(16);
+    let pending = PendingRelay {
+        id: id.clone(),
+        stream,
+    };
+    let mut map = state.lock().await;
+    let room = map
+        .get_mut(&room_id)
+        .ok_or_else(|| anyhow::anyhow!("room removed"))?;
+    // Recheck the peer after I/O outside the room lock.
+    let other = if uuid == "-" {
+        if role == "HOST" {
+            room.relay_guest.take()
         } else {
+            room.relay_host.take()
+        }
+    } else if role == "HOST" {
+        room.relay_guests.remove(&uuid)
+    } else {
+        room.relay_hosts.remove(&uuid)
+    };
+    if let Some(other) = other {
+        drop(map);
+        ACTIVE_RELAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut a = pending.stream;
+        let mut b = other.stream;
+        let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
+        ACTIVE_RELAYS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        return Ok(());
+    }
+    if uuid == "-" {
+        if role == "HOST" {
+            room.relay_host = Some(pending)
+        } else {
+            room.relay_guest = Some(pending)
+        }
+    } else if role == "HOST" {
+        room.relay_hosts.insert(uuid.clone(), pending);
+    } else {
+        room.relay_guests.insert(uuid.clone(), pending);
+    }
+    drop(map);
+    tokio::time::sleep(RELAY_PAIR_TIMEOUT).await;
+    let mut map = state.lock().await;
+    if let Some(room) = map.get_mut(&room_id) {
+        if uuid == "-" {
             let slot = if role == "HOST" {
                 &mut room.relay_host
             } else {
                 &mut room.relay_guest
             };
-            *slot = Some(stream);
-        }
-    }
-    let notify = room.pair_notify.clone();
-    drop(map);
-
-    // uuid 槽位的等待者不监听 pair_notify：任何无关配对的 notify 都会把它唤醒并
-    // 提前返回，导致超时清理被跳过、僵尸连接永久占槽（对端重连被 ALREADY 挡死）。
-    // uuid 配对由配对分支直接消费槽内流；等待者只需保留超时兜底。
-    // 单槽位（旧协议）无 uuid 可查，仍靠 notify 判断"槽已被消费"以提前收尾。
-    let uuid_waiter = peer_uuid.is_some();
-    tokio::select! {
-        _ = tokio::time::sleep(RELAY_PAIR_TIMEOUT) => {
-            let mut map = state.lock().await;
-            if let Some(room) = map.get_mut(&room_id) {
-                let slot_err = if let Some(u) = &peer_uuid {
-                    let slot = if role == "HOST" {
-                        &mut room.relay_hosts
-                    } else {
-                        &mut room.relay_guests
-                    };
-                    slot.remove(u)
-                } else {
-                    let slot = if role == "HOST" {
-                        &mut room.relay_host
-                    } else {
-                        &mut room.relay_guest
-                    };
-                    slot.take()
-                };
-                if let Some(mut s) = slot_err {
-                    log::warn!(
-                        "room {room_id}: relay wait timeout ({}), no peer arrived",
-                        role
-                    );
-                    let _ = s.write_all(b"ERROR NO_PEER\r\n").await;
-                }
+            if slot.as_ref().is_some_and(|p| p.id == id) {
+                slot.take();
             }
-            Ok(())
-        }
-        _ = async {
-            if uuid_waiter {
-                std::future::pending::<()>().await
+        } else {
+            let slots = if role == "HOST" {
+                &mut room.relay_hosts
             } else {
-                notify.notified().await
-            }
-        } => {
-            let map = state.lock().await;
-            let consumed = map
-                .get(&room_id)
-                .map(|r| {
-                    if peer_uuid.is_some() {
-                        true // uuid 槽位不参与 notify 配对，直接视为已消费
-                    } else if role == "HOST" {
-                        r.relay_host.is_none()
-                    } else {
-                        r.relay_guest.is_none()
-                    }
-                })
-                .unwrap_or(true);
-            drop(map);
-            if consumed {
-                Ok(())
-            } else {
-                Err(anyhow::anyhow!("relay pairing state inconsistent for {room_id}"))
+                &mut room.relay_guests
+            };
+            if slots.get(&uuid).is_some_and(|p| p.id == id) {
+                slots.remove(&uuid);
             }
         }
     }
-}
-
-/// 读取 `HELLO <room_id> <HOST|GUEST> [token] [uuid]\r\n` 行。
-///
-/// token 为可选第 4 字段（服务器设置密码时客户端携带）；
-/// uuid 为可选第 5 字段（网格模式多访客时用于配对到指定对端）。
-/// 逐字节读取，避免 BufReader 缓冲残留吞掉对端随后发来的数据（如 CNEW）。
-async fn read_hello(
-    stream: TcpStream,
-) -> anyhow::Result<(String, String, TcpStream, Option<String>, Option<String>)> {
-    stream.set_nodelay(true)?;
-    let (mut rd, mut wr) = stream.into_split();
-    let mut line = Vec::with_capacity(64);
-    let mut byte = [0u8; 1];
-    loop {
-        let n = tokio::time::timeout(Duration::from_secs(10), rd.read(&mut byte)).await??;
-        if n == 0 {
-            return Err(anyhow::anyhow!("relay: connection closed during hello"));
-        }
-        if byte[0] == b'\n' {
-            break;
-        }
-        if line.len() < 256 {
-            line.push(byte[0]);
-        }
-    }
-    let text = String::from_utf8_lossy(&line);
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    if parts.len() < 3 || parts.len() > 5 || parts[0] != "HELLO" {
-        let _ = wr.write_all(b"ERROR BAD_HELLO\r\n").await;
-        return Err(anyhow::anyhow!("relay: bad hello line"));
-    }
-    let (room_id, role) = (parts[1].to_string(), parts[2].to_string());
-    if role != "HOST" && role != "GUEST" {
-        let _ = wr.write_all(b"ERROR BAD_ROLE\r\n").await;
-        return Err(anyhow::anyhow!("relay: bad role {role}"));
-    }
-    // 字段顺序：HELLO <room> <ROLE> [token] [uuid]
-    let token = parts.get(3).map(|s| s.to_string());
-    let uuid = parts.get(4).map(|s| s.to_string());
-    let stream = rd.reunite(wr)?;
-    Ok((room_id, role, stream, token, uuid))
+    Ok(())
 }

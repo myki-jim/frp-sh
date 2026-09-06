@@ -103,15 +103,22 @@ impl TurnClient {
                 req.len()
             );
             let mut buf = [0u8; 2048];
-            let (n, _) = tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut buf))
-                .await
-                .map_err(|_| crate::error::FrpError::Relay("TURN allocate timed out".into()))?
-                .map_err(crate::error::FrpError::Io)?;
+            let (n, source) =
+                tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut buf))
+                    .await
+                    .map_err(|_| crate::error::FrpError::Relay("TURN allocate timed out".into()))?
+                    .map_err(crate::error::FrpError::Io)?;
             log::debug!("TURN allocate recv {n}B");
             let Some(msg) = stun::parse(&buf[..n]) else {
                 log::warn!("TURN allocate: unparsable {n}B response");
                 continue;
             };
+            if source != cred.server
+                || msg.txid.as_slice() != &req[8..20]
+                || msg.method != stun::METHOD_ALLOCATE
+            {
+                continue;
+            }
             // 响应的 txid 必须与当前请求一致（当前 req 的 txid 无法直接取，
             // 通过比对非杂散：忽略与本轮请求无关的旧响应）
             if msg.class == 3 {
@@ -315,7 +322,10 @@ impl TurnLoop {
         let mut buf = [0u8; 2048];
         loop {
             match self.socket.recv_from(&mut buf).await {
-                Ok((n, _)) => {
+                Ok((n, source)) => {
+                    if source != self.server {
+                        continue;
+                    }
                     let Some(msg) = stun::parse(&buf[..n]) else {
                         continue;
                     };

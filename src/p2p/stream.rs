@@ -1,4 +1,4 @@
-//! 可靠 UDP 流（FRS1 帧协议）。
+//! 可靠 UDP 流（FRS2 帧协议）。
 //!
 //! 在打洞后的 UDP socket 之上提供字节流语义：
 //! - 15 字节定长帧头 + 滑动窗口（go-back-N）+ 累积 ACK + 超时重传；
@@ -9,14 +9,14 @@
 //! 帧格式（头 15 字节 + payload）：
 //! ```text
 //! +------+------+------+------+------+------+------+------+------+------+------+------+------+------+------+
-//! | magic "FRS1" (4B) | flags (1B) |  seq u32 BE   |  ack u32 BE   |  len u16 BE   | payload (len B)      |
+//! | magic "FRS2" (4B) | flags (1B) |  seq u32 BE   |  ack u32 BE   |  len u16 BE   | payload (len B)      |
 //! +------+------+------+------+------+------+------+------+------+------+------+------+------+------+------+
 //! flags: 0x01 = DATA, 0x02 = FIN；无标志位即纯 ACK 帧。
 //! ```
 
+use super::security::{DatagramSecurity, Incoming};
 use bytes::BytesMut;
-use chacha20poly1305::aead::{Aead, KeyInit};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::SocketAddr;
@@ -28,14 +28,14 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
 
-pub const MAGIC: [u8; 4] = *b"FRS1";
+pub const MAGIC: [u8; 4] = *b"FRS2";
 
 const FLAG_DATA: u8 = 0x01;
 const FLAG_FIN: u8 = 0x02;
 /// 数据帧最大长度（含 Poly1305 标签时明文相应缩减）
 const MAX_PAYLOAD: usize = 1200;
-/// 加密时单帧明文上限（1200 - 16 字节标签）
-const MAX_PLAINTEXT: usize = MAX_PAYLOAD - 16;
+/// 加密时单帧明文上限（预留完整认证信封开销）
+const MAX_PLAINTEXT: usize = MAX_PAYLOAD - 64;
 const WINDOW: usize = 32;
 const RETRANSMIT_MS: u64 = 150;
 const KEEPALIVE_MS: u64 = 1000;
@@ -47,13 +47,6 @@ const LIVENESS_TIMEOUT_MS: u64 = 3_000;
 const OUT_CAP: usize = 256 * 1024;
 const RX_CAP: usize = 1024 * 1024;
 const CLOSE_TIMEOUT_MS: u64 = 5000;
-
-/// 由帧序号派生 AEAD nonce（每帧唯一）。
-fn nonce_for(seq: u32) -> Nonce {
-    let mut n = [0u8; 12];
-    n[..4].copy_from_slice(&seq.to_be_bytes());
-    *Nonce::from_slice(&n)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameKind {
@@ -83,6 +76,9 @@ fn parse_frame(buf: &[u8]) -> Option<(FrameKind, u32, u32, &[u8])> {
         return None;
     }
     let flags = buf[4];
+    if flags != 0 && flags != FLAG_DATA && flags != FLAG_FIN {
+        return None;
+    }
     let seq = u32::from_be_bytes(buf[5..9].try_into().ok()?);
     let ack = u32::from_be_bytes(buf[9..13].try_into().ok()?);
     let len = u16::from_be_bytes(buf[13..15].try_into().ok()?) as usize;
@@ -99,7 +95,7 @@ fn parse_frame(buf: &[u8]) -> Option<(FrameKind, u32, u32, &[u8])> {
     Some((kind, seq, ack, &buf[15..]))
 }
 
-/// 判断一个数据报是否为 FRS1 数据帧（打洞阶段用于识别直连成功）。
+/// 判断一个数据报是否为 FRS2 数据帧（打洞阶段用于识别直连成功）。
 pub fn is_data_frame(buf: &[u8]) -> bool {
     buf.len() >= 4 && buf[..4] == MAGIC[..]
 }
@@ -130,7 +126,7 @@ struct Shared {
     read_waker: Option<Waker>,
     write_waker: Option<Waker>,
     /// 数据帧负载加密（`--key` 启用；ACK/FIN 帧不加密）
-    cipher: Option<ChaCha20Poly1305>,
+    cipher: Option<DatagramSecurity>,
     /// 面板统计句柄（None = 不采集，测试流不受影响）
     stats: Option<Arc<crate::stats::StreamStats>>,
     /// 发送时间戳（seq → Instant）：Ack 抵达时计算 RTT
@@ -172,7 +168,7 @@ fn make_shared(peer: SocketAddr, key: Option<[u8; 32]>, had_rx: bool) -> Shared 
         .and_then(|v| v.parse::<u64>().ok())
         .map(Duration::from_millis)
         .unwrap_or(Duration::from_millis(LIVENESS_TIMEOUT_MS));
-    let cipher = key.map(|k| ChaCha20Poly1305::new(Key::from_slice(&k)));
+    let cipher = key.map(DatagramSecurity::new);
     Shared {
         peer,
         rx_buf: VecDeque::new(),
@@ -282,7 +278,7 @@ type AliasRegistry = Arc<std::sync::Mutex<HashMap<SocketAddr, SocketAddr>>>;
 /// 共享 socket 的多对端网格流：一个 UDP socket 承载多个对端流（host 侧网格模式）。
 ///
 /// 路由器任务统一收包：
-/// - FRS1 数据帧 → 按来源地址（经别名表解析）路由到对应对端流（未注册对端的数据帧丢弃，发送方会重传）；
+/// - FRS2 数据帧 → 按来源地址（经别名表解析）路由到对应对端流（未注册对端的数据帧丢弃，发送方会重传）；
 /// - 其他文本数据报（PUNCH/ACK/探测回复）→ 进入事件通道，交由上层打洞编排处理。
 ///
 /// 每个对端流有独立的定时任务（flush/重传/keepalive/存活检测），发送共用同一 socket。
@@ -389,7 +385,7 @@ impl UdpMesh {
     }
 }
 
-/// 路由器：收包 → FRS1 按来源路由 / 其他文本进事件通道。
+/// 路由器：收包 → FRS2 按来源路由 / 其他文本进事件通道。
 async fn mesh_router(
     socket: Arc<UdpSocket>,
     peers: PeerRegistry,
@@ -406,7 +402,7 @@ async fn mesh_router(
                     let canonical = aliases.lock().unwrap().get(&src).copied().unwrap_or(src);
                     let entry = peers.lock().unwrap().get(&canonical).cloned();
                     if let Some((shared, _)) = entry {
-                        handle_incoming(&socket, &shared, &data, Some(src)).await;
+                        handle_incoming(&socket, &shared, &data, Some(src), true).await;
                     }
                     // 未注册对端的数据帧：可能打洞刚完成、首帧先于注册到达——发送方会重传
                 } else {
@@ -469,7 +465,7 @@ async fn run<S: crate::p2p::turn::DatagramSocket>(
     first: Option<(Vec<u8>, SocketAddr)>,
 ) {
     if let Some((bytes, src)) = first {
-        handle_incoming(&socket, &shared, &bytes, Some(src)).await;
+        handle_incoming(&socket, &shared, &bytes, Some(src), false).await;
     }
     let mut buf = [0u8; 2048];
     let mut last_tx = Instant::now();
@@ -489,7 +485,7 @@ async fn run<S: crate::p2p::turn::DatagramSocket>(
         tokio::select! {
             recv = socket.recv_from(&mut buf) => {
                 match recv {
-                    Ok((len, src)) => handle_incoming(&socket, &shared, &buf[..len], Some(src)).await,
+                    Ok((len, src)) => handle_incoming(&socket, &shared, &buf[..len], Some(src), false).await,
                     Err(e) => {
                         // Windows：向已关闭的 UDP 端口发送过后，下次 recv 会返回
                         // WSAECONNRESET(10054)/WSAECONNREFUSED(10061)，属于正常现象，
@@ -518,13 +514,34 @@ async fn run<S: crate::p2p::turn::DatagramSocket>(
     }
 }
 
-/// 处理收到的一个数据报（必须是合法 FRS1 帧）。
+/// 处理收到的一个数据报（必须是合法 FRS2 帧）。
 async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
     socket: &S,
     shared: &Arc<Mutex<Shared>>,
     data: &[u8],
     src: Option<SocketAddr>,
+    trusted_alias: bool,
 ) {
+    let incoming = {
+        let mut g = shared.lock().unwrap();
+        if !trusted_alias && src.is_some_and(|s| s != g.peer) {
+            return;
+        }
+        match &mut g.cipher {
+            Some(c) => c.receive(data),
+            None => Incoming::Data(data.to_vec()),
+        }
+    };
+    let plain = match incoming {
+        Incoming::Data(p) => p,
+        Incoming::Reply(p) => {
+            let peer = src.unwrap_or_else(|| shared.lock().unwrap().peer);
+            let _ = socket.send_to(&p, peer).await;
+            return;
+        }
+        Incoming::Ignore => return,
+    };
+    let data = plain.as_slice();
     let Some((kind, seq, ack, payload)) = parse_frame(data) else {
         return;
     };
@@ -545,7 +562,7 @@ async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
         }
 
         // 累积 ACK：丢弃已确认帧；对被确认帧计算 RTT（首次发送时间戳）
-        if ack > 0 {
+        if ack > 0 && ack <= g.next_seq {
             let st = g.stats.clone();
             let mut confirmed: Vec<u32> = Vec::new();
             while let Some((s, _)) = g.unacked.front() {
@@ -590,29 +607,16 @@ async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
             FrameKind::Data | FrameKind::Fin => {
                 if seq == g.next_expected {
                     if kind == FrameKind::Data {
-                        // 解密数据帧负载
-                        let plain: Option<Vec<u8>> = match &g.cipher {
-                            Some(c) => match c.decrypt(&nonce_for(seq), payload) {
-                                Ok(p) => Some(p),
-                                Err(_) => {
-                                    // 密钥不匹配或负载被篡改
-                                    let msg = "decryption failed (wrong --key?)".to_string();
-                                    drop(g);
-                                    fail(shared, msg);
-                                    return;
-                                }
-                            },
-                            None => Some(payload.to_vec()),
-                        };
-                        if let Some(plain) = plain {
-                            if g.rx_buf.len() + plain.len() <= RX_CAP {
-                                g.rx_buf.extend(plain);
-                                wake(&mut g.read_waker);
-                            }
-                            // 读缓冲满：丢弃该帧（不推进序号，发送方会重传）
+                        if g.rx_buf.len() + payload.len() > RX_CAP {
+                            return;
                         }
+                        g.rx_buf.extend(payload);
+                        wake(&mut g.read_waker);
                     }
-                    g.next_expected += 1;
+                    let Some(next) = g.next_expected.checked_add(1) else {
+                        return;
+                    };
+                    g.next_expected = next;
                     if kind == FrameKind::Fin {
                         g.rx_closed = true;
                         wake(&mut g.read_waker);
@@ -649,7 +653,7 @@ async fn handle_incoming<S: crate::p2p::turn::DatagramSocket>(
         if let Some(st) = &st {
             st.on_sent(frame.len());
         }
-        let _ = socket.send_to(&frame, peer).await;
+        send_frame(socket, shared, &frame, peer).await;
     }
 }
 
@@ -661,6 +665,14 @@ async fn flush_out<S: crate::p2p::turn::DatagramSocket>(socket: &S, shared: &Arc
             if g.err.is_some() {
                 return;
             }
+            if g.cipher.as_ref().is_some_and(|c| !c.ready()) {
+                return;
+            }
+            if g.next_seq == u32::MAX {
+                drop(g);
+                fail(shared, "sequence exhausted".into());
+                return;
+            }
             if g.unacked.len() >= WINDOW {
                 return;
             }
@@ -668,14 +680,7 @@ async fn flush_out<S: crate::p2p::turn::DatagramSocket>(socket: &S, shared: &Arc
                 g.out_queue_len -= payload.len();
                 let seq = g.next_seq;
                 g.next_seq += 1;
-                // 加密数据帧负载（重传复用同一密文）
-                let wire_payload: Vec<u8> = match &g.cipher {
-                    Some(c) => c
-                        .encrypt(&nonce_for(seq), payload.as_slice())
-                        .expect("chacha20poly1305 encrypt"),
-                    None => payload,
-                };
-                let frame = encode_frame(FrameKind::Data, seq, g.next_expected, &wire_payload);
+                let frame = encode_frame(FrameKind::Data, seq, g.next_expected, &payload);
                 let stored = frame.clone().to_vec();
                 g.unacked.push_back((seq, stored.clone()));
                 // 首次发送记录时间戳（重传不覆盖，RTT 只算首发）
@@ -711,7 +716,7 @@ async fn flush_out<S: crate::p2p::turn::DatagramSocket>(socket: &S, shared: &Arc
         };
         if let Some((frame, peer)) = send {
             log::debug!("send to {peer}: len={}", frame.len());
-            let _ = socket.send_to(&frame, peer).await;
+            send_frame(socket, shared, &frame, peer).await;
         }
     }
 }
@@ -722,6 +727,16 @@ async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
     shared: &Arc<Mutex<Shared>>,
     last_tx: &mut Instant,
 ) {
+    let hello = {
+        let g = shared.lock().unwrap();
+        g.cipher
+            .as_ref()
+            .filter(|c| !c.ready())
+            .map(|c| (c.hello([0; 16]), g.peer))
+    };
+    if let Some((h, p)) = hello {
+        let _ = socket.send_to(&h, p).await;
+    }
     let now = Instant::now();
 
     // FIN 确认超时：对端已不可达/已关闭 socket，视为关闭完成（尽力而为的 FIN 握手）
@@ -784,7 +799,7 @@ async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
             }
         }
         for f in frames {
-            let _ = socket.send_to(&f, peer).await;
+            send_frame(socket, shared, &f, peer).await;
         }
         *last_tx = now;
         return;
@@ -805,7 +820,7 @@ async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
         if let Some(st) = &st {
             st.on_sent(frame.len());
         }
-        let _ = socket.send_to(&frame, peer).await;
+        send_frame(socket, shared, &frame, peer).await;
         *last_tx = now;
     }
 }
@@ -901,6 +916,24 @@ impl AsyncWrite for UdpStream {
                 Poll::Pending
             }
         }
+    }
+}
+
+async fn send_frame<S: crate::p2p::turn::DatagramSocket>(
+    socket: &S,
+    shared: &Arc<Mutex<Shared>>,
+    frame: &[u8],
+    peer: SocketAddr,
+) {
+    let wire = {
+        let mut g = shared.lock().unwrap();
+        match &mut g.cipher {
+            Some(c) => c.seal(frame),
+            None => Some(frame.to_vec()),
+        }
+    };
+    if let Some(wire) = wire {
+        let _ = socket.send_to(&wire, peer).await;
     }
 }
 
@@ -1003,7 +1036,7 @@ mod tests {
                 .expect("no ACK from mesh (alias frame was dropped)")
                 .unwrap();
         assert_eq!(from, mesh.local_addr().unwrap());
-        let (kind, _seq, ack, _) = parse_frame(&buf[..n]).expect("not an FRS1 frame");
+        let (kind, _seq, ack, _) = parse_frame(&buf[..n]).expect("not an FRS2 frame");
         assert_eq!(kind, FrameKind::Ack);
         assert_eq!(ack, 2, "receiver should advance next_expected past seq=1");
     }

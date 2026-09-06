@@ -51,6 +51,7 @@ async fn try_start_server(password: Option<&str>) -> Option<TestServer> {
     tokio::spawn(server::run_relay(relay_listener, state, pw.clone()));
     Some(TestServer {
         cfg: Config {
+            room_tokens: Default::default(),
             signaling_addr: format!("http://127.0.0.1:{http_port}"),
             relay_addr: format!("127.0.0.1:{relay_port}"),
             signaling_udp: Some(format!("127.0.0.1:{udp_port}")),
@@ -89,6 +90,10 @@ async fn create_room(cfg: &Config) -> String {
         )
         .await
         .unwrap();
+    cfg.room_tokens
+        .lock()
+        .unwrap()
+        .insert(resp.room_id.clone(), resp.owner_token);
     resp.room_id
 }
 
@@ -555,6 +560,7 @@ async fn e2e_mesh_relay_pairing() {
             None,
             false,
             Some(&guest_uuid),
+            None,
         )
         .await;
         match stream {
@@ -758,6 +764,22 @@ async fn e2e_relay_with_server_password_encrypted() {
     let (host, guest) = run_session(srv.cfg, room_id, true, None, 1).await;
     assert!(host.is_ok(), "encrypted relay host failed: {host:?}");
     assert!(guest.is_ok(), "encrypted relay guest failed: {guest:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_relay_with_server_password_and_end_to_end_key() {
+    let srv = start_server_with_password(Some("test-server-password")).await;
+    let room_id = create_room(&srv.cfg).await;
+    let (host, guest) = run_session(
+        srv.cfg,
+        room_id,
+        true,
+        Some("test-end-to-end-key".into()),
+        1,
+    )
+    .await;
+    assert!(host.is_ok(), "nested encryption host failed: {host:?}");
+    assert!(guest.is_ok(), "nested encryption guest failed: {guest:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
