@@ -1699,6 +1699,7 @@ async fn host_punch_phase(
             if !guest_addrs.is_empty() {
                 return Ok(PunchOutcome::TimedOut);
             }
+            tokio::time::sleep(POLL_INTERVAL).await;
             continue;
         }
         if !guest_addrs.is_empty() {
@@ -1730,27 +1731,8 @@ async fn host_punch_phase(
             if my_port == Some(src.port()) {
                 continue; // 自我打洞回声，忽略
             }
-            if stream::is_data_frame(&bytes) {
-                return Ok(PunchOutcome::Direct {
-                    peer: src,
-                    first: Some((bytes, src)),
-                });
-            }
-            if let Some(t) = parse_punch(&bytes) {
-                engine.send_ack_retry(src, &t).await;
-                log::info!("got PUNCH from {src}, replying ACK");
-                return Ok(PunchOutcome::Direct {
-                    peer: src,
-                    first: None,
-                });
-            }
-            if let Some(t) = parse_ack(&bytes) {
-                if t == token {
-                    return Ok(PunchOutcome::Direct {
-                        peer: src,
-                        first: None,
-                    });
-                }
+            if let Some(outcome) = accept_direct_probe(engine, bytes, src, token, true).await {
+                return Ok(outcome);
             }
         }
         // 4) 超时判定：窗口到期，或总打洞时间超过上限（地址频繁变化时兜底）
@@ -2345,27 +2327,8 @@ async fn guest_punch_phase(
             if my_port == Some(src.port()) {
                 continue; // 自我打洞回声，忽略
             }
-            if stream::is_data_frame(&bytes) {
-                return Ok(PunchOutcome::Direct {
-                    peer: src,
-                    first: Some((bytes, src)),
-                });
-            }
-            if let Some(t) = parse_punch(&bytes) {
-                engine.send_ack_retry(src, &t).await;
-                log::info!("got PUNCH from {src}, replying ACK");
-                return Ok(PunchOutcome::Direct {
-                    peer: src,
-                    first: None,
-                });
-            }
-            if let Some(t) = parse_ack(&bytes) {
-                if t == token {
-                    return Ok(PunchOutcome::Direct {
-                        peer: src,
-                        first: None,
-                    });
-                }
+            if let Some(outcome) = accept_direct_probe(engine, bytes, src, token, false).await {
+                return Ok(outcome);
             }
         }
         // 超时判定：窗口到期，或总打洞时间超过上限（地址频繁变化时兜底）
@@ -2375,6 +2338,39 @@ async fn guest_punch_phase(
             return Ok(PunchOutcome::TimedOut);
         }
     }
+}
+
+/// Nominate one request/reply path: the host accepts a guest PUNCH and the guest
+/// accepts its ACK. Simultaneously accepting both directions can select different
+/// local interfaces; wildcard UDP sockets then send from an unexpected address.
+async fn accept_direct_probe(
+    engine: &PunchEngine,
+    bytes: Vec<u8>,
+    src: SocketAddr,
+    token: &str,
+    host: bool,
+) -> Option<PunchOutcome> {
+    if stream::is_data_frame(&bytes) {
+        return Some(PunchOutcome::Direct {
+            peer: src,
+            first: Some((bytes, src)),
+        });
+    }
+    let accepted = if host {
+        if let Some(t) = parse_punch(&bytes) {
+            engine.send_ack_retry(src, &t).await;
+            log::info!("got PUNCH from {src}, replying ACK");
+            true
+        } else {
+            false
+        }
+    } else {
+        parse_ack(&bytes).is_some_and(|t| t == token)
+    };
+    accepted.then_some(PunchOutcome::Direct {
+        peer: src,
+        first: None,
+    })
 }
 
 /// 中继连接后的最终直连复查（约 400ms）。
@@ -3188,6 +3184,81 @@ async fn mesh_establish_link(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn crossed_candidate_probes_nominate_one_encrypted_path() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let host = PunchEngine::bind().await.unwrap();
+        let guest = PunchEngine::bind().await.unwrap();
+        let host_addr = SocketAddr::from(([127, 0, 0, 1], host.local_addr().unwrap().port()));
+        let guest_addr = SocketAddr::from(([127, 0, 0, 1], guest.local_addr().unwrap().port()));
+        // Reproduce the losing order without depending on NIC layout or timing:
+        // a host probe and its reply arrive over a different candidate first.
+        let alternate_host = SocketAddr::new("192.0.2.1".parse().unwrap(), host_addr.port());
+        let alternate_guest = SocketAddr::new("192.0.2.2".parse().unwrap(), guest_addr.port());
+        assert!(accept_direct_probe(
+            &guest,
+            b"PUNCH host-token".to_vec(),
+            alternate_host,
+            "guest-token",
+            false
+        )
+        .await
+        .is_none());
+        assert!(accept_direct_probe(
+            &host,
+            b"ACK host-token".to_vec(),
+            alternate_guest,
+            "host-token",
+            true
+        )
+        .await
+        .is_none());
+        assert!(accept_direct_probe(
+            &guest,
+            b"ACK wrong-token".to_vec(),
+            host_addr,
+            "guest-token",
+            false
+        )
+        .await
+        .is_none());
+
+        guest.send_punch(host_addr, "guest-token").await.unwrap();
+        let (bytes, src) = host.recv(Duration::from_secs(1)).await.unwrap().unwrap();
+        let Some(PunchOutcome::Direct {
+            peer: host_peer,
+            first: host_first,
+        }) = accept_direct_probe(&host, bytes, src, "host-token", true).await
+        else {
+            panic!("host did not nominate guest probe")
+        };
+        let (bytes, src) = guest.recv(Duration::from_secs(1)).await.unwrap().unwrap();
+        let Some(PunchOutcome::Direct {
+            peer: guest_peer,
+            first: guest_first,
+        }) = accept_direct_probe(&guest, bytes, src, "guest-token", false).await
+        else {
+            panic!("guest did not accept nominated reply")
+        };
+        assert_eq!(host_peer, guest_addr);
+        assert_eq!(guest_peer, host_addr);
+        let mut host_stream = host.into_stream(host_peer, host_first, Some([42; 32]));
+        let mut guest_stream = guest.into_stream(guest_peer, guest_first, Some([42; 32]));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            guest_stream.write_all(b"request").await.unwrap();
+            let mut request = [0; 7];
+            host_stream.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"request");
+            host_stream.write_all(b"response").await.unwrap();
+            let mut response = [0; 8];
+            guest_stream.read_exact(&mut response).await.unwrap();
+            assert_eq!(&response, b"response");
+        })
+        .await
+        .expect("nominated encrypted path must carry data both ways");
+    }
 
     /// 同角色二次加锁必须失败（单实例）；不同角色互不影响。
     #[test]
