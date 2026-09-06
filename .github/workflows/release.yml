@@ -111,6 +111,7 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
           files: dist/*
 
       - name: Upload artifact for site sync
@@ -119,9 +120,20 @@ jobs:
           name: ${{ matrix.asset }}
           path: dist/*
 
+  publish-release:
+    name: Publish complete release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish release with migration notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest --title "frp-sh $GITHUB_REF_NAME" --notes-file docs/releases/0.4.0.md
+
   sync-downloads:
     name: Sync site downloads
-    needs: release
+    needs: publish-release
     runs-on: ubuntu-latest
     permissions:
       contents: write
