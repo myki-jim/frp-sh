@@ -20,6 +20,9 @@ pub fn configure(plain: bool, json: bool, no_color: bool) {
 pub fn interactive() -> bool {
     !PLAIN.load(Ordering::Relaxed) && io::stdin().is_terminal() && io::stdout().is_terminal()
 }
+pub fn can_prompt() -> bool {
+    !json() && io::stdin().is_terminal() && io::stdout().is_terminal()
+}
 pub fn plain() -> bool {
     PLAIN.load(Ordering::Relaxed)
 }
@@ -105,7 +108,7 @@ pub fn monitor() -> Monitor {
         return Monitor(None, pb);
     }
     let pb = indicatif::ProgressBar::new_spinner();
-    pb.set_style(indicatif::ProgressStyle::with_template("{msg}").expect("status template"));
+    pb.set_style(indicatif::ProgressStyle::with_template("{wide_msg}").expect("status template"));
     let view = pb.clone();
     let task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));

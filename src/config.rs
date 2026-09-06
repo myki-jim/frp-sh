@@ -44,10 +44,10 @@ pub struct Config {
     /// 打洞失败时按序尝试，测速选最快者建立 TURN 中继数据面；全部失败回退私有 TCP 中继。
     #[serde(default)]
     pub turn_providers: Vec<String>,
-    /// 可选：设备显示名（面板/拓扑显示；默认取主机名；房间内重名自动加 -2/-3 后缀）
+    /// 可选：设备显示名（终端/拓扑显示；默认取主机名；房间内重名自动加 -2/-3 后缀）
     #[serde(default)]
     pub name: Option<String>,
-    /// 连接配置档案（`frp-sh profile` 子命令管理；面板"一键接入"生成）。
+    /// 连接配置档案（`frp-sh profile` 子命令管理；终端"一键接入"生成）。
     #[serde(default, skip_serializing_if = "profiles_empty")]
     pub profiles: std::collections::BTreeMap<String, Profile>,
 }
@@ -56,7 +56,7 @@ fn profiles_empty(m: &std::collections::BTreeMap<String, Profile>) -> bool {
     m.is_empty()
 }
 
-/// 一条客户端连接配置：面板"一键接入"或 `frp-sh profile add` 写入，
+/// 一条客户端连接配置：终端"一键接入"或 `frp-sh profile add` 写入，
 /// `frp-sh profile run <name>` 按它启动会话。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
@@ -68,7 +68,7 @@ pub struct Profile {
     pub server: String,
     /// 要加入的房间号
     pub room: String,
-    /// 服务器密码（面板不显示明文；CLI 列表输出同样打码）
+    /// 服务器密码（终端不显示明文；CLI 列表输出同样打码）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
     /// 连接模式：lan（虚拟网卡组网）| dev | game（端口转发）
@@ -96,7 +96,7 @@ fn default_profile_mode() -> String {
 }
 
 impl Profile {
-    /// 密码打码显示（面板/列表）：只露前 2 后 2。
+    /// 密码打码显示（终端/列表）：不显示原始字符。
     pub fn masked_password(&self) -> String {
         match &self.password {
             Some(p) if p.len() > 8 => format!("{}••••{}", &p[..2], &p[p.len() - 2..]),

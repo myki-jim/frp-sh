@@ -127,7 +127,7 @@ struct Shared {
     write_waker: Option<Waker>,
     /// 数据帧负载加密（`--key` 启用；ACK/FIN 帧不加密）
     cipher: Option<DatagramSecurity>,
-    /// 面板统计句柄（None = 不采集，测试流不受影响）
+    /// 终端统计句柄（None = 不采集，测试流不受影响）
     stats: Option<Arc<crate::stats::StreamStats>>,
     /// 发送时间戳（seq → Instant）：Ack 抵达时计算 RTT
     sent_at: HashMap<u32, Instant>,
@@ -231,7 +231,7 @@ impl UdpStream {
         self.shared.lock().unwrap().peer
     }
 
-    /// 挂接面板统计（在建链后、首个任务输出前调用）。
+    /// 挂接终端统计（在建链后、首个任务输出前调用）。
     pub fn with_stats(self, stats: Arc<crate::stats::StreamStats>) -> Self {
         self.shared.lock().unwrap().stats = Some(stats);
         self
@@ -806,7 +806,7 @@ async fn on_timer<S: crate::p2p::turn::DatagramSocket>(
     }
 
     // keepalive：空闲时发送 ACK 帧维持 NAT 映射；带 "p" 负载请求对端 pong，
-    // 使面板在无数据传输时也能采样 RTT（对端旧版本忽略负载，兼容）
+    // 使终端在无数据传输时也能采样 RTT（对端旧版本忽略负载，兼容）
     if now.duration_since(*last_tx) >= Duration::from_millis(KEEPALIVE_MS) {
         let (frame, peer, st) = {
             let mut g = shared.lock().unwrap();

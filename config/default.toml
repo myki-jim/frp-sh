@@ -1,5 +1,8 @@
 # frp-sh 默认配置（可通过 `--config <path>` 覆盖）
 #
+# Display language: auto, zh-CN, or en.
+language = "auto"
+
 # 信令服务器 HTTP 基地址（REST API，UDP 公网探测复用同一端口）
 signaling_addr = "http://127.0.0.1:8080"
 

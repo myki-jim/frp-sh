@@ -125,16 +125,25 @@ fn reconnect_delay(attempt: u64) -> u64 {
 
 /// 成功信息：`✓ ...`（绿色）。
 fn ok(msg: impl AsRef<str>) -> String {
+    if crate::terminal::plain() {
+        return format!("[ok] {}", msg.as_ref());
+    }
     format!("✓ {}", msg.as_ref()).green().to_string()
 }
 
 /// 警告信息：`⚠ ...`（黄色）。
 fn warn(msg: impl AsRef<str>) -> String {
+    if crate::terminal::plain() {
+        return format!("[warn] {}", msg.as_ref());
+    }
     format!("⚠ {}", msg.as_ref()).yellow().to_string()
 }
 
 /// 错误信息：`✗ ...`（红色）。
 fn err(msg: impl AsRef<str>) -> String {
+    if crate::terminal::plain() {
+        return format!("[error] {}", msg.as_ref());
+    }
     format!("✗ {}", msg.as_ref()).red().to_string()
 }
 
@@ -145,11 +154,17 @@ fn dim(msg: impl AsRef<str>) -> String {
 
 /// 步骤提示：`→ ...`（青色）。
 fn step(msg: impl AsRef<str>) -> String {
+    if crate::terminal::plain() {
+        return format!("> {}", msg.as_ref());
+    }
     format!("→ {}", msg.as_ref()).cyan().to_string()
 }
 
 /// 提示/建议行：`↳ ...`（暗色）。
 fn hint(msg: impl AsRef<str>) -> String {
+    if crate::terminal::plain() {
+        return format!("- {}", msg.as_ref());
+    }
     format!("↳ {}", msg.as_ref()).dimmed().to_string()
 }
 
@@ -733,7 +748,6 @@ async fn run_profile_session(p: &crate::config::Profile, base: &Config) -> anyho
     }
 }
 
-// ---------- 面板流量上报 ----------
 // ---------- serve ----------
 
 /// `frp-sh serve`：同时提供 HTTP REST、UDP 公网探测、TCP 中继与可选的内置 TURN。
@@ -875,7 +889,7 @@ fn normalize_signaling(input: &str) -> anyhow::Result<String> {
 ///
 /// `save_path`：显式保存路径（`--config` 指定）；否则保存到平台默认路径。
 pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
-    if !crate::terminal::interactive() {
+    if !crate::terminal::can_prompt() {
         anyhow::bail!("Configuration requires an interactive terminal; use profile add with explicit arguments.");
     }
     let mut out = std::io::stdout();
@@ -1294,7 +1308,7 @@ pub async fn run_create(
         .lock()
         .unwrap()
         .insert(room_id.clone(), resp.owner_token.clone());
-    // 面板基础信息（dev/game host；lan host 会在 host_session 再次填充同样的值）
+    // 终端基础信息（dev/game host；lan host 会在 host_session 再次填充同样的值）
     crate::stats::update_info(crate::stats::SessionInfo {
         mode: if tun.is_some() {
             "lan-host"
@@ -1403,7 +1417,7 @@ pub async fn host_session(
     let mut attempt: u64 = 0;
     // TURN 中继上下文（配置了供应商时分配一次，直连失败回退用）
     let mut turn_client: Option<crate::p2p::turn::TurnClient> = None;
-    // 面板基础信息（lan 模式走 mesh 会话，同样在下方 mesh 分支前设置）
+    // 终端基础信息（lan 模式走 mesh 会话，同样在下方 mesh 分支前设置）
     crate::stats::update_info(crate::stats::SessionInfo {
         mode: if tun.is_some() { "lan-host" } else { "host" }.into(),
         room: room_id.to_string(),
@@ -1415,7 +1429,6 @@ pub async fn host_session(
         relay_addr: cfg.relay_addr.clone(),
         ..Default::default()
     });
-    // 面板房间详情：周期上报本机链路流量（设备上下行）
 
     // lan 模式（虚拟网卡）→ 网格会话：多访客全互联
     if let Some(t) = &tun {
@@ -1852,7 +1865,7 @@ pub async fn guest_session(
     // 后续轮次不再尝试打洞和 TURN，直接走 TCP 中继（更快到达稳定链路）。
     let mut punch_fails: u32 = 0;
     let mut punch_exhausted = false;
-    // 面板基础信息
+    // 终端基础信息
     crate::stats::update_info(crate::stats::SessionInfo {
         mode: if tun.is_some() { "lan-guest" } else { "guest" }.into(),
         room: room_id.to_string(),
@@ -1864,7 +1877,6 @@ pub async fn guest_session(
         relay_addr: cfg.relay_addr.clone(),
         ..Default::default()
     });
-    // 面板房间详情：周期上报自身上下行；join 成功后把名字换成服务器去重名
     // TURN 链路异常断开的标记：TURN 建立（对端 relay 也在）但对端没在同一通道上
     // 收发（典型：房主端超时先走了 TCP 中继等配对，两端会师失败）时，访客若每轮
     // 固执重试 TURN 就会死循环。置位后后续轮次跳过 TURN，直走 TCP 中继与房主会师。
@@ -2478,7 +2490,6 @@ pub async fn host_mesh_session(
         .relay_addr
         .parse()
         .map_err(|e| anyhow::anyhow!("bad relay addr {}: {e}", cfg.relay_addr))?;
-    // 面板房间详情：周期上报每条访客链路的流量（对端设备名 → 服务器按名归属）
 
     // 网格数据平面：TUN 一次创建，重连只重建对端链路（测试可传 None 跳过 TUN）
     let (plane, mut dead_rx) = crate::p2p::tun::MeshPlane::new();
@@ -2875,7 +2886,7 @@ async fn mesh_host_loop(
                                 if established.contains_key(&uuid) {
                                     plane.unregister(&uuid);
                                 }
-                                // 面板链路条目：peer 用设备名，保留 RTT 统计句柄
+                                // 终端链路条目：peer 用设备名，保留 RTT 统计句柄
                                 crate::stats::remove_link(&gr.to_string());
                                 crate::stats::push_link(crate::stats::LinkEntry {
                                     peer: p.info.name.clone().unwrap_or_else(|| uuid.clone()),
@@ -3146,7 +3157,7 @@ async fn mesh_establish_link(
         plane.unregister(uuid); // 替换旧链路（如中继 → 直连）
     }
     let stream = mesh.add_peer(peer, key_bytes);
-    // 面板链路条目：直连流的 peer 初始为对端地址（add_peer 内注册），
+    // 终端链路条目：直连流的 peer 初始为对端地址（add_peer 内注册），
     // 这里统一替换为设备名并补充地址明细。
     crate::stats::remove_link(&peer.to_string());
     crate::stats::push_link(crate::stats::LinkEntry {

@@ -222,30 +222,3 @@ pub fn info_snapshot() -> SessionInfo {
         .unwrap()
         .clone()
 }
-
-/// 供 JSON 序列化的链路快照（rtt_* 输出为毫秒浮点；bps 由终端采样差值计算）。
-pub fn links_json() -> Vec<serde_json::Map<String, serde_json::Value>> {
-    links_snapshot()
-        .into_iter()
-        .map(
-            |(peer, kind, detail, since, sent, recv, rtt_last, rtt_ewma)| {
-                let mut m = serde_json::Map::new();
-                m.insert("peer".into(), serde_json::json!(peer));
-                m.insert("kind".into(), serde_json::json!(kind));
-                m.insert("detail".into(), serde_json::json!(detail));
-                m.insert("since".into(), serde_json::json!(since));
-                m.insert("sent_bytes".into(), serde_json::json!(sent));
-                m.insert("recv_bytes".into(), serde_json::json!(recv));
-                m.insert(
-                    "rtt_last".into(),
-                    serde_json::json!((rtt_last as f64 / 1000.0 * 10.0).round() / 10.0),
-                );
-                m.insert(
-                    "rtt_ewma".into(),
-                    serde_json::json!((rtt_ewma as f64 / 1000.0 * 10.0).round() / 10.0),
-                );
-                m
-            },
-        )
-        .collect()
-}

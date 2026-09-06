@@ -35,7 +35,7 @@ pub struct CreateRoomRequest {
     /// 房主程序版本（`major.minor.patch`，用于访客端兼容性提示）
     #[serde(default)]
     pub version: String,
-    /// 房主设备显示名（面板显示；默认主机名）
+    /// 房主设备显示名（终端显示；默认主机名）
     #[serde(default)]
     pub name: Option<String>,
 }

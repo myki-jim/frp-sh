@@ -1,99 +1,54 @@
-# Installation & Building
+# Installation and maintenance (0.4.0)
 
-## Option 0: One-line script install (recommended)
+LAN operations use an installed system network helper. Authorize installation once, then run the client from your ordinary account: creating, joining and reconnecting do not request UAC or sudo. Game/dev port forwarding does not require this helper.
 
-Install / update with one command (re-running it updates; the script detects the
-system and architecture and downloads the latest release from GitHub Releases):
+> The 0.4.0 development branch is not a published release. Online installers retrieve the latest published release, not this development branch.
 
-::: code-group
+## Install
 
-```bash [Linux / macOS]
-curl -fsSL https://frp.sh/install.sh | sh
-```
+Windows PowerShell:
 
-```powershell [Windows (PowerShell)]
+```powershell
 irm https://frp.sh/install.ps1 | iex
 ```
 
-:::
+Linux/macOS:
 
-- The Windows installer puts the binary in `%LOCALAPPDATA%\frp-sh`, adds it to the
-  user PATH, and bundles wintun.dll
-- The POSIX installer installs to `/usr/local/bin`
-- In CI, set `FRPSH_SKIP_INIT=1` to skip the first-run wizard after installing
-- Requirements: no Rust, no compilation
-
-## Requirements (source build)
-
-- **Rust**: 1.70+ (install the latest stable via rustup)
-- **OS**: Windows / Linux / macOS (UDP behavior is largely the same; Windows WSAECONNRESET quirks are handled)
-
-## Option 1: Build from source
-
-```bash
-git clone <your-repo-url> frp-sh
-cd frp-sh
-
-# Debug build
-cargo build
-
-# Release build (recommended for distribution)
-cargo build --release
+```sh
+curl -fsSL https://frp.sh/install.sh | sh
 ```
 
-Artifacts:
+The installer retrieves a matching client/helper pair and checks SHA-256 files. Windows also verifies the Wintun Authenticode signature. Checksums verify download integrity; they are not independent release signatures.
 
-```text
-target/release/frp-sh.exe   # Windows
-target/release/frp-sh       # Linux / macOS
+| Platform | Protected installation | Service |
+| --- | --- | --- |
+| Windows | `%ProgramFiles%\frp-sh` | `FrpShNetwork` |
+| Linux | `/usr/local/lib/frp-sh` | `frp-sh-network.service` or procd |
+| macOS | `/usr/local/lib/frp-sh` | `com.frpsh.network` |
+
+Only administrators can change installed executables. IPC permits the original installer user's SID or UID. Direct root installation requires `FRPSH_INSTALL_UID`. Linux needs iproute2 and systemd/procd. OpenWrt hardware validation remains pending.
+
+## Verify as an ordinary user
+
+```sh
+frp-sh doctor
+frp-sh doctor --network-test
+frp-sh --lang en lan create
 ```
 
-The release binary is about **6 MB** (stripped + LTO), a single file with no runtime dependencies.
+The network test creates and closes a temporary adapter; stop active LAN sessions first. Missing helpers produce an actionable error and never launch elevation.
 
-## Option 2: Build without a repo clone
+## Updates and removal
 
-Copy `src/`, `Cargo.toml`, and `Cargo.lock` into any directory and build there.
+`frp-sh update` checks for releases and shows instructions. Rerun the installer to update; authorization is part of installation maintenance. Signed, unattended helper updates are not implemented. Stop sessions before updating. The installer keeps the previous executable pair for recovery.
 
-## Install to PATH
+An administrator can uninstall by stopping and deleting the service above, removing its installation directory and PATH entry. Preserve user configuration and logs unless explicitly deleting them. Automated removal and platform upgrade rollback remain release validation items.
 
-```bash
-# Linux / macOS
-sudo cp target/release/frp-sh /usr/local/bin/frp-sh
+## Build
 
-# Windows
-copy target\release\frp-sh.exe %USERPROFILE%\bin\
+```sh
+cargo build --locked --release --bins
+cargo build --locked --release --no-default-features --bin frp-sh
 ```
 
-Now `frp-sh` is available directly.
-
-## Verify
-
-```bash
-frp-sh --help
-frp-sh game --help
-frp-sh serve --help
-```
-
-## Building on a server (no local Rust)
-
-The server only needs the signaling binary; build it directly on the box:
-
-```bash
-# Install Rust (~1 min)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-export PATH="$HOME/.cargo/bin:$PATH"
-
-# Upload the code, then build
-cd /opt/frpsh
-cargo build --release
-```
-
-A full build takes about 2.5 minutes on a 2-core VPS.
-
-## Platform notes
-
-| Platform | Notes |
-|----------|-------|
-| Windows | 10054 (ICMP poisoning) false errors on send/recv are handled |
-| Linux | nothing extra needed |
-| macOS | UDP behavior matches Linux |
+The installer selects the lean client. Full Release assets remain available for server deployments. Default builds include `serve`. Client-only builds exclude the server and built-in TURN server. LAN still needs a matching `frp-sh-net` helper, and Windows needs Wintun in the protected installation directory.

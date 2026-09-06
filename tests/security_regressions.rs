@@ -144,7 +144,7 @@ async fn unknown_udp_sender_cannot_change_peer() {
     assert_eq!(stream.peer(), expected);
 }
 #[tokio::test]
-async fn owner_only_refresh_delete_and_percent_encoded_token() {
+async fn owner_only_refresh_delete_and_url_credentials_rejected() {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", l.local_addr().unwrap());
     let task = tokio::spawn(server::run_http(
@@ -178,7 +178,7 @@ async fn owner_only_refresh_delete_and_percent_encoded_token() {
         .send()
         .await
         .unwrap();
-    assert!(r.status().is_success());
+    assert_eq!(r.status(), reqwest::StatusCode::UNAUTHORIZED);
     let outsider = SignalingClient::new_with_password(&url, Some("test+password"));
     assert!(outsider.delete_room(&created.room_id).await.is_err());
     assert!(outsider

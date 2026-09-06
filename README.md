@@ -1,10 +1,10 @@
 # frp-sh
 
-社交化 P2P 组网工具 —— 房主建房间，朋友凭号加入，UDP 打洞直连，失败自动中继回退。纯 Rust，单文件二进制。
+社交化 P2P 组网工具 —— 房主建房间，朋友凭号加入，UDP 打洞直连，失败自动中继回退。纯 Rust，轻量客户端与受限网络辅助服务。
 
 三个使用系列：
 
-> 0.4.0 使用协议 v2，服务端和所有客户端需要同时升级。加密链路、房间所有权和面板认证发生了不兼容变更；部署前请阅读 [安全与迁移说明](SECURITY.md)。
+> 0.4.0 使用协议 v2，服务端和所有客户端需要同时升级。加密链路、房间所有权和安装方式发生了不兼容变更；部署前请阅读 [安全与迁移说明](SECURITY.md)。
 
 | 系列 | 命令 | 场景 |
 |------|------|------|
@@ -21,12 +21,16 @@
 | Linux / macOS | `curl -fsSL https://frp.sh/install.sh \| sh` |
 | Windows (PowerShell) | `irm https://frp.sh/install.ps1 \| iex` |
 
+0.4.0 尚在开发分支验收，在线安装器仍下载最近的正式 Release。安装与升级的权限说明见 [安装文档](web/docs/install.md)。
+
+默认安装包不包含 serve；部署信令服务器请下载完整 Release 资产，或使用默认 Cargo 构建。
+
 首次运行 `frp-sh` 会进入交互式向导，配置你的信令服务器即可开始使用。
 
 ## 快速开始
 
 ```bash
-# 组网（推荐，需 root/管理员）：房主创建房间
+# 组网（推荐，安装辅助服务后无需提权）：房主创建房间
 frp-sh lan create
 # → Room created : lan-a3f9c2；访客加入后互访整机 + 访问房主局域网
 
@@ -49,8 +53,8 @@ frp-sh dev join dev-a3f9c2 --listen 127.0.0.1:8080
 - **同局域网自动直连**：房主通告局域网地址，同一 WiFi 下访客秒级直连（不经服务器）
 - **组网（lan）**：虚拟网卡整机入网；`--expose-lan` 可将本机局域网接入隧道（默认不暴露）
 - **连接配置档案**：`frp-sh profile add/run` 一行保存服务器+密码+房间，一键重连；同服务器+模式自动去重合并
-- **双端 Web 面板**：服务器面板（房间/链路速率/拓扑/一键接入命令）+ 客户端面板（本机状态/分享/日志），日志写入本地文件不刷终端
-- 断线自动重连：网络抖动 / NAT 映射过期后按 2s、4s、8s…退避自动重连（上限 15s）
+- **终端与独立日志**：中英文状态、延迟与流量；诊断写入 JSONL，使用 `logs tail` 查看。
+- 断线自动重连：网络抖动 / NAT 映射过期后使用带抖动的指数退避自动重连（上限 8s）
 - 每台设备有唯一 ID（UUID），虚拟网卡 IP 由 ID 稳定派生，长期不变
 - 默认端口 `25565` 是 Minecraft 的默认端口，可通过 `--service` / `--listen` 改成任意端口
 - 详见文档：https://frp.sh
@@ -81,7 +85,7 @@ cargo clippy --all-targets -- -D warnings
 cd web && npm run build    # 构建文档站
 ```
 
-CI（GitHub Actions）：push/PR 自动运行 fmt / clippy / test / release 构建；打 `v*` 标签自动发布 7 个资产（linux x86_64+aarch64 各 glibc/musl 双版本、macOS x86_64+aarch64、Windows x86_64）；push main 自动部署文档站到 Cloudflare Pages。
+CI（GitHub Actions）：push/PR 自动运行 fmt / clippy / test / release 构建；打 `v*` 标签自动发布 7 个平台的客户端、辅助服务和校验文件（linux x86_64+aarch64 各 glibc/musl 双版本、macOS x86_64+aarch64、Windows x86_64）；push main 自动部署文档站到 Cloudflare Pages。
 
 ## License
 
