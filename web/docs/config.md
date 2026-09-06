@@ -38,7 +38,7 @@ frp-sh 使用 TOML 配置文件（通过 `--config` 指定）。不指定时使�
 | `relay_addr` | 否 | `127.0.0.1:8081` | 中继 TCP 地址（打洞与 TURN 都失败后的私有 TCP 兜底） |
 | `signaling_udp` | 否 | 与 HTTP 同端口 | UDP 公网探测地址（独立端口时设置） |
 | `password` | 否 | 无 | 服务器密码（服务器 `serve --password` 时必填） |
-| `stun_addr` | 否 | 无 | STUN 服务器（如 `stun.cloudflare.com:3478`）；公网地址学习优先走 STUN，失败回退自建 UDP 探测 |
+| `stun_addr` | 否 | 无 | STUN 服务器（如 `stun.cloudflare.com:3478`）；与自建 UDP 探测并发发送，采用先到达的有效结果 |
 | `turn_providers` | 否 | 空 | TURN 供应商列表（`turn://user:pass@host:port`），打洞失败时按 RTT 择优自动中继 |
 
 > `uuid`（设备唯一 ID）不写在配置文件里，独立存放于 `%APPDATA%\frp-sh\identity`，用于派生稳定的虚拟 IP（`lan` 系列）与 UUID 键控的中继配对。
@@ -82,7 +82,7 @@ turn_providers = ["turn://frp-sh:你的密码@101.43.41.195:3478"]
 ```
 
 - 可配置**多个**供应商（内置 TURN / 自建 coturn / Cloudflare TURN 等），客户端并行测速，自动选 RTT 最快者
-- 打洞失败（含 `--relay` 强制）时按顺序尝试：TURN 中继 → 私有 TCP 兜底
+- 普通打洞失败时可回退 TURN，再使用 TCP；`--relay` 直接使用 TCP，跳过 UDP 和 TURN
 - 用户名固定为 `frp-sh`（内置 TURN 服务器约定）；自建 coturn 可自定义用户名密码
 
 ## 字段说明
@@ -112,7 +112,7 @@ UDP 公网探测端点：客户端发送 `ECHO <token>`，服务端回 `ADDR <to
 
 ### stun_addr
 
-可选 STUN 服务器（如 `stun.cloudflare.com:3478`）。公网地址学习（`learn_public_addr_auto`）**优先走 STUN**（RFC 5389 Binding），失败时回退到自建 UDP 探测（`ECHO`/`ADDR`）。服务器自身的 `--addr` UDP 探测仍可用作兜底。
+可选 STUN 服务器（如 `stun.cloudflare.com:3478`）。公网地址学习（`learn_public_addr_auto`）并发发送 STUN（RFC 5389 Binding）与自建 UDP 探测（`ECHO`/`ADDR`），采用首个通过来源与事务校验的回复。
 
 ### turn_providers
 

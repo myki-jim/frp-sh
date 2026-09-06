@@ -58,7 +58,7 @@ turn_providers = [
 ]
 ```
 
-- 打洞失败（含 `--relay`）时顺序尝试：TURN 中继 → 私有 TCP 兜底
+- 普通打洞失败时可尝试 TURN，再回退 TCP；`--relay` 跳过 UDP 与 TURN，直接使用 TCP
 - 无需为每个房间配置，属于全局配置；`frp-sh config` 向导暂不询问 TURN，需手改配置
 - 内置 TURN 的部署方式见[服务器部署](./server.md#内置-turn-中继可选)
 

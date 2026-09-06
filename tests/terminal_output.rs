@@ -42,3 +42,76 @@ fn unspecified_punch_candidates_are_discarded() {
     assert!(frp_sh::p2p::hole_punch::punch_targets("0.0.0.0:100".parse().unwrap(), 3).is_empty());
     assert!(frp_sh::p2p::hole_punch::punch_targets("224.0.0.1:100".parse().unwrap(), 3).is_empty());
 }
+
+#[test]
+fn log_follow_handles_partial_utf8_and_larger_rotated_files() {
+    use std::{
+        io::{BufRead, Write},
+        process::Stdio,
+        time::Duration,
+    };
+    let root = std::env::current_dir()
+        .unwrap()
+        .join("target")
+        .join(format!("log-tail-{}", uuid::Uuid::new_v4()));
+    let directory = root.join("frp-sh/logs");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("frp-sh-1-1.jsonl");
+    let first = "{\"level\":\"INFO\",\"message\":\"first\"}\n";
+    let next = "{\"level\":\"INFO\",\"message\":\"中文\"}\n";
+    let split = next.find('中').unwrap() + 1;
+    std::fs::write(
+        &path,
+        [first.as_bytes(), &next.as_bytes()[..split]].concat(),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_frp-sh"))
+        .args(["--lang", "en", "logs", "tail", "--follow"])
+        .env("APPDATA", &root)
+        .env("XDG_CONFIG_HOME", &root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    struct Guard(std::process::Child);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let out = child.stdout.take().unwrap();
+    let _guard = Guard(child);
+    let (send, recv) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines() {
+            if send.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    assert_eq!(
+        recv.recv_timeout(Duration::from_secs(5)).unwrap(),
+        first.trim()
+    );
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(&next.as_bytes()[split..])
+        .unwrap();
+    assert_eq!(
+        recv.recv_timeout(Duration::from_secs(5)).unwrap(),
+        next.trim()
+    );
+    std::fs::rename(&path, path.with_extension("jsonl.1")).unwrap();
+    let rotated = format!(
+        "{{\"level\":\"INFO\",\"message\":\"{}\"}}\n",
+        "replacement".repeat(40)
+    );
+    std::fs::write(&path, &rotated).unwrap();
+    assert_eq!(
+        recv.recv_timeout(Duration::from_secs(5)).unwrap(),
+        rotated.trim()
+    );
+}

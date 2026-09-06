@@ -309,15 +309,18 @@ impl SignalingClient {
             if remain.is_zero() {
                 return Err(FrpError::Signaling("UDP echo timed out".into()));
             }
-            let (len, _src) = tokio::time::timeout(remain, udp.recv_from(&mut buf))
+            let (len, src) = tokio::time::timeout(remain, udp.recv_from(&mut buf))
                 .await
                 .map_err(|_| FrpError::Signaling("UDP echo timed out".into()))?
                 .map_err(FrpError::Io)?;
+            if src != server_udp {
+                continue;
+            }
             let text = String::from_utf8_lossy(&buf[..len]);
             // 服务器回复格式：ADDR <token> <ip>:<port>
             if let Some(rest) = text.strip_prefix("ADDR ") {
                 let parts: Vec<&str> = rest.split_whitespace().collect();
-                if parts.len() >= 2 && parts[0] == token {
+                if parts.len() == 2 && parts[0] == token {
                     return parts[1]
                         .parse()
                         .map_err(|_| FrpError::Signaling(format!("bad addr in echo: {text}")));
@@ -326,8 +329,7 @@ impl SignalingClient {
         }
     }
 
-    /// 学习公网地址：配置了 STUN 时优先走 STUN（免费、不依赖自建 UDP 探测），
-    /// 失败回退到自建服务器的 UDP echo。两种方式都使用打洞 socket 本身。
+    /// Race STUN and UDP echo on the punching socket; accept a verified response.
     pub async fn learn_public_addr_auto(
         &self,
         udp: &tokio::net::UdpSocket,
