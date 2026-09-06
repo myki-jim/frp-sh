@@ -1,4 +1,4 @@
-﻿# frp-sh 0.4 installer. Elevation is confined to this installation process.
+# frp-sh 0.4 installer. Elevation is confined to this installation process.
 param(
     [switch]$Elevated,
     [string]$OwnerSid = '',
@@ -6,11 +6,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($Lang -eq 'auto') { $Lang = if ((Get-Culture).Name -like 'zh*') {'zh-CN'} else {'en'} }
-function Message([string]$English,[string]$Chinese) { if ($Lang -eq 'zh-CN') { Write-Host $Chinese } else { Write-Host $English } }
+# Unicode escapes keep both irm | iex and Windows PowerShell -File encoding-safe.
+function Message([string]$English,[string]$Chinese) { if ($Lang -eq 'zh-CN') { Write-Host ([Text.RegularExpressions.Regex]::Unescape($Chinese)) } else { Write-Host $English } }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Message 'Installing the network service requires one administrator approval.' '安装网络辅助服务需要一次管理员授权。'
+    Message 'Installing the network service requires one administrator approval.' '\u5b89\u88c5\u7f51\u7edc\u8f85\u52a9\u670d\u52a1\u9700\u8981\u4e00\u6b21\u7ba1\u7406\u5458\u6388\u6743\u3002'
     $bootstrap = Join-Path ([IO.Path]::GetTempPath()) ('frpsh-install-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
         if ($PSCommandPath) { Copy-Item -LiteralPath $PSCommandPath -Destination $bootstrap }
@@ -20,7 +21,7 @@ if (-not $isAdmin) {
         if ($child.ExitCode -ne 0) { throw 'Installation failed. Run the installer from an administrator terminal to see the detailed error.' }
     } finally { Remove-Item -LiteralPath $bootstrap -ErrorAction SilentlyContinue }
     $env:Path = (Join-Path $env:ProgramFiles 'frp-sh') + ';' + $env:Path
-    Message 'Installed. Run frp-sh from your normal terminal; LAN sessions no longer request UAC.' '安装完成。请在普通终端运行 frp-sh，LAN 会话不再请求 UAC。'
+    Message 'Installed. Run frp-sh from your normal terminal; LAN sessions no longer request UAC.' '\u5b89\u88c5\u5b8c\u6210\u3002\u8bf7\u5728\u666e\u901a\u7ec8\u7aef\u8fd0\u884c frp-sh\uff0cLAN \u4f1a\u8bdd\u4e0d\u518d\u8bf7\u6c42 UAC\u3002'
     return
 }
 if (-not $OwnerSid) { $OwnerSid = $identity.User.Value }
@@ -44,7 +45,7 @@ function Download-Verified([string]$Asset,[string]$Output) {
     if ($checksum -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -Algorithm SHA256 -LiteralPath $Output).Hash -ne $checksum) { throw "Checksum mismatch: $Asset" }
 }
 try {
-    Message 'Downloading and verifying client and network helper...' '正在下载并校验客户端和网络辅助程序…'
+    Message 'Downloading and verifying client and network helper...' '\u6b63\u5728\u4e0b\u8f7d\u5e76\u6821\u9a8c\u5ba2\u6237\u7aef\u548c\u7f51\u7edc\u8f85\u52a9\u7a0b\u5e8f\u2026'
     Download-Verified 'frp-sh-client-windows-x86_64.exe' (Join-Path $stage 'frp-sh.exe')
     Download-Verified 'frp-sh-net-windows-x86_64.exe' (Join-Path $stage 'frp-sh-net.exe')
     $archive = Join-Path $stage 'wintun.zip'
@@ -86,7 +87,7 @@ try {
     }
     $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
     if (($machinePath -split ';') -notcontains $destination) { [Environment]::SetEnvironmentVariable('Path',($machinePath.TrimEnd(';') + ';' + $destination),'Machine') }
-    Message 'Installation complete. Reopen a normal terminal and run frp-sh.' '安装完成。重新打开普通终端后运行 frp-sh。'
+    Message 'Installation complete. Reopen a normal terminal and run frp-sh.' '\u5b89\u88c5\u5b8c\u6210\u3002\u91cd\u65b0\u6253\u5f00\u666e\u901a\u7ec8\u7aef\u540e\u8fd0\u884c frp-sh\u3002'
 } finally {
     $resolved = [IO.Path]::GetFullPath($stage)
     if (-not $resolved.StartsWith(([IO.Path]::GetFullPath($destination) + '\'),[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe staging path' }
