@@ -47,6 +47,11 @@ jobs:
         shell: pwsh
         run: ./scripts/test-helper-windows.ps1
 
+      - name: Windows PowerShell installer compatibility
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-installer-windows.ps1
+
       - name: macOS ordinary-user helper
         if: runner.os == 'macOS'
         run: sh scripts/test-helper-macos.sh
