@@ -334,7 +334,14 @@ pub async fn tail(lines: usize, follow: bool, level: Option<&str>) -> anyhow::Re
     use std::io::{Seek, SeekFrom};
     let path =
         latest_file().ok_or_else(|| anyhow::anyhow!("No log files; run a connection first."))?;
-    let text = fs::read_to_string(&path)?;
+    let mut initial = File::open(&path)?;
+    let mut identity = file_identity(&initial);
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut initial, &mut bytes)?;
+    drop(initial);
+    // A writer may be in the middle of a record. Read it on the next poll.
+    let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    let text = String::from_utf8_lossy(&bytes[..complete]);
     let selected: Vec<_> = text
         .lines()
         .filter(|s| {
@@ -358,30 +365,55 @@ pub async fn tail(lines: usize, follow: bool, level: Option<&str>) -> anyhow::Re
         let Ok(mut f) = File::open(&path) else {
             continue;
         };
-        if f.metadata()?.len() < position {
+        let next_identity = file_identity(&f);
+        if identity != next_identity || f.metadata()?.len() < position {
             position = 0;
         }
+        identity = next_identity;
         f.seek(SeekFrom::Start(position))?;
         let mut r = io::BufReader::new(f);
-        let mut s = String::new();
-        while r.read_line(&mut s)? > 0 {
-            if !s.ends_with('\n') {
+        let mut s = Vec::new();
+        while r.read_until(b'\n', &mut s)? > 0 {
+            if !s.ends_with(b"\n") {
                 break;
             }
             position += s.len() as u64;
             let show = level.is_none_or(|l| {
-                serde_json::from_str::<serde_json::Value>(&s)
+                serde_json::from_slice::<serde_json::Value>(&s)
                     .ok()
                     .and_then(|v| v["level"].as_str().map(str::to_owned))
                     .is_some_and(|s| s.eq_ignore_ascii_case(l))
             });
             if show {
-                print!("{}", redact(&s));
+                print!("{}", redact(&String::from_utf8_lossy(&s)));
             }
             s.clear();
         }
     }
     Ok(())
+}
+fn file_identity(file: &File) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let m = file.metadata().ok()?;
+        Some((m.dev(), m.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return None;
+        }
+        Some((
+            info.dwVolumeSerialNumber as u64,
+            ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+        ))
+    }
 }
 #[cfg(test)]
 mod tests {

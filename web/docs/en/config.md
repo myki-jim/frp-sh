@@ -38,7 +38,7 @@ Running `frp-sh` with no arguments (or `frp-sh config`) opens an **interactive s
 | `relay_addr` | no | `127.0.0.1:8081` | relay TCP address (private TCP fallback when both punching and TURN fail) |
 | `signaling_udp` | no | same port as HTTP | UDP probe address (when using a separate port) |
 | `password` | no | none | server password (required when the server runs `serve --password`) |
-| `stun_addr` | no | none | STUN server (e.g. `stun.cloudflare.com:3478`); public-address learning prefers STUN, falling back to the built-in UDP probe |
+| `stun_addr` | no | none | STUN server (e.g. `stun.cloudflare.com:3478`); races STUN with the built-in UDP probe and accepts the first verified response |
 | `turn_providers` | no | empty | list of TURN providers (`turn://user:pass@host:port`); when punching fails, relays via the fastest one by RTT automatically |
 
 > `uuid` (device unique ID) is not stored in the config file; it lives separately at `%APPDATA%\frp-sh\identity` and is used to derive the stable virtual IP (`lan` series) and UUID-keyed relay pairing.
@@ -82,7 +82,7 @@ turn_providers = ["turn://frp-sh:YOUR_PASSWORD@101.43.41.195:3478"]
 ```
 
 - You can configure **multiple** providers (built-in TURN / self-hosted coturn / Cloudflare TURN, etc.); the client benchmarks them in parallel and automatically picks the one with the lowest RTT
-- When punching fails (including forced `--relay`), it tries in order: TURN relay → private TCP fallback
+- Ordinary punching can fall back through TURN to TCP; forced `--relay` skips UDP and TURN and connects over TCP
 - The username is fixed to `frp-sh` (a built-in TURN server convention); self-hosted coturn can use a custom username/password
 
 ## Field details
@@ -112,7 +112,7 @@ The server password. When the server runs with `serve --password <passphrase>`, 
 
 ### stun_addr
 
-Optional STUN server (e.g. `stun.cloudflare.com:3478`). Public-address learning (`learn_public_addr_auto`) **prefers STUN** (RFC 5389 Binding) and falls back to the built-in UDP probe (`ECHO`/`ADDR`) when STUN fails. The server's own `--addr` UDP probe still works as a fallback.
+Optional STUN server (e.g. `stun.cloudflare.com:3478`). Public-address learning (`learn_public_addr_auto`) races STUN (RFC 5389 Binding) with the built-in UDP probe (`ECHO`/`ADDR`) and accepts the first response that passes source and transaction validation.
 
 ### turn_providers
 
