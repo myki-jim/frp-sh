@@ -123,7 +123,7 @@ pub async fn maybe_check_update(interactive: bool) -> anyhow::Result<()> {
     }
     let breaking = crate::version::is_breaking_gap(current, &latest);
 
-    println!(
+    crate::ui_println!(
         "\n  [Update] New version v{latest} available (current v{current}){}",
         if breaking {
             " — big version gap, possible incompatibility; upgrading now is recommended"
@@ -132,18 +132,18 @@ pub async fn maybe_check_update(interactive: bool) -> anyhow::Result<()> {
         }
     );
     if !interactive || !std::io::stdin().is_terminal() {
-        println!("  On the server, update when convenient: curl -fsSL https://frp.sh/install.sh | sh (or the install script)\n");
+        crate::ui_println!("  On the server, update when convenient: curl -fsSL https://frp.sh/install.sh | sh (or the install script)\n");
         return Ok(());
     }
-    print!("  Show update instructions? [y/N] ");
+    crate::ui_print!("  Show update instructions? [y/N] ");
     std::io::stdout().flush().ok();
     let answer = read_stdin_line();
     let yes = answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes");
     if !yes {
         if breaking {
-            println!("  [Warning] Skipping despite the big version gap; if you hit issues, upgrade to v{latest}.\n");
+            crate::ui_println!("  [Warning] Skipping despite the big version gap; if you hit issues, upgrade to v{latest}.\n");
         } else {
-            println!("  Update skipped (will prompt again on next start).\n");
+            crate::ui_println!("  Update skipped (will prompt again on next start).\n");
         }
         return Ok(());
     }
@@ -159,12 +159,14 @@ fn read_stdin_line() -> String {
 
 /// 下载并安装最新版。
 async fn install_latest(latest: &str) -> anyhow::Result<()> {
-    println!("  Version {latest} is available. Stop active sessions, then run the installer:");
+    crate::ui_println!(
+        "  Version {latest} is available. Stop active sessions, then run the installer:"
+    );
     if cfg!(target_os = "windows") {
-        println!("    irm https://frp.sh/install.ps1 | iex");
+        crate::ui_println!("    irm https://frp.sh/install.ps1 | iex");
     } else {
-        println!("    curl -fsSL https://frp.sh/install.sh | sh");
+        crate::ui_println!("    curl -fsSL https://frp.sh/install.sh | sh");
     }
-    println!("  The running executable has not been replaced.");
+    crate::ui_println!("  The running executable has not been replaced.");
     Ok(())
 }

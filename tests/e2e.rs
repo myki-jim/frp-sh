@@ -1,3 +1,4 @@
+#![cfg(feature = "server")]
 //! 端到端测试：进程内启动信令服务器，验证直连打洞与中继回退两条数据通路。
 
 use frp_sh::commands;
@@ -51,6 +52,7 @@ async fn try_start_server(password: Option<&str>) -> Option<TestServer> {
     tokio::spawn(server::run_relay(relay_listener, state, pw.clone()));
     Some(TestServer {
         cfg: Config {
+            language: None,
             room_tokens: Default::default(),
             signaling_addr: format!("http://127.0.0.1:{http_port}"),
             relay_addr: format!("127.0.0.1:{relay_port}"),

@@ -17,7 +17,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// TUN 设备参数。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TunConfig {
     pub name: String,
     pub ip: String,
@@ -32,7 +33,7 @@ pub struct TunConfig {
 ///   `invalid device tun name`）；不设置名称即可，创建后实际名为 `utunN`
 /// - Windows：设备名取自 Wintun；需要 `wintun.dll` 放在可执行文件旁，
 ///   或用 `WINTUN_DLL` 环境变量指定路径，且需管理员权限
-pub fn create(cfg: &TunConfig) -> Result<tun::AsyncDevice> {
+pub(crate) fn create_local(cfg: &TunConfig) -> Result<tun::AsyncDevice> {
     let mut c = tun::configure();
     #[cfg(target_os = "macos")]
     {
@@ -44,14 +45,12 @@ pub fn create(cfg: &TunConfig) -> Result<tun::AsyncDevice> {
     c.address(&cfg.ip).netmask(&cfg.netmask).mtu(cfg.mtu).up();
     #[cfg(target_os = "windows")]
     {
-        let dll = std::env::var("WINTUN_DLL")
-            .map(std::ffi::OsString::from)
-            .unwrap_or_else(|_| {
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.join("wintun.dll").into_os_string()))
-                    .unwrap_or_else(|| std::ffi::OsString::from("wintun.dll"))
-            });
+        let dll = std::env::current_exe()
+            .map_err(FrpError::Io)?
+            .parent()
+            .ok_or_else(|| FrpError::Tun("Missing installation directory".into()))?
+            .join("wintun.dll")
+            .into_os_string();
         c.platform_config(|pc| pc.wintun_file(dll));
     }
     tun::create_as_async(&c).map_err(|e| {
@@ -65,7 +64,7 @@ pub fn create(cfg: &TunConfig) -> Result<tun::AsyncDevice> {
 }
 
 /// 获取 TUN 设备的实际系统名称（macOS 为 `utunN`，Linux 为自定义名）。
-pub fn device_name(dev: &tun::AsyncDevice) -> Option<String> {
+pub(crate) fn device_name_local(dev: &tun::AsyncDevice) -> Option<String> {
     use tun::AbstractDevice;
     dev.tun_name().ok()
 }
@@ -76,7 +75,7 @@ pub fn device_name(dev: &tun::AsyncDevice) -> Option<String> {
 /// 整个网段的路由，导致对端虚拟 IP 的回包路由失败（ping 不通）。
 /// 必须显式 `route -n add -net <cidr> -interface <dev>`。
 /// Linux（普通接口，自动 on-link 路由）与 Windows（wintun 同理）无需处理。
-pub fn add_subnet_route(cidr: &str, dev: &str) -> Result<()> {
+pub(crate) fn add_subnet_route_local(cidr: &str, dev: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         run_cmd("route", &["-n", "add", "-net", cidr, "-interface", dev])
@@ -98,13 +97,8 @@ pub fn add_subnet_route(cidr: &str, dev: &str) -> Result<()> {
 ///
 /// 幂等：先删除同名旧规则再添加。
 #[cfg(target_os = "windows")]
-pub fn allow_firewall(iface: &str) -> Result<()> {
-    let script = format!(
-        "Remove-NetFirewallRule -DisplayName 'frp-sh LAN mesh' -ErrorAction SilentlyContinue; \
-         New-NetFirewallRule -DisplayName 'frp-sh LAN mesh' -Direction Inbound -Action Allow -InterfaceAlias '{iface}' -Profile Any | Out-Null; \
-         Remove-NetFirewallRule -DisplayName 'frp-sh ICMPv4-in' -ErrorAction SilentlyContinue; \
-         New-NetFirewallRule -DisplayName 'frp-sh ICMPv4-in' -Direction Inbound -Action Allow -Protocol ICMPv4 -Profile Any | Out-Null"
-    );
+pub(crate) fn allow_firewall_local(iface: &str) -> Result<()> {
+    let script = format!("New-NetFirewallRule -DisplayName 'frp-sh-{iface}' -Direction Inbound -Action Allow -InterfaceAlias '{iface}' -Profile Any -ErrorAction Stop | Out-Null");
     run_cmd(
         "powershell",
         &[
@@ -118,12 +112,12 @@ pub fn allow_firewall(iface: &str) -> Result<()> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn allow_firewall(_iface: &str) -> Result<()> {
+pub(crate) fn allow_firewall_local(_iface: &str) -> Result<()> {
     Ok(())
 }
 
 /// 在 TUN 设备与数据通道之间双向转发 IP 包，直到会话结束。
-pub async fn run<TR>(mut transport: TR, mut dev: tun::AsyncDevice) -> Result<()>
+pub async fn run<TR>(mut transport: TR, mut dev: crate::helper::Device) -> Result<()>
 where
     TR: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -355,7 +349,7 @@ impl MeshPlane {
 
 /// 网格数据平面主循环：TUN 读 → 路由到对端；对端包 → 路由到对端或写入 TUN。
 pub async fn run_mesh_plane(
-    mut dev: tun::AsyncDevice,
+    mut dev: crate::helper::Device,
     plane: Arc<MeshPlane>,
     mut dispatch_rx: tokio::sync::mpsc::UnboundedReceiver<(String, Vec<u8>)>,
 ) -> Result<()> {
@@ -392,44 +386,10 @@ pub async fn run_mesh_plane(
     Ok(())
 }
 
-/// 尝试开启系统 IPv4 转发（房主侧：让访客能经隧道访问房主局域网）。
-///
-/// 需要 root/管理员权限；失败返回 `false`（调用方打印提示）。
-pub fn enable_ip_forward() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("sysctl")
-            .args(["-w", "net.ipv4.ip_forward=1"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("sysctl")
-            .args(["-w", "net.inet.ip.forwarding=1"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("netsh")
-            .args(["routing", "ip", "set", "ipforwarding", "enable"])
-            .output();
-        // netsh 返回码不可靠，交给上层按"可能未生效"提示
-        false
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        false
-    }
-}
-
 /// 为访客添加一条经 TUN 设备访问房主局域网的路由（需 root/管理员）。
 ///
 /// `cidr` 形如 `192.168.1.0/24`；`gateway` 为房主虚拟 IP（10.66.0.1）。
-pub fn add_route(cidr: &str, dev_name: &str, gateway: &str) -> Result<()> {
+pub(crate) fn add_route_local(cidr: &str, dev_name: &str, gateway: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let _ = gateway; // Linux 用 dev 而非网关
@@ -466,20 +426,179 @@ pub fn add_route(cidr: &str, dev_name: &str, gateway: &str) -> Result<()> {
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
-    let out = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| {
-            FrpError::Tun(format!(
-                "{program} failed (requires root/administrator privileges): {e}"
-            ))
-        })?;
+    let mut command = std::process::Command::new(trusted_program(program)?);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let out = command.args(args).output().map_err(|e| {
+        FrpError::Tun(format!(
+            "{program} failed (requires root/administrator privileges): {e}"
+        ))
+    })?;
     if out.status.success() {
         Ok(())
     } else {
         Err(FrpError::Tun(format!(
             "{program} returned an error: {}",
             String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}
+
+// Public TUN operations use the installed helper, including when CLI happens to be elevated.
+pub async fn create(cfg: &TunConfig) -> Result<crate::helper::Device> {
+    crate::helper::open(cfg)
+        .await
+        .map_err(|e| FrpError::Tun(e.to_string()))
+}
+pub fn device_name(dev: &crate::helper::Device) -> Option<String> {
+    Some(dev.name().into())
+}
+pub async fn allow_firewall(name: &str) -> Result<()> {
+    // The helper completes scoped firewall setup before acknowledging Open.
+    if name.is_empty() {
+        return Err(FrpError::Tun("Missing device name".into()));
+    }
+    Ok(())
+}
+pub async fn add_subnet_route(_cidr: &str, name: &str) -> Result<()> {
+    // The virtual-subnet route is owned by the same helper lease as the device.
+    allow_firewall(name).await
+}
+pub async fn add_route(cidr: &str, name: &str, _gateway: &str) -> Result<()> {
+    crate::helper::route(name, cidr)
+        .await
+        .map_err(|e| FrpError::Tun(e.to_string()))
+}
+pub(crate) fn delete_route_local(cidr: &str, name: &str, gateway: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = gateway;
+        run_cmd("ip", &["route", "del", cidr, "dev", name])
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = gateway;
+        run_cmd("route", &["-n", "delete", "-net", cidr, "-interface", name])
+    }
+    #[cfg(windows)]
+    {
+        let _ = name;
+        let (net, prefix) =
+            crate::utils::parse_cidr(cidr).ok_or_else(|| FrpError::Tun("Invalid route".into()))?;
+        let mask = std::net::Ipv4Addr::from(crate::utils::mask_from_prefix(prefix)).to_string();
+        run_cmd(
+            "route",
+            &[
+                "delete",
+                &std::net::Ipv4Addr::from(net).to_string(),
+                "mask",
+                &mask,
+                gateway,
+            ],
+        )
+    }
+}
+pub(crate) fn remove_firewall_local(name: &str) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "Remove-NetFirewallRule -DisplayName 'frp-sh-{name}' -ErrorAction SilentlyContinue"
+        );
+        run_cmd(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = name;
+        Ok(())
+    }
+}
+#[cfg(unix)]
+static FORWARDING: std::sync::Mutex<(usize, Option<String>)> = std::sync::Mutex::new((0, None));
+#[cfg(unix)]
+fn forwarding_key() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "net.ipv4.ip_forward"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "net.inet.ip.forwarding"
+    }
+}
+pub(crate) fn enable_forward_local(name: &str) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let script=format!("Set-NetIPInterface -InterfaceAlias '{name}' -AddressFamily IPv4 -Forwarding Enabled -ErrorAction Stop");
+        run_cmd(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+        )
+    }
+    #[cfg(unix)]
+    {
+        let _ = name;
+        let mut state = FORWARDING.lock().unwrap();
+        if state.0 == 0 {
+            let out = std::process::Command::new(trusted_program("sysctl")?)
+                .args(["-n", forwarding_key()])
+                .output()?;
+            if !out.status.success() {
+                return Err(FrpError::Tun("Cannot read forwarding state".into()));
+            }
+            let prior = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if prior != "0" && prior != "1" {
+                return Err(FrpError::Tun("Unexpected forwarding state".into()));
+            }
+            run_cmd("sysctl", &["-w", &format!("{}=1", forwarding_key())])?;
+            state.1 = Some(prior);
+        }
+        state.0 += 1;
+        Ok(())
+    }
+}
+pub(crate) fn release_forward_local() {
+    #[cfg(unix)]
+    {
+        let mut state = FORWARDING.lock().unwrap();
+        state.0 = state.0.saturating_sub(1);
+        if state.0 == 0 {
+            if let Some(prior) = state.1.take() {
+                let _ = run_cmd("sysctl", &["-w", &format!("{}={prior}", forwarding_key())]);
+            }
+        }
+    }
+}
+fn trusted_program(program: &str) -> Result<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| "C:\\Windows".into());
+        match program {
+            "powershell" => Ok(root.join("System32/WindowsPowerShell/v1.0/powershell.exe")),
+            "route" => Ok(root.join("System32/route.exe")),
+            _ => Err(FrpError::Tun("Unsupported system operation".into())),
+        }
+    }
+    #[cfg(unix)]
+    {
+        if !matches!(program, "ip" | "route" | "sysctl") {
+            return Err(FrpError::Tun("Unsupported system operation".into()));
+        }
+        for prefix in ["/usr/sbin", "/sbin", "/usr/bin", "/bin"] {
+            let path = std::path::Path::new(prefix).join(program);
+            if path.is_file() {
+                return Ok(path);
+            }
+        }
+        Err(FrpError::Tun(format!(
+            "Required system tool not installed: {program}"
         )))
     }
 }

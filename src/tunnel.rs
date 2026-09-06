@@ -257,26 +257,26 @@ pub async fn guest_forward(
     max_conns: u64,
 ) -> Result<()> {
     let listener = TcpListener::bind(listen).await.map_err(FrpError::Io)?;
-    println!("listening on {listen}, waiting for local connections (Ctrl-C to end) ...");
+    crate::ui_println!("listening on {listen}, waiting for local connections (Ctrl-C to end) ...");
     let mut conns: u64 = 0;
     loop {
         let (tcp, peer) = listener.accept().await.map_err(FrpError::Io)?;
         conns += 1;
-        println!("connection {conns} from {peer}, opening tunnel ...");
+        crate::ui_println!("connection {conns} from {peer}, opening tunnel ...");
         tcp.set_nodelay(true).map_err(FrpError::Io)?;
         transport.write_all(&CNEW).await.map_err(FrpError::Io)?;
         let pump = spawn_pump(transport, tcp);
         let (done, t) = pump.finish().await.map_err(FrpError::Io)?;
         transport = t;
         match done {
-            PumpDone::Conn => println!("connection {conns} closed"),
+            PumpDone::Conn => crate::ui_println!("connection {conns} closed"),
             PumpDone::Session => {
-                println!("session ended by peer");
+                crate::ui_println!("session ended by peer");
                 break;
             }
         }
         if max_conns > 0 && conns >= max_conns {
-            println!("max connections ({max_conns}) reached, ending session");
+            crate::ui_println!("max connections ({max_conns}) reached, ending session");
             break;
         }
     }
@@ -291,7 +291,7 @@ pub async fn host_forward(
     service: SocketAddr,
     max_conns: u64,
 ) -> Result<()> {
-    println!("waiting for the guest to connect (Ctrl-C to end) ...");
+    crate::ui_println!("waiting for the guest to connect (Ctrl-C to end) ...");
     let mut conns: u64 = 0;
     loop {
         // 等待 CNEW（竞态残余帧按帧丢弃）
@@ -321,21 +321,21 @@ pub async fn host_forward(
         }
 
         conns += 1;
-        println!("guest connection {conns}, dialing local service {service} ...");
+        crate::ui_println!("guest connection {conns}, dialing local service {service} ...");
         let tcp = dial_service(service).await?;
         tcp.set_nodelay(true).map_err(FrpError::Io)?;
         let pump = spawn_pump(transport, tcp);
         let (done, t) = pump.finish().await.map_err(FrpError::Io)?;
         transport = t;
         match done {
-            PumpDone::Conn => println!("connection {conns} closed"),
+            PumpDone::Conn => crate::ui_println!("connection {conns} closed"),
             PumpDone::Session => {
-                println!("session ended by peer");
+                crate::ui_println!("session ended by peer");
                 break;
             }
         }
         if max_conns > 0 && conns >= max_conns {
-            println!("max connections ({max_conns}) reached, ending session");
+            crate::ui_println!("max connections ({max_conns}) reached, ending session");
             break;
         }
     }

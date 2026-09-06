@@ -15,6 +15,8 @@ fn default_relay() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub language: Option<String>,
     #[serde(skip)]
     pub room_tokens: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     /// 信令服务器 HTTP 基地址（REST API）。
@@ -154,6 +156,7 @@ pub fn hostname() -> String {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            language: None,
             room_tokens: Default::default(),
             signaling_addr: default_signaling(),
             relay_addr: default_relay(),
@@ -235,6 +238,17 @@ impl Config {
         };
         // 设备身份：UUID 存于独立文件（不随配置文件增删而丢失）
         cfg.uuid = Some(Self::ensure_identity());
+        if let Some(pw) = &cfg.password {
+            crate::debuglog::protect(pw);
+        }
+        for p in cfg.profiles.values() {
+            if let Some(v) = &p.password {
+                crate::debuglog::protect(v);
+            }
+            if let Some(v) = &p.key {
+                crate::debuglog::protect(v);
+            }
+        }
         Ok(cfg)
     }
 
@@ -435,6 +449,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("frpsh-test-{}", std::process::id()));
         let path = dir.join("config.toml");
         let cfg = Config {
+            language: None,
             room_tokens: Default::default(),
             signaling_addr: "http://1.2.3.4:9000".into(),
             relay_addr: "1.2.3.4:9001".into(),

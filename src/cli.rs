@@ -25,6 +25,18 @@ fn cli_styles() -> clap::builder::Styles {
     styles = cli_styles()
 )]
 pub struct Cli {
+    /// Display language (auto follows the system locale)
+    #[arg(long, global = true, value_parser = ["auto", "zh-CN", "en"])]
+    pub lang: Option<String>,
+    /// Disable animated terminal output
+    #[arg(long, global = true)]
+    pub plain: bool,
+    /// Disable colors
+    #[arg(long, global = true)]
+    pub no_color: bool,
+    /// Emit machine-readable JSON events
+    #[arg(long, global = true)]
+    pub json: bool,
     /// Path to the config file (TOML, see config/default.toml)
     #[arg(short, long, global = true)]
     pub config: Option<PathBuf>,
@@ -33,15 +45,7 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
-    /// Local web panel address (client side; binds 127.0.0.1:6793 by default)
-    #[arg(long, global = true, default_value = "127.0.0.1:6793")]
-    pub panel_addr: String,
-
-    /// Disable the local web panel
-    #[arg(long, global = true)]
-    pub no_panel: bool,
-
-    /// Device display name (panel/topology; default hostname, config `name` also works)
+    /// Device display name (connection status; default hostname, config `name` also works)
     #[arg(long, global = true)]
     pub name: Option<String>,
 
@@ -56,7 +60,21 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Check the installed network helper
+    Doctor {
+        /// Create and close a temporary virtual adapter (requires no active LAN session)
+        #[arg(long)]
+        network_test: bool,
+    },
+    /// Read diagnostic logs (separate from connection status)
+    Logs {
+        #[command(subcommand)]
+        cmd: LogCmd,
+    },
+    /// Check for a newer release explicitly
+    Update,
     /// Start the signaling server (standalone deployment; HTTP + UDP public probing share the same port)
+    #[cfg(feature = "server")]
     Serve {
         /// HTTP listen address
         #[arg(short, long, default_value = "0.0.0.0:8080")]
@@ -83,7 +101,7 @@ pub enum Commands {
     },
     /// Configure the signaling server interactively (first-run wizard)
     Config,
-    /// Manage saved connection profiles (server panel "one-click join" writes these too)
+    /// Manage saved connection profiles
     Profile {
         #[command(subcommand)]
         cmd: ProfileCmd,
@@ -102,6 +120,21 @@ pub enum Commands {
     Lan {
         #[command(subcommand)]
         cmd: LanCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LogCmd {
+    /// Print the log directory
+    Path,
+    /// Read the most recent log file
+    Tail {
+        #[arg(short, long, default_value_t = 50)]
+        lines: usize,
+        #[arg(short, long)]
+        follow: bool,
+        #[arg(long, value_parser = ["error", "warn", "info", "debug", "trace"])]
+        level: Option<String>,
     },
 }
 

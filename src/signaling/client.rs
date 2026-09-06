@@ -12,8 +12,15 @@ use std::time::Duration;
 /// 请求认证头（与服务器 `--password` 对应）。
 const AUTH_HEADER: &str = "X-Frp-Sh-Token";
 
-#[derive(Debug, Clone)]
+type VersionInfo = Option<(String, u32, bool)>;
+#[derive(Clone)]
+struct CachedVersion {
+    at: std::time::Instant,
+    value: VersionInfo,
+}
+#[derive(Clone)]
 pub struct SignalingClient {
+    version: std::sync::Arc<tokio::sync::Mutex<Option<CachedVersion>>>,
     base_url: String,
     http: reqwest::Client,
     password: Option<String>,
@@ -22,6 +29,7 @@ pub struct SignalingClient {
 
 impl SignalingClient {
     pub fn set_room_token(&self, room: &str, token: String) {
+        crate::debuglog::protect(&token);
         self.owners.lock().unwrap().insert(room.into(), token);
     }
     fn owner_header(&self, room: &str) -> String {
@@ -40,15 +48,21 @@ impl SignalingClient {
 
     /// 带服务器密码的客户端：所有请求携带 `X-Frp-Sh-Token`。
     pub fn new_with_password(base_url: &str, password: Option<&str>) -> Self {
-        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(10))
+            .tcp_nodelay(true);
         if let Some(pw) = password {
+            crate::debuglog::protect(pw);
             let mut headers = reqwest::header::HeaderMap::new();
-            if let Ok(v) = reqwest::header::HeaderValue::from_str(pw) {
+            if let Ok(mut v) = reqwest::header::HeaderValue::from_str(pw) {
+                v.set_sensitive(true);
                 headers.insert(AUTH_HEADER, v);
             }
             builder = builder.default_headers(headers);
         }
         Self {
+            version: Default::default(),
             owners: Default::default(),
             base_url: base_url.trim_end_matches('/').to_string(),
             http: builder.build().expect("build reqwest client"),
@@ -234,50 +248,25 @@ impl SignalingClient {
         }
     }
 
-    /// 上报本机链路流量（面板房间详情的设备上下行）。
-    ///
-    /// - `role`：`host`（`links[].peer` 为对端设备名，未知传 "*"）
-    /// - `role`：`guest`（汇总自身上下行，`links` 单条 peer="*"）
-    /// - `name`：服务器侧设备名（join 响应去重后的名字）
-    ///
-    /// 房间已失效返回 `RoomNotFound`（调用方据此停止上报循环）。
-    pub async fn report_traffic(
-        &self,
-        room_id: &str,
-        role: &str,
-        name: &str,
-        links: &[(String, u64, u64)],
-    ) -> Result<()> {
-        let body = serde_json::json!({
-            "room": room_id,
-            "role": role,
-            "name": name,
-            "links": links
-                .iter()
-                .map(|(peer, sent, recv)| serde_json::json!({
-                    "peer": peer, "sent": sent, "recv": recv
-                }))
-                .collect::<Vec<_>>(),
-        });
-        let resp = self
-            .http
-            .post(format!("{}/api/traffic", self.base_url))
-            .header("X-Frp-Sh-Room-Token", self.owner_header(room_id))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| FrpError::Signaling(format!("report traffic: {e}")))?;
-        match resp.status() {
-            StatusCode::NOT_FOUND => Err(FrpError::RoomNotFound(room_id.to_string())),
-            s if !s.is_success() => Err(FrpError::Signaling(format!("report traffic: HTTP {s}"))),
-            _ => Ok(()),
-        }
-    }
-
     /// 查询服务器版本、线协议版本与是否启用密码认证。
     ///
     /// 旧服务器没有 `/version` 端点（404）时返回 `None`（按协议 1、无认证兼容）。
-    pub async fn get_version(&self) -> Result<Option<(String, u32, bool)>> {
+    pub async fn get_version(&self) -> Result<VersionInfo> {
+        let mut cache = self.version.lock().await;
+        if let Some(v) = cache
+            .as_ref()
+            .filter(|v| v.at.elapsed() < Duration::from_secs(60))
+        {
+            return Ok(v.value.clone());
+        }
+        let value = self.fetch_version().await?;
+        *cache = Some(CachedVersion {
+            at: std::time::Instant::now(),
+            value: value.clone(),
+        });
+        Ok(value)
+    }
+    async fn fetch_version(&self) -> Result<VersionInfo> {
         let resp = self
             .http
             .get(format!("{}/version", self.base_url))
@@ -346,17 +335,34 @@ impl SignalingClient {
         token: &str,
         stun: Option<SocketAddr>,
     ) -> Result<SocketAddr> {
-        if let Some(stun_addr) = stun {
-            match crate::p2p::stun::binding_probe(udp, stun_addr).await {
-                Ok(addr) => {
-                    log::info!("public address via STUN {stun_addr}: {addr}");
-                    return Ok(addr);
-                }
-                Err(e) => {
-                    log::warn!("STUN binding failed ({e}), falling back to server UDP echo");
+        use crate::p2p::stun as protocol;
+        let txid = protocol::new_txid();
+        let binding = protocol::build(
+            protocol::METHOD_BINDING,
+            protocol::CLASS_REQUEST,
+            &txid,
+            &[],
+        );
+        let echo = format!("ECHO {token}");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        let mut buf = [0u8; 2048];
+        loop {
+            tokio::select! {
+                _=tokio::time::sleep_until(deadline)=>return Err(FrpError::Signaling("Public-address probes timed out".into())),
+                _=tick.tick()=>{let _=udp.send_to(echo.as_bytes(),server_udp).await;if let Some(addr)=stun{let _=udp.send_to(&binding,addr).await;}},
+                received=udp.recv_from(&mut buf)=>{
+                    let (n,src)=received?;
+                    if src==server_udp{let text=String::from_utf8_lossy(&buf[..n]);let parts:Vec<_>=text.split_whitespace().collect();
+                        if parts.len()==3&&parts[0]=="ADDR"&&parts[1]==token{if let Ok(addr)=parts[2].parse(){return Ok(addr);}}
+                    }
+                    if Some(src)==stun{if let Some(msg)=protocol::parse(&buf[..n]){
+                        if msg.txid==txid&&msg.method==protocol::METHOD_BINDING&&msg.class==protocol::CLASS_SUCCESS{
+                            if let Some(addr)=msg.get(protocol::ATTR_XOR_MAPPED_ADDRESS).and_then(|v|protocol::decode_xor_addr(v,&txid)){return Ok(addr);}
+                        }
+                    }}
                 }
             }
         }
-        self.learn_public_addr(udp, server_udp, token).await
     }
 }

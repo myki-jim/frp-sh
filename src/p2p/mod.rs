@@ -8,4 +8,5 @@ pub mod stream;
 pub mod stun;
 pub mod tun;
 pub mod turn;
+#[cfg(feature = "server")]
 pub mod turn_server;

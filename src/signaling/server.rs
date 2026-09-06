@@ -33,7 +33,6 @@ pub static ACTIVE_RELAYS: std::sync::atomic::AtomicUsize = std::sync::atomic::At
 pub struct AppState {
     pub rooms: SharedState,
     pub password: Option<String>,
-    pub admin_token: Option<String>,
     /// 内置 TURN 的公网地址（`--turn` + 启用密码认证时下发 RoomInfo.server_turn；
     /// 凭据复用服务器密码，客户端无需任何配置即可使用）
     pub turn_public: Option<SocketAddr>,
@@ -71,9 +70,6 @@ pub struct Room {
     pub ip_assignments: HashMap<String, String>,
     /// 全部访客（网格模式多访客）：uuid -> 访客信息
     pub guests: HashMap<String, super::GuestInfo>,
-    /// 设备上下行（面板房间详情）：uuid -> 字节计数；":host" 为房主总上下行。
-    /// 客户端经 `POST /api/traffic` 周期上报（计数单调，取 max 合并）。
-    pub traffic: HashMap<String, TrafficRow>,
     /// 中继等待槽位（配对完成前持有连接）
     pub relay_host: Option<PendingRelay>,
     pub relay_guest: Option<PendingRelay>,
@@ -82,14 +78,6 @@ pub struct Room {
     pub relay_guests: HashMap<String, PendingRelay>,
     /// 配对完成通知
     pub pair_notify: Arc<Notify>,
-}
-
-/// 单台设备的上下行累计字节（设备自身视角：up = 发出，down = 收到）。
-#[derive(Debug, Clone, Copy)]
-pub struct TrafficRow {
-    pub up: u64,
-    pub down: u64,
-    pub ts: u64,
 }
 
 impl Room {
@@ -113,9 +101,6 @@ pub async fn run_http(
     let app_state = AppState {
         rooms: state,
         password: password.clone(),
-        admin_token: std::env::var("FRPSH_ADMIN_TOKEN")
-            .ok()
-            .filter(|t| !t.is_empty()),
         turn_public,
     };
     let app = Router::new()
@@ -125,8 +110,6 @@ pub async fn run_http(
         .route("/room/{id}/join", post(join_room))
         .route("/room/{id}/refresh", post(refresh_room))
         .route("/room/{id}", get(get_room).delete(delete_room))
-        .route("/api/traffic", post(report_traffic))
-        .merge(crate::panel::server_routes())
         .with_state(app_state.clone())
         .layer(axum::middleware::from_fn_with_state(
             app_state,
@@ -138,25 +121,16 @@ pub async fn run_http(
 
 /// 请求认证：服务器设置了密码时校验 `X-Frp-Sh-Token`（/version 与 /health 免认证）。
 ///
-/// 面板策略：`/panel` 页面本身免认证（渲染登录框）；`/api/panel/*` 数据接口
-/// 与其他 REST 一样需要 token（服务器设置了密码时）。
 async fn auth_middleware(
     State(state): State<AppState>,
     req: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
     let path = req.uri().path().to_string();
-    if path == "/version" || path == "/health" || path == "/panel" || path == "/" {
+    if path == "/version" || path == "/health" {
         return Ok(next.run(req).await);
     }
-    let required = if path.starts_with("/api/panel/") {
-        Some(state.admin_token.as_ref().ok_or((
-            StatusCode::FORBIDDEN,
-            "admin access is not configured".into(),
-        ))?)
-    } else {
-        state.password.as_ref()
-    };
+    let required = state.password.as_ref();
     if let Some(pw) = required {
         // 面板数据接口：token 可走 header 或 query（浏览器 WebSocket 友好）
         let token = req
@@ -249,7 +223,6 @@ async fn create_room(
             host_name: req.name,
             ip_assignments: HashMap::new(),
             guests: HashMap::new(),
-            traffic: HashMap::new(),
             relay_host: None,
             relay_guest: None,
             relay_hosts: HashMap::new(),
@@ -436,130 +409,6 @@ async fn delete_room(
         _ => {}
     }
     map.remove(&room_id);
-    StatusCode::NO_CONTENT
-}
-
-// ---------- 设备上下行上报（面板房间详情） ----------
-
-/// 客户端周期上报的链路计数。
-#[derive(serde::Deserialize)]
-pub struct TrafficLink {
-    /// 对端设备名；未知时为 "*"（服务器在单访客房间自动归属）
-    #[serde(default)]
-    pub peer: String,
-    pub sent: u64,
-    pub recv: u64,
-}
-
-/// 一次流量上报：`role` 为 host/guest，`name` 为上报设备的服务器侧名称。
-#[derive(serde::Deserialize)]
-pub struct TrafficReport {
-    pub room: String,
-    pub role: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub links: Vec<TrafficLink>,
-}
-
-/// 记录设备上下行（计数单调：同键取较大值合并）。
-fn record_traffic(room: &mut Room, key: &str, up: u64, down: u64) {
-    let now = utils::now_unix();
-    let e = room.traffic.entry(key.to_string()).or_insert(TrafficRow {
-        up: 0,
-        down: 0,
-        ts: now,
-    });
-    // 设备进程重启后计数器归零：上次更新超过 60s 视为旧代次/离线，
-    // 直接覆盖而非 max 合并，避免面板数值被历史高值永久卡死。
-    if now.saturating_sub(e.ts) > 60 {
-        e.up = up;
-        e.down = down;
-    } else {
-        e.up = e.up.max(up);
-        e.down = e.down.max(down);
-    }
-    e.ts = now;
-}
-
-/// 客户端链路流量上报：房主报每访客链路计数（host 视角），访客报自身上下行。
-/// 统一换算为**设备视角**存储（up = 设备发出，down = 设备收到）：
-/// 房主视角的 recv 即对端设备的发出量，sent 即对端设备的接收量。
-async fn report_traffic(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(rep): Json<TrafficReport>,
-) -> StatusCode {
-    let mut map = state.rooms.lock().await;
-    let room = match map.get_mut(&rep.room) {
-        Some(r) if !r.expired() => r,
-        _ => return StatusCode::NOT_FOUND,
-    };
-    if rep.role == "host" && !owns(&headers, room) {
-        return StatusCode::FORBIDDEN;
-    }
-    match rep.role.as_str() {
-        "host" => {
-            let mut host_up = 0u64;
-            let mut host_down = 0u64;
-            let guest_uuids: Vec<(String, Option<String>)> = room
-                .guests
-                .values()
-                .map(|g| (g.uuid.clone(), g.name.clone()))
-                .collect();
-            for l in &rep.links {
-                host_up += l.sent;
-                host_down += l.recv;
-                // 房主视角 → 设备视角翻转
-                let (dev_up, dev_down) = (l.recv, l.sent);
-                let uuid = guest_uuids
-                    .iter()
-                    .find(|(_, n)| {
-                        !l.peer.is_empty() && l.peer != "*" && n.as_deref() == Some(l.peer.as_str())
-                    })
-                    .map(|(u, _)| u.clone())
-                    .or_else(|| {
-                        // 名字未匹配：单访客房间直接归属
-                        if guest_uuids.len() == 1 {
-                            guest_uuids.first().map(|(u, _)| u.clone())
-                        } else {
-                            None
-                        }
-                    });
-                if let Some(u) = uuid {
-                    record_traffic(room, &u, dev_up, dev_down);
-                }
-            }
-            if host_up > 0 || host_down > 0 {
-                record_traffic(room, ":host", host_up, host_down);
-            }
-        }
-        "guest" => {
-            // 访客按服务器侧名称归属到自身 uuid
-            let uuid = room
-                .guests
-                .values()
-                .find(|g| g.name.as_deref() == Some(rep.name.as_str()))
-                .map(|g| g.uuid.clone())
-                .or_else(|| {
-                    if room.guests.len() == 1 {
-                        room.guests.values().next().map(|g| g.uuid.clone())
-                    } else {
-                        None
-                    }
-                });
-            if let Some(u) = uuid {
-                let mut up = 0u64;
-                let mut down = 0u64;
-                for l in &rep.links {
-                    up += l.sent;
-                    down += l.recv;
-                }
-                record_traffic(room, &u, up, down);
-            }
-        }
-        _ => return StatusCode::BAD_REQUEST,
-    }
     StatusCode::NO_CONTENT
 }
 

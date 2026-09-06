@@ -2,13 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/0.4.0-overhaul]
   pull_request:
 
 jobs:
   rust:
-    name: Rust build & test
-    runs-on: ubuntu-latest
+    name: Rust build & test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,16 +33,31 @@ jobs:
       - name: Security regressions (no retry)
         run: cargo test --locked --test security_regressions -- --test-threads=1
 
+      - name: Client-only check
+        run: cargo check --locked --no-default-features --all-targets
+
       - name: Test
-        # e2e 依赖临时端口的打洞时序，偶发失败（重跑即过）→ 失败自动重试一次
+        run: cargo test --locked -- --test-threads=1
+
+      - name: Build helper and client
+        run: cargo build --locked --bins
+
+      - name: Windows ordinary-user helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-helper-windows.ps1
+
+      - name: macOS ordinary-user helper
+        if: runner.os == 'macOS'
+        run: sh scripts/test-helper-macos.sh
+
+      - name: Linux isolated ordinary-user helper
+        if: runner.os == 'Linux'
         run: |
-          cargo test -- --test-threads=1 || {
-            echo "flaky e2e detected, retrying once ..."
-            cargo test -- --test-threads=1
-          }
+          docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -e FRPSH_CONTAINER_TEST=1 -v "$PWD:/work" -w /work rust:1-slim sh -c "apt-get update -qq && apt-get install -y -qq iproute2 procps >/dev/null && cargo test --locked --test helper_service helper_service_lifecycle -- --ignored --nocapture"
 
       - name: Release build
-        run: cargo build --release
+        run: cargo build --locked --release --bins
 
   docs:
     name: Docs build & verify

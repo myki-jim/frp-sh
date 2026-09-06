@@ -1,8 +1,8 @@
-//! Panel 数据采集：链路统计与会话注册表。
+//! 终端数据采集：链路统计与会话注册表。
 //!
 //! 每条链路（直连/TURN/TCP 中继）持有一个 [`StreamStats`]（原子计数，发送/接收
 //! 出入口零锁累加）；会话层通过 [`set_links`] 把当前活跃链路注册进 [`SESSION`]，
-//! 客户端面板任务从 [`links_snapshot`] 读取快照。RTT 由 FRS1 心跳往返（Ping 帧
+//! 终端状态任务从 [`links_snapshot`] 读取快照。RTT 由 FRS1 心跳往返（Ping 帧
 //! 的 seq 与对端 Ack 的 ack 字段）计算。
 
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicU8, Ordering};
@@ -77,12 +77,12 @@ impl StreamStats {
     }
 }
 
-/// 一条注册进面板的链路：标识（对端/类型）+ 统计句柄。
+/// 一条注册进终端的链路：标识（对端/类型）+ 统计句柄。
 pub struct LinkEntry {
     /// 对端显示标识（mesh 中为对端设备名，点对点为 "host"）
     pub peer: String,
     pub kind: &'static str,
-    /// 详细地址（公网 UDP 地址 / 虚拟 IP 等，面板展示）
+    /// 详细地址（公网 UDP 地址 / 虚拟 IP 等，终端展示）
     pub detail: String,
     pub stats: Arc<StreamStats>,
 }
@@ -119,10 +119,10 @@ pub fn clear_links() {
     links_cell().lock().unwrap().clear();
 }
 
-/// 面板链路快照行：`(peer, kind, detail, connected_at, sent, recv, rtt_last, rtt_ewma)`
+/// 终端链路快照行：`(peer, kind, detail, connected_at, sent, recv, rtt_last, rtt_ewma)`
 pub type LinkRow = (String, String, String, i64, u64, u64, u32, u32);
 
-/// 面板快照。
+/// 终端快照。
 pub fn links_snapshot() -> Vec<LinkRow> {
     links_cell()
         .lock()
@@ -144,7 +144,7 @@ pub fn links_snapshot() -> Vec<LinkRow> {
         .collect()
 }
 
-/// 客户端会话基础信息（面板 /api/info）。会话启动时填充。
+/// 客户端会话基础信息（终端状态）。会话启动时填充。
 #[derive(Default, Clone)]
 pub struct SessionInfo {
     pub mode: String,
@@ -155,7 +155,7 @@ pub struct SessionInfo {
     pub device_name: String,
     /// 本端公网 UDP 地址（探测所得）
     pub ext_addr: String,
-    /// 本端局域网地址列表（逗号分隔，面板展示）
+    /// 本端局域网地址列表（逗号分隔，终端展示）
     pub lan_addrs: String,
     pub vnet_ip: String,
     pub tun: String,
@@ -163,15 +163,13 @@ pub struct SessionInfo {
     pub encryption: bool,
     pub started_at: i64,
     pub reconnects: u64,
-    /// Runtime-only signaling password; never serialize it into panel responses.
-    pub password: String,
     /// TCP 中继地址（分享命令的 --relay）
     pub relay_addr: String,
 }
 
 static SESSION_INFO: OnceLock<Mutex<SessionInfo>> = OnceLock::new();
 
-/// 更新会话信息（面板展示用；只覆盖已填字段——空字符串保持不变）。
+/// 更新会话信息（终端展示用；只覆盖已填字段——空字符串保持不变）。
 pub fn update_info(patch: SessionInfo) {
     let cell = SESSION_INFO.get_or_init(|| Mutex::new(SessionInfo::default()));
     let mut info = cell.lock().unwrap();
@@ -212,9 +210,6 @@ pub fn update_info(patch: SessionInfo) {
     if patch.reconnects > 0 {
         info.reconnects = patch.reconnects;
     }
-    if !patch.password.is_empty() {
-        info.password = patch.password;
-    }
     if !patch.relay_addr.is_empty() {
         info.relay_addr = patch.relay_addr;
     }
@@ -228,7 +223,7 @@ pub fn info_snapshot() -> SessionInfo {
         .clone()
 }
 
-/// 供 JSON 序列化的链路快照（rtt_* 输出为毫秒浮点；bps 由前端采样差值计算）。
+/// 供 JSON 序列化的链路快照（rtt_* 输出为毫秒浮点；bps 由终端采样差值计算）。
 pub fn links_json() -> Vec<serde_json::Map<String, serde_json::Value>> {
     links_snapshot()
         .into_iter()
