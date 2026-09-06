@@ -1,0 +1,23 @@
+html.theme-revealing *,
+html.theme-revealing *::before,
+html.theme-revealing *::after {
+  transition: none !important;
+}
+html.theme-revealing::view-transition-group(root) {
+  animation-duration: 1.3s;
+}
+html.theme-revealing::view-transition-old(root),
+html.theme-revealing::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+html.theme-revealing::view-transition-old(root) {
+  z-index: 1;
+}
+html.theme-revealing::view-transition-new(root) {
+  z-index: 2;
+  clip-path: circle(var(--theme-radius, 0px) at var(--theme-x) var(--theme-y));
+}
+html.theme-revealing::view-transition {
+  pointer-events: none;
+}

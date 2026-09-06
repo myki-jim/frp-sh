@@ -9,6 +9,8 @@ import {
 } from "vue";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { createThemeReveal } from "./theme-reveal.js";
+let themeReveal;
 import { commands } from "./install-commands.js";
 import "./rooms.css";
 const root = ref(null),
@@ -41,11 +43,13 @@ function toggleLanguage() {
   message.value = "";
   nextTick(() => ScrollTrigger.refresh());
 }
-function light() {
-  const modes = ["auto", "day", "night"];
-  mode.value = modes[(modes.indexOf(mode.value) + 1) % 3];
-  save("frpsh-world-light", mode.value);
-  preferences();
+function light(event) {
+  themeReveal.reveal(event, () => {
+    const modes = ["auto", "day", "night"];
+    mode.value = modes[(modes.indexOf(mode.value) + 1) % 3];
+    save("frpsh-world-light", mode.value);
+    preferences();
+  });
 }
 function preferences() {
   scene.night =
@@ -67,6 +71,7 @@ async function copy() {
   timer = setTimeout(() => (message.value = ""), 3500);
 }
 onMounted(async () => {
+  themeReveal = createThemeReveal();
   try {
     if (localStorage.getItem("frpsh-site-language") === "zh-CN")
       language.value = "zh-CN";
@@ -235,6 +240,7 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   disposed = true;
+  themeReveal?.dispose();
   world?.dispose();
   ctx?.revert();
   stop?.();

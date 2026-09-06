@@ -373,9 +373,11 @@ export function mountStudios(host, state, motion = { progress: 0.5 }) {
     if (disposed) return;
     const dt = Math.min(0.06, (time - last) / 1000 || 0.02);
     last = time;
-    night = state.reduced
-      ? Number(state.night)
-      : T.MathUtils.lerp(night, Number(state.night), 1 - Math.exp(-dt * 2));
+    night =
+      state.reduced ||
+      document.documentElement.classList.contains("theme-revealing")
+        ? Number(state.night)
+        : T.MathUtils.lerp(night, Number(state.night), 1 - Math.exp(-dt * 2));
     hemi.intensity = T.MathUtils.lerp(2.1, 0.65, night);
     sun.intensity = T.MathUtils.lerp(2.6, 0.22, night);
     fill.intensity = T.MathUtils.lerp(0.6, 0.55, night);
