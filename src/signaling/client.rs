@@ -345,7 +345,13 @@ impl SignalingClient {
         );
         let echo = format!("ECHO {token}");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        // Send immediately: the first timer tick can cost a Windows scheduler quantum.
+        let _ = udp.send_to(echo.as_bytes(), server_udp).await;
+        if let Some(addr) = stun {
+            let _ = udp.send_to(&binding, addr).await;
+        }
+        let retry = Duration::from_millis(250);
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + retry, retry);
         let mut buf = [0u8; 2048];
         loop {
             tokio::select! {

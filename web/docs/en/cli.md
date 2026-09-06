@@ -25,6 +25,12 @@ frp-sh --config config/server.toml --verbose lan create
 
 ## Global options
 
+0.4.0 adds `--lang auto|zh-CN|en`, `--plain`, `--no-color` and `--json`. Language precedence is CLI, config `language`, FRPSH_LANG, system locale, then English. JSON mode never prompts and emits only JSON events on stdout.
+
+Use `frp-sh logs path` or `frp-sh logs tail --follow --level warn` for separate diagnostics. `frp-sh doctor --network-test` checks the helper with a temporary adapter; stop LAN sessions first. `frp-sh update` explicitly checks for releases.
+
+The installer selects the lean client. To deploy `serve`, download the full Release asset without `client` in its name.
+
 Global options apply to the whole `frp-sh` invocation and go before the subcommand
 (`serve` / `game` / `dev` / `lan` / `config`).
 
@@ -52,7 +58,7 @@ frp-sh --config /etc/frp-sh.toml serve
 
 - Add it when troubleshooting punching, forwarding, or encryption
 - Without it, only `info`-level logs are shown
-- Logs go to `<config dir>/logs/frp-sh.log` (terminal stays quiet); the panel's Logs view shows them live
+- Logs use per-process JSONL files in the config directory; run frp-sh logs tail --follow.
 
 **Example**:
 
@@ -85,17 +91,13 @@ frp-sh --punch-retries 3 lan join 7411
 
 ## `frp-sh profile` — manage connection profiles
 
-Save "server + password + room + mode" as a named profile and reconnect with
-one command. The server panel's "one-click client setup / join" commands use
-these under the hood; **adding the same server+mode twice dedupes into one
-profile** (setup first, then joining a room fills the room into the same
-profile).
+Save server, password, room and mode as a named profile. Repeated additions with the same server and mode merge into one profile.
 
 ```bash
 # Add a profile (name defaults to profile1, profile2, ...; relay derived as :8081)
 frp-sh profile add --server http://101.43.41.195:8080 --room 7411 --password XXXX
 
-# Server-only profile (no room) — same as the panel's "one-click client setup"
+# Save a server profile
 frp-sh profile add --server http://101.43.41.195:8080 --password XXXX --set-default
 
 # List / show (passwords masked)
@@ -108,7 +110,7 @@ frp-sh profile edit profile1 --rename jims-phone --room 7411 --device JimmyPhone
 # Remove
 frp-sh profile remove profile1
 
-# Start a session from a profile (default profile if omitted; lan needs admin)
+# Start a session from a profile (default profile if omitted; LAN uses the installed helper)
 frp-sh profile run
 frp-sh profile run profile1
 ```

@@ -45,10 +45,7 @@ frp-sh profile run          # start a session from the default profile in one go
 frp-sh profile list         # view existing profiles (passwords masked)
 ```
 
-> The server panel's home page has a "one-click client setup" card at the bottom —
-> copy the whole command and send it to a friend: pasting and running it completes all
-> of the post-install configuration. A room's "one-click join" command fills in the
-> same profile automatically.
+> Save connection details with profile add, then start with profile run.
 
 Manual way (TOML config file — the default config points at `127.0.0.1`, local
 testing on one machine only):

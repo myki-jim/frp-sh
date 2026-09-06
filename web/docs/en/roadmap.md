@@ -1,5 +1,7 @@
 # Roadmap
 
+> Historical feature record. 0.4.0 removes Web Panels and uses terminal status plus separate logs. See docs/plans/0.4.0-roadmap.md for implementation and release gates.
+
 The current version focuses on "simple, robust, good enough". Planned capabilities, in priority order.
 
 ## Near term

@@ -232,9 +232,11 @@ where
         );
         socket
     };
+    let shutdown = super::service::shutdown();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
-            _=super::service::shutdown()=>break,
+            _=&mut shutdown=>break,
             _=tasks.join_next(),if !tasks.is_empty()=>{},
             incoming=async{
                 #[cfg(windows)]{

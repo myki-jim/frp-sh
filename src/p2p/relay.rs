@@ -28,7 +28,7 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncReadWr
 pub type RelayStream = Box<dyn AsyncReadWrite>;
 
 /// 流量计数包装层：中继 TCP 无应用层心跳（RTT 不可测），但字节数照常统计，
-/// 面板链路卡片即可显示速率与活跃状态。
+/// 终端链路卡片即可显示速率与活跃状态。
 pub(crate) struct CountingStream<S> {
     inner: S,
     stats: std::sync::Arc<crate::stats::StreamStats>,

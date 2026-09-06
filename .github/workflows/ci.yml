@@ -80,7 +80,17 @@ jobs:
         run: npm run build
         working-directory: web
 
-      - name: Verify install scripts syntax
+      - name: Verify POSIX scripts syntax
         run: |
           sh -n web/docs/public/install.sh
-          pwsh -NoProfile -Command "Get-Content web/docs/public/install.ps1 | Out-Null"
+          sh -n scripts/test-helper-macos.sh
+
+      - name: Verify PowerShell scripts syntax
+        shell: pwsh
+        run: |
+          foreach ($path in @('web/docs/public/install.ps1','scripts/test-helper-windows.ps1')) {
+            $errors = $null
+            $tokens = $null
+            [Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $path), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { throw ($errors | Out-String) }
+          }

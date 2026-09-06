@@ -25,9 +25,6 @@ pub type SharedState = Arc<Mutex<HashMap<String, Room>>>;
 /// 请求认证头（客户端携带服务器密码）。
 pub const AUTH_HEADER: &str = "X-Frp-Sh-Token";
 
-/// 活跃 TCP 中继转发数（panel 用；配对成功 +1，转发结束 -1）。
-pub static ACTIVE_RELAYS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 /// 服务器应用状态：房间注册表 + 可选密码（按实例传递，避免全局污染）。
 #[derive(Clone)]
 pub struct AppState {
@@ -132,21 +129,12 @@ async fn auth_middleware(
     }
     let required = state.password.as_ref();
     if let Some(pw) = required {
-        // 面板数据接口：token 可走 header 或 query（浏览器 WebSocket 友好）
+        // Authentication is header-only; URLs must not carry credentials.
         let token = req
             .headers()
             .get(AUTH_HEADER)
             .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-            .or_else(|| {
-                req.uri().query().and_then(|q| {
-                    reqwest::Url::parse(&format!("http://localhost/?{q}"))
-                        .ok()?
-                        .query_pairs()
-                        .find(|(k, _)| k == "token")
-                        .map(|(_, v)| v.into_owned())
-                })
-            });
+            .map(str::to_string);
         match token {
             Some(t) if constant_time_eq(&t, pw) => {}
             _ => return Err((StatusCode::UNAUTHORIZED, "unauthorized".into())),
@@ -542,10 +530,8 @@ async fn handle_relay_conn(
         drop(map);
         stream.write_all(b"OK\r\n").await?;
         stream.flush().await?;
-        ACTIVE_RELAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut other = other.stream;
         let _ = tokio::io::copy_bidirectional(&mut stream, &mut other).await;
-        ACTIVE_RELAYS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         return Ok(());
     }
     if room.relay_hosts.len() + room.relay_guests.len() >= 128 {
@@ -577,11 +563,9 @@ async fn handle_relay_conn(
     };
     if let Some(other) = other {
         drop(map);
-        ACTIVE_RELAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut a = pending.stream;
         let mut b = other.stream;
         let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
-        ACTIVE_RELAYS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         return Ok(());
     }
     if uuid == "-" {

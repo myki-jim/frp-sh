@@ -1,5 +1,17 @@
 [
   [
+    "Configuration requires an interactive terminal; use profile add with explicit arguments.",
+    "配置向导需要交互式终端；无交互环境请使用 profile add 并明确指定参数。"
+  ],
+  [
+    "Network helper unavailable: check the installed service or rerun the installer",
+    "网络辅助服务不可用：请检查系统服务，或重新运行安装器修复"
+  ],
+  [
+    "Welcome to frp-sh! The first run requires configuring the signaling server.",
+    "欢迎使用 frp-sh！首次运行需要配置信令服务器。"
+  ],
+  [
     "Server password (optional, if the server runs with --password)",
     "服务器密码（可选，与服务端 --password 对应）"
   ],
@@ -12,12 +24,56 @@
     "STUN 服务器（可选，例如 stun.cloudflare.com:3478）"
   ],
   [
+    "waiting for the guest to connect (Ctrl-C to end) ...",
+    "等待访客连接（Ctrl-C 结束）…"
+  ],
+  [
+    "Only private IPv4 routes /16 or narrower are allowed",
+    "只允许 /16 或更小范围的私有 IPv4 路由"
+  ],
+  [
+    "Update skipped (will prompt again on next start).",
+    "已跳过更新，可随时运行 frp-sh update。"
+  ],
+  [
+    "waiting for local connections (Ctrl-C to end) ...",
+    "等待本地连接（Ctrl-C 结束）…"
+  ],
+  [
+    "skipping host subnets overlapping local subnets",
+    "跳过与本机重叠的房主子网"
+  ],
+  [
+    "UDP hole punching failed, falling back to relay",
+    "UDP 打洞失败，正在回退到中继"
+  ],
+  [
+    "Could not check for updates; try again later.",
+    "暂时无法检查更新，请稍后再试。"
+  ],
+  [
+    "The running executable has not been replaced.",
+    "当前运行的程序未被替换。"
+  ],
+  [
+    "Stop active sessions, then run the installer:",
+    "请先退出活动会话，再运行安装器："
+  ],
+  [
     "UDP hole punching failed, trying TURN relay",
     "UDP 打洞失败，正在尝试 TURN 中继"
   ],
   [
+    "Netmask must be contiguous /16 through /30",
+    "子网掩码必须连续，范围为 /16 至 /30"
+  ],
+  [
     "session ended, preparing to reconnect ...",
     "会话结束，准备重连…"
+  ],
+  [
+    "No newer release is available (current v",
+    "没有更新的正式版本（当前 v"
   ],
   [
     "UDP hole punching failed, trying relay",
@@ -26,6 +82,10 @@
   [
     "Use a separate port for UDP probing?",
     "UDP 探测使用独立端口？"
+  ],
+  [
+    "Virtual address must be private IPv4",
+    "虚拟地址必须为私有 IPv4"
   ],
   [
     "For more information, try '--help'.",
@@ -72,8 +132,16 @@
     "尚无连接配置，可用以下命令添加："
   ],
   [
+    "Show update instructions? [y/N]",
+    "显示更新步骤？[y/N]"
+  ],
+  [
     "error: unrecognized subcommand",
     "错误：未知子命令"
+  ],
+  [
+    "frp-sh - social P2P mesh tool",
+    "frp-sh - 基于房间的 P2P 组网工具"
   ],
   [
     "frp-sh configuration wizard",
@@ -108,6 +176,10 @@
     "错误：未知参数"
   ],
   [
+    "Device role already in use",
+    "该角色的虚拟网卡已被其他会话使用"
+  ],
+  [
     "allocating TURN relay ...",
     "正在申请 TURN 中继…"
   ],
@@ -122,6 +194,10 @@
   [
     "seconds (Ctrl-C to exit)",
     "秒（Ctrl-C 退出）"
+  ],
+  [
+    "subnet route add failed:",
+    "子网路由添加失败："
   ],
   [
     "learning public address",
@@ -144,8 +220,28 @@
     "信令服务器错误："
   ],
   [
+    "reached, ending session",
+    "已达到，正在结束会话"
+  ],
+  [
+    "[Update] New version v",
+    "[更新] 可用新版本 v"
+  ],
+  [
+    "authentication failed:",
+    "身份验证失败："
+  ],
+  [
     "punching to guest ...",
     "正在连接访客…"
+  ],
+  [
+    "dialing local service",
+    "正在连接本地服务"
+  ],
+  [
+    "firewall rule failed:",
+    "防火墙规则设置失败："
   ],
   [
     "punching to host ...",
@@ -156,8 +252,24 @@
     "错误：无效参数值"
   ],
   [
+    "available (current v",
+    "，当前版本 v"
+  ],
+  [
     "connecting to relay",
     "正在连接中继"
+  ],
+  [
+    "host: create a room",
+    "房主：创建房间"
+  ],
+  [
+    "guest: join a room",
+    "访客：加入房间"
+  ],
+  [
+    "opening tunnel ...",
+    "正在打开隧道…"
   ],
   [
     "waiting for guest",
@@ -170,6 +282,14 @@
   [
     "TUN device error:",
     "虚拟网卡错误："
+  ],
+  [
+    "show all commands",
+    "查看全部命令"
+  ],
+  [
+    "connection closed",
+    "连接已关闭"
   ],
   [
     "virtual NIC mode",
@@ -200,12 +320,24 @@
     "frp-sh 连接配置"
   ],
   [
+    "port forwarding",
+    "端口转发"
+  ],
+  [
+    "max connections",
+    "连接次数上限"
+  ],
+  [
     "Room created :",
     "房间已创建："
   ],
   [
     "Public address",
     "公网地址"
+  ],
+  [
+    "Virtual subnet",
+    "虚拟网段"
   ],
   [
     "Local service",
@@ -224,6 +356,10 @@
     "配置错误："
   ],
   [
+    "host-assigned",
+    "房主分配"
+  ],
+  [
     "config saved",
     "配置已保存"
   ],
@@ -234,6 +370,38 @@
   [
     "Join command",
     "加入命令"
+  ],
+  [
+    "Host address",
+    "房主地址"
+  ],
+  [
+    "Local listen",
+    "本地监听"
+  ],
+  [
+    "Host vnet IP",
+    "房主虚拟 IP"
+  ],
+  [
+    "listening on",
+    "正在监听"
+  ],
+  [
+    "reconfigure",
+    "重新配置"
+  ],
+  [
+    "Room prefix",
+    "房间前缀"
+  ],
+  [
+    "Guest limit",
+    "访客上限"
+  ],
+  [
+    "Mesh subnet",
+    "组网子网"
   ],
   [
     "next steps",
@@ -254,6 +422,10 @@
   [
     "Virtual IP",
     "虚拟 IP"
+  ],
+  [
+    "end-to-end",
+    "端到端"
   ],
   [
     "UDP probe",
@@ -284,12 +456,28 @@
     "传输"
   ],
   [
+    "[default ",
+    "[默认 "
+  ],
+  [
     "Password",
     "密码"
   ],
   [
     "Options:",
     "选项："
+  ],
+  [
+    "Room TTL",
+    "房间有效期"
+  ],
+  [
+    " updated",
+    " 已更新"
+  ],
+  [
+    " removed",
+    " 已删除"
   ],
   [
     "Your ID",
@@ -302,6 +490,14 @@
   [
     "Network",
     "网络"
+  ],
+  [
+    "Your IP",
+    "本机 IP"
+  ],
+  [
+    "seconds",
+    "秒"
   ],
   [
     "Usage:",
@@ -318,6 +514,10 @@
   [
     "Server",
     "服务器"
+  ],
+  [
+    " saved",
+    " 已保存"
   ],
   [
     "Relay",

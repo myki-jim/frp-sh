@@ -290,7 +290,7 @@ pub enum ProfileCmd {
         #[arg(long)]
         server: String,
         /// Room ID to join (optional: omit for a server-only profile saved by
-        /// the panel's "one-click client setup"; the room is filled in later
+        /// a saved server profile; the room is filled in later
         /// when a room join command runs)
         #[arg(long, default_value = "")]
         room: String,

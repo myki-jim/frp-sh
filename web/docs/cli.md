@@ -23,6 +23,12 @@ frp-sh --config config/server.toml --verbose lan create
 
 ## 全局参数
 
+0.4.0 增加 `--lang auto|zh-CN|en`、`--plain`、`--no-color` 和 `--json`。语言优先级为命令行、配置 `language`、FRPSH_LANG、系统区域、英文。`--json` 不弹出交互询问，stdout 仅输出 JSON 事件。
+
+`frp-sh logs path` 显示日志目录；`frp-sh logs tail --follow --level warn` 单独查看诊断。`frp-sh doctor --network-test` 检查辅助服务并创建临时网卡，测试前先退出 LAN 会话。`frp-sh update` 只手动检查更新。
+
+默认安装精简客户端；需要部署 `serve` 时，下载 Release 中不带 `client` 的完整程序。
+
 全局参数作用于整个 `frp-sh` 调用，写在子命令（`serve` / `game` / `dev` / `lan` / `config`）之前。
 
 ### `-c, --config <FILE>`
@@ -48,7 +54,7 @@ frp-sh --config /etc/frp-sh.toml serve
 
 - 排查打洞、转发、加密问题时加上此参数，日志会更详细
 - 不带此参数时默认只输出 `info` 级别日志
-- 日志写入 `<配置目录>/logs/frp-sh.log`（终端保持安静），面板"日志"视图也可实时查看
+- 日志写入配置目录下的 logs/frp-sh-时间-进程.jsonl，使用 frp-sh logs tail --follow 查看。
 
 **示例**：
 
@@ -77,15 +83,13 @@ frp-sh --punch-retries 3 lan join 7411
 
 ## `frp-sh profile` —— 管理连接配置档案
 
-把"服务器 + 密码 + 房间 + 模式"保存为命名档案，一键重连。服务器面板的
-"一键配置客户端 / 一键接入"生成的命令底层就是这些子命令；**同一服务器+模式
-的重复添加会自动去重合并**（先"配置客户端"再"进房间"会补全同一份档案）。
+把服务器、密码、房间和模式保存为命名档案，一键重连。同一服务器与模式的重复添加会自动去重合并。
 
 ```bash
 # 添加档案（名字默认 profile1、profile2…顺序分配；中继地址自动按服务器 :8081 推导）
 frp-sh profile add --server http://101.43.41.195:8080 --room 7411 --password XXXX
 
-# 只保存服务器连接（不含房间）——面板"一键配置客户端"等价命令
+# 保存服务器连接
 frp-sh profile add --server http://101.43.41.195:8080 --password XXXX --set-default
 
 # 查看列表 / 详情（密码打码显示）
@@ -98,7 +102,7 @@ frp-sh profile edit profile1 --rename jims-phone --room 7411 --device JimmyPhone
 # 删除
 frp-sh profile remove profile1
 
-# 按档案启动会话（缺省用默认档案；lan 模式需要管理员权限）
+# 按档案启动会话（缺省用默认档案；lan 模式使用已安装辅助服务）
 frp-sh profile run
 frp-sh profile run profile1
 ```

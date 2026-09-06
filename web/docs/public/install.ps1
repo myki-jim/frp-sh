@@ -31,7 +31,10 @@ New-Item -ItemType Directory -Path $destination -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Cannot protect the installation directory' }
 $stage = Join-Path $destination ('staging-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
-$base = 'https://github.com/myki-jim/frp-sh/releases/latest/download'
+$release = Invoke-RestMethod -Uri 'https://api.github.com/repos/myki-jim/frp-sh/releases/latest'
+$tag = $release.tag_name
+if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid release tag' }
+$base = 'https://github.com/myki-jim/frp-sh/releases/download/' + $tag
 function Download-Verified([string]$Asset,[string]$Output) {
     Invoke-WebRequest -Uri ($base + '/' + $Asset) -OutFile $Output -UseBasicParsing
     $checksum = ((Invoke-WebRequest -Uri ($base + '/' + $Asset + '.sha256') -UseBasicParsing).Content.Trim() -split '\s+')[0]
@@ -39,7 +42,7 @@ function Download-Verified([string]$Asset,[string]$Output) {
 }
 try {
     Message 'Downloading and verifying client and network helper...' '正在下载并校验客户端和网络辅助程序…'
-    Download-Verified 'frp-sh-windows-x86_64.exe' (Join-Path $stage 'frp-sh.exe')
+    Download-Verified 'frp-sh-client-windows-x86_64.exe' (Join-Path $stage 'frp-sh.exe')
     Download-Verified 'frp-sh-net-windows-x86_64.exe' (Join-Path $stage 'frp-sh-net.exe')
     $archive = Join-Path $stage 'wintun.zip'
     Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $archive -UseBasicParsing
@@ -47,13 +50,14 @@ try {
     $dll = Join-Path $stage 'wintun/bin/amd64/wintun.dll'
     if ((Get-AuthenticodeSignature -LiteralPath $dll).Status -ne 'Valid') { throw 'Wintun driver signature verification failed' }
     $existing = Get-Service -Name FrpShNetwork -ErrorAction SilentlyContinue
-    if ($existing) { Stop-Service FrpShNetwork -ErrorAction Stop }
-    # Keep one previous executable pair for installation rollback.
+    $previousFiles = @{}
+    # Keep the previous executable pair and policy for installation rollback.
     foreach ($name in @('frp-sh.exe','frp-sh-net.exe','wintun.dll','helper.toml')) {
         $current = Join-Path $destination $name
-        if (Test-Path -LiteralPath $current) { Copy-Item -LiteralPath $current -Destination ($current + '.previous') -Force }
+        if (Test-Path -LiteralPath $current) { Copy-Item -LiteralPath $current -Destination ($current + '.previous') -Force; $previousFiles[$name] = $true }
     }
     try {
+        if ($existing) { Stop-Service FrpShNetwork -ErrorAction Stop }
         Copy-Item -LiteralPath (Join-Path $stage 'frp-sh.exe') -Destination (Join-Path $destination 'frp-sh.exe') -Force
         Copy-Item -LiteralPath (Join-Path $stage 'frp-sh-net.exe') -Destination (Join-Path $destination 'frp-sh-net.exe') -Force
         Copy-Item -LiteralPath $dll -Destination (Join-Path $destination 'wintun.dll') -Force
@@ -69,9 +73,10 @@ try {
     } catch {
         Stop-Service FrpShNetwork -ErrorAction SilentlyContinue
         if (-not $existing) { & sc.exe delete FrpShNetwork | Out-Null }
-        foreach ($name in @('frp-sh.exe','frp-sh-net.exe','wintun.dll')) {
+        foreach ($name in @('frp-sh.exe','frp-sh-net.exe','wintun.dll','helper.toml')) {
             $current = Join-Path $destination $name
-            if (Test-Path -LiteralPath ($current + '.previous')) { Copy-Item -LiteralPath ($current + '.previous') -Destination $current -Force }
+            if ($previousFiles.ContainsKey($name)) { Copy-Item -LiteralPath ($current + '.previous') -Destination $current -Force }
+            else { Remove-Item -LiteralPath $current -ErrorAction SilentlyContinue }
         }
         if ($existing) { Start-Service FrpShNetwork -ErrorAction SilentlyContinue }
         throw

@@ -131,13 +131,7 @@ curl http://服务器IP:8080/health
 
 ## 日志与排障
 
-服务器日志**不刷终端**，写入本地文件并提供 HTTP 增量拉取：
-
-- 日志文件：`/var/log/frp-sh/frp-sh.log`（Linux；5 MB 轮转到 `.old`）。无 `$HOME` 的 systemd 环境自动落到 `/var/log/frp-sh`
-- 面板「日志」视图：`http://服务器IP:8080/panel` 顶部 Logs，实时增量查看（走 `/api/panel/debug`，鉴权同面板 token）
-- 关键事件自动留痕：访客加入（含公网地址/虚拟 IP）、房主刷新、中继配对成功/超时、房间移除、TURN 分配
-- 客户端侧同样有面板日志（客户端面板 Logs 视图 / `/api/debug`），打洞阶段 `--verbose` 记录更细
-- 排查连接反复断开：对比两端日志的"加入→中继配对→断开"时间线，配合面板拓扑图定位是打洞、TURN 还是中继路径的问题
+使用 `frp-sh logs path` 查找当前账户的日志目录，`frp-sh logs tail --follow` 查看 JSONL 诊断记录。每个进程独立文件，单文件 5 MiB，保留三份轮转；清理时跳过存活进程。没有 HTTP 日志接口。服务部署应为运行账户设置固定 HOME。
 
 ## 与既有服务共存
 

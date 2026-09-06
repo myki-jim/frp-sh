@@ -18,7 +18,7 @@ id "$owner" >/dev/null 2>&1 || { printf 'Unknown user ID: %s\n' "$owner"; exit 1
 os="$(uname -s)"; arch="$(uname -m)"
 case "$arch" in x86_64|amd64) arch=x86_64;; aarch64|arm64) arch=aarch64;; *) printf 'Unsupported architecture: %s\n' "$arch"; exit 1;; esac
 case "$os" in
-    Darwin) suffix="macos-$arch"; manager=launchd;;
+    Darwin) [ "$arch" != aarch64 ] || arch=arm64; suffix="macos-$arch"; manager=launchd;;
     Linux)
         suffix="linux-$arch"
         if ldd --version 2>&1 | grep -qi musl || [ -f /etc/openwrt_release ]; then suffix="$suffix-musl"; fi
@@ -34,8 +34,49 @@ umask 022
 mkdir -p "$dest" /usr/local/bin /etc/frp-sh
 chmod 755 "$dest" /etc/frp-sh
 stage="$(mktemp -d "$dest/staging.XXXXXXXX")"
-trap 'rm -rf "$stage"' EXIT HUP INT TERM
-base=https://github.com/myki-jim/frp-sh/releases/latest/download
+rollback=0
+case "$manager" in
+    systemd) unit=/etc/systemd/system/frp-sh-network.service;;
+    launchd) unit=/Library/LaunchDaemons/com.frpsh.network.plist;;
+    procd) unit=/etc/init.d/frp-sh-network;;
+esac
+stop_service() {
+    case "$manager" in
+        systemd) systemctl stop frp-sh-network.service 2>/dev/null || true;;
+        launchd) launchctl bootout system/com.frpsh.network 2>/dev/null || true;;
+        procd) /etc/init.d/frp-sh-network stop 2>/dev/null || true;;
+    esac
+}
+cleanup() {
+    result=$?
+    trap - EXIT HUP INT TERM
+    if [ "$rollback" = 1 ]; then
+        stop_service
+        for item in client helper policy unit; do
+            case "$item" in client) path="$dest/frp-sh";; helper) path="$dest/frp-sh-net";; policy) path=/etc/frp-sh/helper.toml;; unit) path="$unit";; esac
+            if [ -f "$stage/previous-$item" ]; then cp -p "$stage/previous-$item" "$path"; else rm -f "$path"; fi
+        done
+        if [ -f "$stage/previous-link" ]; then ln -sf "$(cat "$stage/previous-link")" /usr/local/bin/frp-sh; else rm -f /usr/local/bin/frp-sh; fi
+        if [ -f "$stage/previous-unit" ]; then
+            case "$manager" in
+                systemd) systemctl daemon-reload; systemctl start frp-sh-network.service || true;;
+                launchd) launchctl bootstrap system "$unit" || true;;
+                procd) /etc/init.d/frp-sh-network start || true;;
+            esac
+        fi
+        say "Installation failed; the previous files were restored." "安装失败，已恢复原有文件。"
+    fi
+    case "$stage" in "$dest"/staging.*) rm -rf "$stage";; *) printf 'Unsafe staging path\n'; exit 1;; esac
+    exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+release_url="$(curl -fsSL --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' https://github.com/myki-jim/frp-sh/releases/latest)"
+case "$release_url" in https://github.com/myki-jim/frp-sh/releases/tag/v[0-9]*) ;;
+*) printf 'Invalid release URL\\n'; exit 1;; esac
+tag="${release_url##*/}"
+case "$tag" in *[!A-Za-z0-9.-]*) exit 1;; esac
+base="https://github.com/myki-jim/frp-sh/releases/download/$tag"
 fetch() {
     asset="$1"; out="$2"
     curl -fL --proto '=https' --tlsv1.2 "$base/$asset" -o "$out"
@@ -49,13 +90,16 @@ fetch() {
     chmod 755 "$out"
 }
 say "Downloading and verifying client and network helper..." "正在下载并校验客户端和网络辅助程序…"
-fetch "frp-sh-$suffix" "$stage/frp-sh"
+fetch "frp-sh-client-$suffix" "$stage/frp-sh"
 fetch "frp-sh-net-$suffix" "$stage/frp-sh-net"
-case "$manager" in
-    systemd) systemctl stop frp-sh-network.service 2>/dev/null || true;;
-    launchd) launchctl bootout system/com.frpsh.network 2>/dev/null || true;;
-    procd) /etc/init.d/frp-sh-network stop 2>/dev/null || true;;
-esac
+for item in client helper policy unit; do
+    case "$item" in client) path="$dest/frp-sh";; helper) path="$dest/frp-sh-net";; policy) path=/etc/frp-sh/helper.toml;; unit) path="$unit";; esac
+    [ ! -f "$path" ] || cp -p "$path" "$stage/previous-$item"
+done
+if [ -L /usr/local/bin/frp-sh ]; then readlink /usr/local/bin/frp-sh > "$stage/previous-link"
+elif [ -e /usr/local/bin/frp-sh ]; then printf 'Refusing to replace an unmanaged /usr/local/bin/frp-sh file\n'; exit 1; fi
+rollback=1
+stop_service
 for name in frp-sh frp-sh-net; do
     [ ! -f "$dest/$name" ] || cp -p "$dest/$name" "$dest/$name.previous"
     mv -f "$stage/$name" "$dest/$name"
@@ -121,4 +165,5 @@ INIT
     /etc/init.d/frp-sh-network start
     ;;
 esac
+rollback=0
 say "Installed. Run frp-sh from your normal account." "安装完成。请使用普通账户运行 frp-sh。"

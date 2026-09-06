@@ -22,15 +22,29 @@ cargo build --release
 
 - **HTTP REST**（8080/tcp）：房间注册与查询
 - **UDP 公网探测**（8080/udp）：客户端学习自己的公网地址
-- **TCP 中继**（8081/tcp）：打洞失败时的数据转发通道
+- **TCP 中继**（8081/tcp）：打洞失败时的数据转发通道（可再加 `--turn 0.0.0.0:3478` 提供标准 TURN UDP 中继，见[服务器部署](./server.md)）
 
-> ⚠️ 记得在云厂商安全组和系统防火墙放行 `8080/tcp`、`8080/udp`、`8081/tcp`。
+> 记得在云厂商安全组和系统防火墙放行 `8080/tcp`、`8080/udp`、`8081/tcp`（启用 TURN 时还需 `3478/udp`）。
 
 服务器端也可以直接用打包好的二进制，见[部署信令服务器](./server.md)的 systemd 方式。
 
 ## 第 2 步：配置客户端
 
-房主和访客都需要一份指向该服务器的配置（默认配置指向 `127.0.0.1`，仅本机联调可用）：
+房主和访客都需要一份指向该服务器的配置。**推荐用连接配置档案**（一行命令，自动写入本机配置）：
+
+```bash
+# 保存服务器连接（--set-default 设为默认档案；不含房间时仅"配置"，进房再补全）
+frp-sh profile add --server http://你的服务器IP:8080 --password 你的口令 --set-default
+
+# 之后进房间（首次或补全房间号；同服务器+模式自动合并到同一档案）
+frp-sh profile add --server http://你的服务器IP:8080 --password 你的口令 --room 7411
+frp-sh profile run          # 按默认档案一键启动会话
+frp-sh profile list         # 查看已有档案（密码打码）
+```
+
+> 使用 profile add 保存服务器和房间配置，然后通过 profile run 启动。
+
+手工方式（TOML 配置文件，默认配置指向 `127.0.0.1`，仅本机联调可用）：
 
 ```toml
 # config/server.toml
@@ -41,50 +55,88 @@ relay_addr     = "你的服务器IP:8081"          # TCP 中继
 通过 `--config` 指定：
 
 ```bash
-frp-sh --config config/server.toml game create
+frp-sh --config config/server.toml lan create
 ```
 
-## 第 3 步：房主创建房间
+## 第 3 步：按场景选择命令
 
-在运行游戏/服务的那台机器上：
+frp-sh 有三个使用系列，本教程以**组网（lan）**为例，这是最强大、最通用的模式：
+
+| 系列 | 命令 | 场景 |
+|------|------|------|
+| **组网（推荐）** | `frp-sh lan create/join` | 整机互访 + 访问对方整个局域网（类 Tailscale） |
+| **游戏** | `frp-sh game create/join` | Minecraft 等联机游戏，纯端口转发（默认 25565） |
+| **开发** | `frp-sh dev create/join` | 开发调试，应用层端口转发 |
+
+### 组网：房主创建房间（lan）
+
+在房主电脑上：
 
 ```bash
-frp-sh game create --service 127.0.0.1:25565
+frp-sh lan create
 ```
 
-其中 `--service` 是房主本地服务的地址（默认 `127.0.0.1:25565`）。输出示例：
+输出示例：
 
 ```text
-  Room created : game-a3f9c2
+  Room created : lan-a3f9c2
   Signaling    : http://你的服务器IP:8080
-  Local service: 127.0.0.1:25565
+  Your ID      : 123e4567-e89b-12d3-a456-426614174000
+  LAN addrs    : 192.168.1.5:51234
+  Vnet IP      : 10.66.0.1（对端可 ping/直连此 IP）
+  Mode         : LAN mesh (virtual NIC)
+  LAN subnets  : 192.168.1.0/24（访客加入后可访问）
   Waiting for a guest to join ...
 ```
 
-把 **`game-a3f9c2`** 发给朋友。
+把 **`lan-a3f9c2`** 发给朋友。
 
-## 第 4 步：访客加入
+### 组网：访客加入（lan）
 
 在朋友机器上：
 
 ```bash
+frp-sh lan join lan-a3f9c2
+```
+
+访客自动获得由设备 ID 派生的稳定虚拟 IP（如 `10.66.0.42`），加入后：
+
+- 可 `ping 10.66.0.1` / SSH / 共享文件访问房主整机
+- 自动添加路由，可访问房主局域网内的 NAS、打印机等其他设备
+- 需要 root/管理员权限（创建虚拟网卡、加路由）
+
+```text
+  Joined room : lan-a3f9c2
+  Host address: 你的服务器IP:xxx
+  Host vnet IP: 10.66.0.1
+  Host LAN     : 192.168.1.0/24
+  Mode         : LAN mesh (virtual NIC)
+  Punching through NAT ...
+
+>>> 本地局域网直连 (LAN direct) with 192.168.1.5:51234   ← 同一 WiFi 秒连！
+```
+
+## 第 4 步：游戏 / 开发系列（纯端口转发）
+
+不想组网、只需要转发一个端口时，用 `game`（游戏）或 `dev`（开发）：
+
+```bash
+# 房主：转发本机 Minecraft（默认 25565）
+frp-sh game create --service 127.0.0.1:25565
+
+# 访客：连接本机 25565 即到达房主游戏服务器
 frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565
 ```
 
-`--listen` 是访客本地要监听的端口（默认 `127.0.0.1:25565`）。输出示例：
-
-```text
-  Joined room : game-a3f9c2
-  Host address: 你的服务器IP:xxx
-  Local listen: 127.0.0.1:25565
-  Punching through NAT ...
-
->>> P2P direct link established with 你的服务器IP:xxx   ← 打洞成功！
+```bash
+# 开发：把本机 8080 的 Web 服务转发给同事
+frp-sh dev create --service 127.0.0.1:8080
+frp-sh dev join dev-a3f9c2 --listen 127.0.0.1:8080
 ```
 
-此时朋友连接自己电脑的 `127.0.0.1:25565`，流量即到达房主的 `127.0.0.1:25565`。
+`game` / `dev` 系列为纯端口转发，不创建虚拟网卡，无需管理员权限。
 
-如果打洞失败，会自动回退：
+如果打洞失败，会自动回退（配置了 `turn_providers` 时优先走 TURN UDP 中继）：
 
 ```text
 >>> UDP hole punching failed, falling back to relay ...
@@ -93,12 +145,21 @@ frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565
 
 隧道依然可用，只是数据经过服务器转发（见[网络原理](./architecture.md)）。
 
+断线后（网络抖动、NAT 映射过期）双方都会自动重连：
+
+```text
+>>> 连接已断开，2 秒后自动重连（Ctrl-C 退出）...
+```
+
+无需手动干预，重连间隔按 2s、4s、8s…退避，上限 15s。
+
 ## 最小可用命令
 
 | 角色 | 最小命令 | 说明 |
 |------|----------|------|
-| 房主 | `frp-sh game create` | 所有参数均有默认值 |
-| 访客 | `frp-sh game join game-xxxxxx` | 只需房间号 |
+| 组网房主 | `frp-sh lan create` | 虚拟网卡整机入网（需 root/管理员） |
+| 组网访客 | `frp-sh lan join lan-xxxxxx` | 只需房间号 |
+| 游戏房主 | `frp-sh game create` | 纯端口转发（默认 25565） |
 | 服务器 | `frp-sh serve` | 监听 0.0.0.0:8080/8081 |
 
 ## 下一步

@@ -1,78 +1,54 @@
-# 安装与构建
+# 安装与维护（0.4.0）
 
-## 环境要求
+0.4.0 将 LAN 网络操作交给受限的系统辅助服务。安装阶段授权一次；之后请用普通账户运行客户端，建房、加入和重连不会再次请求 UAC 或 sudo。game/dev 端口转发不需要辅助服务。
 
-- **Rust**：1.70+（推荐用 rustup 安装最新稳定版）
-- **操作系统**：Windows / Linux / macOS（UDP 行为基本一致；已处理 Windows 特有的 WSAECONNRESET 问题）
+> 0.4.0 开发分支尚未发布正式安装包。在线安装命令下载最近一次正式 Release，不能用来验证开发分支的新功能。
 
-## 方式一：源码构建（推荐）
+## 安装
 
-```bash
-git clone <你的仓库地址> frp-sh
-cd frp-sh
+Windows PowerShell：
 
-# 调试构建
-cargo build
-
-# 发布构建（推荐分发）
-cargo build --release
+```powershell
+irm https://frp.sh/install.ps1 | iex
 ```
 
-产物：
+Linux/macOS：
 
-```text
-target/release/frp-sh.exe   # Windows
-target/release/frp-sh       # Linux / macOS
+```sh
+curl -fsSL https://frp.sh/install.sh | sh
 ```
 
-发布构建约 **5.4 MB**（已 strip + LTO），单文件可分发，无需运行时依赖。
+安装器下载同一版本的客户端、辅助服务和 SHA-256 校验文件。Windows 还验证 Wintun 的 Authenticode 签名。校验和用于检查下载完整性，不等同于独立的发布签名。
 
-## 方式二：直接编译运行
+| 平台 | 安装位置 | 服务 |
+| --- | --- | --- |
+| Windows | `%ProgramFiles%\frp-sh` | `FrpShNetwork` |
+| Linux | `/usr/local/lib/frp-sh` | `frp-sh-network.service` 或 procd |
+| macOS | `/usr/local/lib/frp-sh` | `com.frpsh.network` |
 
-不克隆仓库时，也可把 `src/`、`Cargo.toml`、`Cargo.lock` 拷到任意目录后构建。
+安装目录只有管理员可写。Windows 授权安装前的用户 SID；Unix 授权原始用户 UID。直接用 root 安装时需要指定 `FRPSH_INSTALL_UID`。Linux 需要 iproute2，以及 systemd 或 procd；OpenWrt 真机验证仍待完成。
 
-## 安装到 PATH
+## 普通账户检查
 
-```bash
-# Linux / macOS
-sudo cp target/release/frp-sh /usr/local/bin/frp-sh
-
-# Windows
-copy target\release\frp-sh.exe %USERPROFILE%\bin\
+```sh
+frp-sh doctor
+frp-sh doctor --network-test
+frp-sh --lang zh-CN lan create
 ```
 
-之后即可直接使用 `frp-sh` 命令。
+`--network-test` 临时创建并关闭虚拟网卡，请先退出已有 LAN 会话。辅助服务不可用时命令报告错误，不自动提权。不要开放本地 IPC 给其他账户。
 
-## 验证安装
+## 更新和卸载
 
-```bash
-frp-sh --help
-frp-sh game --help
-frp-sh serve --help
+`frp-sh update` 只检查版本并显示安装说明。更新当前仍需重新运行安装器，属于安装维护阶段；无额外授权的签名自动升级尚未实现。升级前退出活动会话。安装器保留上一对程序供回滚。
+
+卸载目前通过系统管理员完成：停止并删除上述服务，再删除对应安装目录及 PATH 项；保留用户配置和日志，除非明确需要删除。自动卸载和跨平台升级回滚仍需验收，暂不作为正式发布保证。
+
+## 编译
+
+```sh
+cargo build --locked --release --bins
+cargo build --locked --release --no-default-features --bin frp-sh
 ```
 
-输出子命令与参数说明即安装成功。
-
-## 在服务器上构建（无本地 Rust 环境）
-
-服务器只需运行信令服务器，可在服务器上直接构建：
-
-```bash
-# 安装 Rust（约 1 分钟）
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-export PATH="$HOME/.cargo/bin:$PATH"
-
-# 上传代码后构建
-cd /opt/frpsh
-cargo build --release
-```
-
-2 核 VPS 全量编译约 2.5 分钟。
-
-## 系统要求备忘
-
-| 平台 | 备注 |
-|------|------|
-| Windows | 已处理 10054（ICMP 毒化）导致的 send/recv 假错误 |
-| Linux | 无需额外配置 |
-| macOS | UDP 行为与 Linux 一致 |
+默认安装精简客户端。部署服务端可下载名称中不带 client 的完整 Release 资产。默认构建包含 `serve`；精简客户端构建排除服务端和内置 TURN 服务端。LAN 安装还需配套 `frp-sh-net`，Windows 需要受保护目录中的 Wintun DLL，不能只复制客户端替代完整安装。

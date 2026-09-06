@@ -6,7 +6,7 @@
 //! - 代差：`version::is_breaking_gap` 判定；代差过大时不可跳过（强提示）
 //! - 安装：Windows 下载新 exe 并在本进程退出后延迟替换；其他平台打印安装命令
 
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{BufRead, Write};
 use std::time::Duration;
 
 /// 两次检查的最小间隔（秒）。
@@ -109,16 +109,18 @@ async fn fetch_latest() -> Option<String> {
 pub async fn maybe_check_update(interactive: bool) -> anyhow::Result<()> {
     let now = crate::utils::now_unix();
     // 节流：检查间隔内不重复请求
-    if now.saturating_sub(last_check_time()) < CHECK_INTERVAL_SECS {
+    if !interactive && now.saturating_sub(last_check_time()) < CHECK_INTERVAL_SECS {
         return Ok(());
     }
     let Some(latest) = fetch_latest().await else {
+        crate::ui_println!("Could not check for updates; try again later.");
         return Ok(()); // 网络失败静默
     };
     write_cache(&latest);
 
     let current = crate::version::VERSION;
     if !crate::version::is_newer(&latest, current) {
+        crate::ui_println!("No newer release is available (current v{current}).");
         return Ok(()); // 已是最新
     }
     let breaking = crate::version::is_breaking_gap(current, &latest);
@@ -131,7 +133,7 @@ pub async fn maybe_check_update(interactive: bool) -> anyhow::Result<()> {
             ""
         }
     );
-    if !interactive || !std::io::stdin().is_terminal() {
+    if !interactive || !crate::terminal::can_prompt() {
         crate::ui_println!("  On the server, update when convenient: curl -fsSL https://frp.sh/install.sh | sh (or the install script)\n");
         return Ok(());
     }

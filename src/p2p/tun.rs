@@ -8,7 +8,7 @@
 //! - Linux：`/dev/net/tun`（需 root / CAP_NET_ADMIN）
 //! - macOS：`utun`（需管理员权限）
 //! - Windows：Wintun 驱动（需管理员权限；`wintun.dll` 放在可执行文件旁，
-//!   或用 `WINTUN_DLL` 环境变量指定路径）
+//!   位于辅助服务受保护的安装目录）
 //!
 //! 帧格式与隧道层一致：`[u32 len][payload]` 传输 IP 包。
 
@@ -55,7 +55,7 @@ pub(crate) fn create_local(cfg: &TunConfig) -> Result<tun::AsyncDevice> {
     }
     tun::create_as_async(&c).map_err(|e| {
         let hint = if cfg!(target_os = "windows") {
-            "; Windows requires wintun.dll next to the executable (or set via the WINTUN_DLL env var), and administrator privileges"
+            "; Windows requires wintun.dll in the protected helper installation directory; repair the installation if it is missing"
         } else {
             ""
         };
@@ -87,15 +87,7 @@ pub(crate) fn add_subnet_route_local(cidr: &str, dev: &str) -> Result<()> {
     }
 }
 
-/// Windows：放行虚拟网卡接口的入站流量与 ICMPv4。
-///
-/// Windows Defender 防火墙默认阻止**入站** ICMP 回显请求与其他入站连接，
-/// 导致对端（房主/访客）ping 或访问本机失败。会话以管理员权限运行时
-/// 自动添加两条规则：
-/// - `frp-sh LAN mesh`：放行该接口（frp1）的所有入站流量
-/// - `frp-sh ICMPv4-in`：放行 ICMPv4 入站（兜底，接口重建后仍生效）
-///
-/// 幂等：先删除同名旧规则再添加。
+/// Helper-owned firewall rule, scoped to this virtual interface only.
 #[cfg(target_os = "windows")]
 pub(crate) fn allow_firewall_local(iface: &str) -> Result<()> {
     let script = format!("New-NetFirewallRule -DisplayName 'frp-sh-{iface}' -Direction Inbound -Action Allow -InterfaceAlias '{iface}' -Profile Any -ErrorAction Stop | Out-Null");
@@ -432,17 +424,41 @@ fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    let out = command.args(args).output().map_err(|e| {
-        FrpError::Tun(format!(
-            "{program} failed (requires root/administrator privileges): {e}"
-        ))
-    })?;
-    if out.status.success() {
+    let mut child = command
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            FrpError::Tun(format!(
+                "{program} failed (requires root/administrator privileges): {e}"
+            ))
+        })?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(FrpError::Tun(format!(
+                "{program} timed out in the network helper"
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    if status.success() {
         Ok(())
     } else {
+        let mut error = String::new();
+        if let Some(stderr) = child.stderr.take() {
+            use std::io::Read;
+            let _ = stderr.take(4096).read_to_string(&mut error);
+        }
         Err(FrpError::Tun(format!(
             "{program} returned an error: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+            error.trim()
         )))
     }
 }

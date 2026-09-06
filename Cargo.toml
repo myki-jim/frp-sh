@@ -50,4 +50,14 @@ env_logger = "0.11"
 
 [profile.release]
 strip = true
-lto = "thin"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+
+# Keep cryptographic inner loops optimized for throughput.
+[profile.release.package.chacha20]
+opt-level = 3
+[profile.release.package.poly1305]
+opt-level = 3
+[profile.release.package.sha2]
+opt-level = 3

@@ -456,6 +456,10 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     if n == 0 {
                         break;
                     }
+                    // IPv6 router discovery must not enter an IPv4-only session.
+                    if n < 20 || p[0] >> 4 != 4 {
+                        continue;
+                    }
                     wr.write_u32(n as u32).await?;
                     wr.write_all(&p[..n]).await?;
                 }
@@ -480,6 +484,16 @@ pub async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn oversized_ipc_request_is_rejected_before_reading_payload() {
+        let (mut a, mut b) = tokio::io::duplex(4);
+        a.write_u32(u32::MAX).await.unwrap();
+        assert!(read_json::<_, Request>(&mut b).await.is_err());
+        assert!(serde_json::from_str::<Request>(
+            r#"{"op":"status","version":1,"command":"reboot"}"#
+        )
+        .is_err());
+    }
     #[test]
     fn helper_rejects_unbounded_privileges() {
         let mut c = TunConfig {
