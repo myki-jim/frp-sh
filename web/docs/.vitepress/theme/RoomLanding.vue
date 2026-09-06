@@ -2,257 +2,346 @@
 import { ref, reactive, onMounted, onBeforeUnmount, watch } from "vue";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { chapters, chapterAt, stops, commands } from "./room-story.js";
+import { commands } from "./install-commands.js";
 import "./rooms.css";
 const root = ref(null),
   host = ref(null),
-  ready = ref(false),
-  failed = ref(false),
-  chapter = ref(0);
-const state = reactive({
-  progress: 0,
-  language: "en",
-  mode: "auto",
-  systemDark: false,
-  reduced: false,
-  platform: "unix",
-  message: "",
-});
-const tr = (en, zh) => (state.language === "zh-CN" ? zh : en);
+  language = ref("en"),
+  mode = ref("auto"),
+  platform = ref("unix"),
+  message = ref(""),
+  failed = ref(false);
+const scene = reactive({ night: false, reduced: false });
+const tr = (en, zh) => (language.value === "en" ? en : zh);
+const docs = (path) => (language.value === "en" ? "/en/" : "/") + path;
 let world,
-  trigger,
   media,
   dark,
-  context,
+  ctx,
+  stop,
   timer,
-  disposed = false,
-  stopWatch;
-function remember(key, value) {
+  disposed = false;
+function save(key, value) {
   try {
     localStorage.setItem(key, value);
   } catch {}
 }
-function go(p) {
-  if (!root.value) return;
-  const total = root.value.offsetHeight - innerHeight;
-  window.scrollTo({
-    top: root.value.offsetTop + total * p,
-    behavior: state.reduced ? "instant" : "smooth",
-  });
+function toggleLanguage() {
+  language.value = language.value === "en" ? "zh-CN" : "en";
+  document.documentElement.lang = language.value;
+  save("frpsh-site-language", language.value);
+  message.value = "";
 }
-async function act(id) {
-  if (id === "language") {
-    state.language = state.language === "en" ? "zh-CN" : "en";
-    state.message = "";
-    remember("frpsh-site-language", state.language);
-    document.documentElement.lang = state.language;
-  } else if (id === "day") {
-    const modes = ["auto", "day", "night"];
-    state.mode = modes[(modes.indexOf(state.mode) + 1) % 3];
-    remember("frpsh-world-light", state.mode);
-  } else if (id === "install") go(1);
-  else if (id === "previous")
-    go(stops[Math.max(0, chapterAt(state.progress) - 1)]);
-  else if (id === "next") go(stops[Math.min(7, chapterAt(state.progress) + 1)]);
-  else if (id === "platform") {
-    state.platform = state.platform === "unix" ? "windows" : "unix";
-    state.message = "";
-  } else if (id === "copy") {
-    try {
-      await navigator.clipboard.writeText(commands[state.platform]);
-      state.message = tr("Copied. See you in the room.", "已复制。房间里见。");
-    } catch {
-      state.message = tr(
-        "Select the command above and copy it manually.",
-        "请选择上方指令手动复制。",
-      );
-    }
-    clearTimeout(timer);
-    timer = setTimeout(() => (state.message = ""), 5000);
-  } else if (id === "guide")
-    window.location.assign(
-      (state.language === "en" ? "/en/" : "/") + "install",
-    );
-  else if (id === "source")
-    window.location.assign("https://github.com/myki-jim/frp-sh");
-  else if (id === "webgl-lost") {
-    failed.value = true;
-    world?.dispose();
-    world = null;
-  }
-  world?.refresh();
+function light() {
+  const modes = ["auto", "day", "night"];
+  mode.value = modes[(modes.indexOf(mode.value) + 1) % 3];
+  save("frpsh-world-light", mode.value);
+  preferences();
 }
 function preferences() {
-  state.reduced = media.matches;
-  state.systemDark = dark.matches;
-  if (state.reduced) {
-    state.progress = stops.reduce((best, value) =>
-      Math.abs(value - state.progress) < Math.abs(best - state.progress) ? value : best, 0);
-  }
+  scene.night =
+    mode.value === "night" || (mode.value === "auto" && dark.matches);
+  scene.reduced = media.matches;
   world?.refresh();
 }
-function keydown(e) {
-  if (
-    e.altKey ||
-    e.ctrlKey ||
-    e.metaKey ||
-    e.target.closest("button,a,pre,input")
-  )
-    return;
-  if (e.key === "ArrowRight") {
-    e.preventDefault();
-    act("next");
+async function copy() {
+  try {
+    await navigator.clipboard.writeText(commands[platform.value]);
+    message.value = tr("Copied.", "已复制。");
+  } catch {
+    message.value = tr(
+      "Select the command to copy it.",
+      "请选择指令手动复制。",
+    );
   }
-  if (e.key === "ArrowLeft") {
-    e.preventDefault();
-    act("previous");
-  }
-  if (e.key === "End") {
-    e.preventDefault();
-    go(1);
-  }
-  if (e.key === "Home") {
-    e.preventDefault();
-    go(0);
-  }
+  clearTimeout(timer);
+  timer = setTimeout(() => (message.value = ""), 3500);
 }
 onMounted(async () => {
   try {
     if (localStorage.getItem("frpsh-site-language") === "zh-CN")
-      state.language = "zh-CN";
-    const saved = localStorage.getItem("frpsh-world-light");
-    if (["auto", "day", "night"].includes(saved)) state.mode = saved;
+      language.value = "zh-CN";
+    const m = localStorage.getItem("frpsh-world-light");
+    if (["auto", "day", "night"].includes(m)) mode.value = m;
   } catch {}
-  document.documentElement.lang = state.language;
+  document.documentElement.lang = language.value;
   media = matchMedia("(prefers-reduced-motion: reduce)");
   dark = matchMedia("(prefers-color-scheme: dark)");
   preferences();
   media.addEventListener("change", preferences);
   dark.addEventListener("change", preferences);
-  window.addEventListener("keydown", keydown);
   gsap.registerPlugin(ScrollTrigger);
-  context = gsap.context(() => {
-    trigger = ScrollTrigger.create({
-      trigger: root.value,
-      start: "top top",
-      end: "bottom bottom",
-      onUpdate: (self) => {
-        state.progress = state.reduced
-          ? stops.reduce(
-              (best, value) =>
-                Math.abs(value - self.progress) < Math.abs(best - self.progress)
-                  ? value
-                  : best,
-              0,
-            )
-          : self.progress;
-        if (state.reduced) world?.refresh();
-      },
-    });
-  }, root.value);
+  ctx = gsap.matchMedia();
+  ctx.add(
+    "(prefers-reduced-motion: no-preference)",
+    () => {
+      gsap.from(".hero-copy > *", {
+        y: 24,
+        opacity: 0,
+        stagger: 0.1,
+        duration: 0.8,
+        ease: "power3.out",
+      });
+      gsap.utils
+        .toArray(".reveal")
+        .forEach((el) =>
+          gsap.from(el, {
+            y: 30,
+            opacity: 0,
+            duration: 0.7,
+            scrollTrigger: { trigger: el, start: "top 90%", once: true },
+          }),
+        );
+    },
+    root.value,
+  );
   try {
-    const { createRoomWorld } = await import("./room-world.js");
+    const { mountStudios } = await import("./studios.js");
     if (disposed) return;
-    world = createRoomWorld(
-      host.value,
-      state,
-      act,
-      (value) => (chapter.value = value),
-    );
-    ready.value = true;
-    stopWatch = watch(
-      () => [
-        state.language,
-        state.mode,
-        state.platform,
-        state.message,
-        state.reduced,
-        state.systemDark,
-      ],
+    world = mountStudios(host.value, scene);
+    stop = watch(
+      () => [scene.night, scene.reduced],
       () => world?.refresh(),
     );
-  } catch (error) {
-    console.error("Room scene could not start", error);
+  } catch (e) {
     failed.value = true;
+    console.error(e);
   }
 });
 onBeforeUnmount(() => {
   disposed = true;
-  stopWatch?.();
   world?.dispose();
-  context?.revert();
+  ctx?.revert();
+  stop?.();
   clearTimeout(timer);
   media?.removeEventListener("change", preferences);
   dark?.removeEventListener("change", preferences);
-  window.removeEventListener("keydown", keydown);
 });
 </script>
 <template>
   <main
     ref="root"
-    class="room-journey"
-    :class="{ 'world-failed': failed }"
-    :lang="state.language"
-    :data-chapter="chapter"
-    :data-light="state.mode"
+    class="site"
+    :class="{ night: scene.night }"
+    :lang="language"
   >
-    <noscript><a href="/en/install">Install frp-sh / 安装指南</a></noscript>
-    <div class="world-viewport">
-      <div ref="host" class="world-host" :aria-busy="!ready && !failed"></div>
-      <div v-if="!ready && !failed" class="world-loading" role="status">
-        {{ tr("Opening the room…", "正在打开房间…") }}
-      </div>
-      <div class="world-access">
-        <h1>frp.sh — {{ tr("A room for everyone.", "大家的房间。") }}</h1>
-        <p aria-live="polite">
-          {{ chapters[chapter][state.language === "en" ? 0 : 1] }}
-        </p>
-        <p>
+    <header class="site-header">
+      <a href="/" class="wordmark">frp.sh</a>
+      <nav>
+        <a :href="docs('quickstart')">{{ tr("Guide", "指南") }}</a
+        ><a href="https://github.com/myki-jim/frp-sh">GitHub ↗</a
+        ><button
+          @click="toggleLanguage"
+          :aria-label="tr('切换到中文', 'Switch to English')"
+        >
+          {{ language === "en" ? "EN / 中文" : "中文 / EN" }}</button
+        ><button
+          class="light-switch"
+          @click="light"
+          :aria-label="tr('Change appearance', '切换外观')"
+        >
+          {{
+            mode === "auto"
+              ? tr("Auto", "跟随系统")
+              : mode === "day"
+                ? tr("Day", "白天")
+                : tr("Night", "夜晚")
+          }}
+        </button>
+      </nav>
+    </header>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">P2P NETWORKING / v0.4.0</p>
+        <h1>
+          {{ tr("Your people.", "你和伙伴，") }}<br /><span>{{
+            tr("One network.", "同一个网络。")
+          }}</span>
+        </h1>
+        <p class="intro">
           {{
             tr(
-              "Scroll to explore. Left and right arrow keys change scenes. End goes to installation. This is an illustrated connection, not live network status.",
-              "滚动探索，左右方向键切换场景，End 跳到安装。这是连接概念演示，并非实时网络状态。",
+              "A room code brings your devices together. Direct connections for building, playing, and everything in between.",
+              "一个房间号，让大家的设备连在一起。直连优先，一起开发，一起开玩。",
             )
           }}
         </p>
-        <button @click="act('install')">
-          {{ tr("Skip to installation", "跳到安装") }}
-        </button>
-        <button @click="act('language')">
-          {{ tr("切换到中文", "Switch to English") }}
-        </button>
-        <button @click="act('day')">
-          {{ tr("Change day or night", "切换昼夜模式") }}
-        </button>
-        <button @click="act('previous')">
-          {{ tr("Previous scene", "上一幕") }}
-        </button>
-        <button @click="act('next')">{{ tr("Next scene", "下一幕") }}</button>
+        <div class="hero-actions">
+          <a href="#install" class="primary"
+            >{{ tr("Get frp-sh", "获取 frp-sh") }} <span>↗</span></a
+          ><a :href="docs('architecture')" class="text-link"
+            >{{ tr("How it connects", "了解连接原理") }} ↗</a
+          >
+        </div>
       </div>
-      <section v-if="failed" class="world-fallback">
-        <h1>frp.sh</h1>
-        <p>{{ tr("A room for everyone.", "大家的房间。") }}</p>
+      <div class="studio-shell">
+        <div
+          ref="host"
+          class="studios"
+          role="img"
+          :aria-label="
+            tr(
+              'Six distinct workspaces connected in one network',
+              '六个不同风格的工作空间连接在同一个网络中',
+            )
+          "
+        ></div>
+        <div v-if="failed" class="studio-fallback">A — B — C<br />ONE ROOM</div>
+        <div class="model-caption">
+          <span>{{
+            tr(
+              "Different places. Shared possibilities.",
+              "身在各处，一起创造。",
+            )
+          }}</span
+          ><span>{{ tr("Connection illustration", "连接概念示意") }}</span>
+        </div>
+      </div>
+    </section>
+    <section class="connection reveal">
+      <div>
+        <p class="eyebrow">01 / {{ tr("THE CONNECTION", "连接") }}</p>
+        <h2>
+          {{ tr("Less waiting.", "少一点等待。") }}<br />{{
+            tr("More doing.", "多一点开始。")
+          }}
+        </h2>
+      </div>
+      <div class="connection-copy">
         <p>
           {{
             tr(
-              "The 3D scene is unavailable on this device. You can still install frp-sh below.",
-              "此设备无法显示 3D 场景，你仍可在下方安装 frp-sh。",
+              "Parallel address discovery looks for a direct path between devices. When a network gets in the way, TURN or TCP relay provides another route.",
+              "并行地址探测寻找设备间的直接路径。遇到网络限制时，通过 TURN 或 TCP 中继接力。",
             )
           }}
         </p>
-        <button @click="act('language')">EN / 中文</button>
-        <button @click="act('platform')">
-          {{ state.platform === "unix" ? "macOS / Linux" : "Windows" }} ↔
-        </button>
-        <pre>{{ commands[state.platform] }}</pre>
-        <button @click="act('copy')">
-          {{ tr("Copy command", "复制命令") }}
-        </button>
-        <p role="status">{{ state.message }}</p>
-        <a :href="(state.language === 'en' ? '/en/' : '/') + 'install'">{{
-          tr("Installation guide", "安装指南")
-        }}</a>
-      </section>
-    </div>
+        <div class="route">
+          <span>YOU</span><i></i><span>{{ tr("YOUR ROOM", "你的房间") }}</span>
+        </div>
+        <a :href="docs('architecture')" class="text-link"
+          >{{ tr("Read the architecture", "阅读网络原理") }} ↗</a
+        >
+      </div>
+    </section>
+    <section class="use-section">
+      <div class="section-line reveal">
+        <p class="eyebrow">02 / {{ tr("MADE FOR TOGETHER", "为一起而生") }}</p>
+        <span>{{
+          tr("One room. More than two people.", "一个房间，不止两个人。")
+        }}</span>
+      </div>
+      <div class="use-grid">
+        <article class="reveal">
+          <span class="use-number">A.</span>
+          <h2>{{ tr("Build together.", "一起创造。") }}</h2>
+          <p>
+            {{
+              tr(
+                "Let teammates reach your local service. Share what you’re working on without moving it somewhere else.",
+                "让伙伴访问你的本地服务。项目留在本机，想法直接分享。",
+              )
+            }}
+          </p>
+          <code>frp-sh dev create --service 127.0.0.1:3000</code>
+        </article>
+        <article class="reveal">
+          <span class="use-number">B.</span>
+          <h2>{{ tr("Play together.", "一起开玩。") }}</h2>
+          <p>
+            {{
+              tr(
+                "Bring friends into a virtual LAN. Share the room code and meet on the same server.",
+                "邀请朋友加入虚拟局域网。分享房间号，在同一个服务器相遇。",
+              )
+            }}
+          </p>
+          <code>frp-sh game create --service 127.0.0.1:25565</code>
+        </article>
+      </div>
+    </section>
+    <section class="details reveal">
+      <p>{{ tr("Small by design.", "轻量，是设计的一部分。") }}</p>
+      <div>
+        <h3>{{ tr("Authorize at installation.", "安装时授权。") }}</h3>
+        <p>
+          {{
+            tr(
+              "The helper handles privileged networking. Everyday connections run from your ordinary account. Updates use the installer.",
+              "辅助服务处理特权网络操作，日常连接使用普通账户，升级通过安装器完成。",
+            )
+          }}
+        </p>
+      </div>
+      <div>
+        <h3>{{ tr("Clear when it matters.", "需要时，看得清。") }}</h3>
+        <p>
+          {{
+            tr(
+              "An uncluttered terminal, separate logs, and open-source Rust you can inspect.",
+              "简洁终端、独立日志，以及随时可以审视的 Rust 开源代码。",
+            )
+          }}
+        </p>
+      </div>
+    </section>
+    <section id="install" class="install reveal">
+      <div>
+        <p class="eyebrow">03 / {{ tr("GET STARTED", "开始") }}</p>
+        <h2>
+          {{ tr("See you", "房间里，") }}<br />{{ tr("in the room.", "见。") }}
+        </h2>
+        <a :href="docs('install')" class="text-link"
+          >{{ tr("Installation guide", "安装指南") }} ↗</a
+        >
+      </div>
+      <div class="install-box">
+        <div
+          class="platforms"
+          role="group"
+          :aria-label="tr('Operating system', '操作系统')"
+        >
+          <button
+            :aria-pressed="platform === 'unix'"
+            @click="
+              platform = 'unix';
+              message = '';
+            "
+          >
+            macOS / Linux</button
+          ><button
+            :aria-pressed="platform === 'windows'"
+            @click="
+              platform = 'windows';
+              message = '';
+            "
+          >
+            Windows</button
+          ><span>v0.4.0</span>
+        </div>
+        <pre>{{ commands[platform] }}</pre>
+        <div class="copy-row">
+          <span role="status">{{ message }}</span
+          ><button @click="copy">
+            {{ tr("Copy command", "复制指令") }} ↗
+          </button>
+        </div>
+        <p class="install-note">
+          {{
+            tr(
+              "Installs a privileged helper. Then run frp-sh to configure your signaling server.",
+              "安装会配置特权辅助服务。随后运行 frp-sh，配置你的信令服务器。",
+            )
+          }}
+        </p>
+      </div>
+    </section>
+    <footer>
+      <a href="/" class="wordmark">frp.sh</a
+      ><a href="https://github.com/myki-jim/frp-sh/releases/tag/v0.4.0"
+        >{{ tr("Downloads", "下载") }} ↗</a
+      ><a :href="docs('versioning')">{{ tr("Version policy", "版本策略") }}</a
+      ><span>OPEN SOURCE / MIT</span>
+    </footer>
   </main>
 </template>
