@@ -311,8 +311,20 @@ export function mountStudios(host, state, motion = { progress: 0.5 }) {
     g.add(light);
     lights.push(light);
   }
-  const curves = [],
-    dots = [];
+  const bases = groups.map((g) => g.position.clone());
+  const ports = groups.map((g) => {
+    const port = new T.Group();
+    port.position.set(0, 0.1, 1.94);
+    g.add(port);
+    const ringGeometry = new T.TorusGeometry(0.19, 0.025, 8, 40);
+    geometries.set("port" + groups.indexOf(g), ringGeometry);
+    const ring = new T.Mesh(ringGeometry, mat(0xc78350));
+    ring.rotation.x = Math.PI / 2;
+    port.add(ring);
+    ellipsoid(port, [0.085, 0.085, 0.085], [0, 0.04, 0], 0xc78350);
+    return port;
+  });
+  const links = [];
   for (const [a, b] of [
     [0, 1],
     [1, 2],
@@ -322,21 +334,34 @@ export function mountStudios(host, state, motion = { progress: 0.5 }) {
     [3, 4],
     [4, 5],
   ]) {
-    const pa = groups[a].position,
-      pb = groups[b].position;
-    const c = new T.CatmullRomCurve3([
-      new T.Vector3(pa.x, 0.055, pa.z + 1.65),
-      new T.Vector3((pa.x + pb.x) / 2, 0.055, (pa.z + pb.z) / 2 + 1.88),
-      new T.Vector3(pb.x, 0.055, pb.z + 1.65),
-    ]);
-    curves.push(c);
-    const g = new T.TubeGeometry(c, 40, 0.013, 6, false);
-    geometries.set("wire" + a + b, g);
-    const line = new T.Mesh(g, mat(0x9aab8a));
+    const geometry = new T.BufferGeometry();
+    geometry.setAttribute(
+      "position",
+      new T.BufferAttribute(new Float32Array(49 * 3), 3),
+    );
+    geometries.set("wire" + a + b, geometry);
+    const material = new T.LineBasicMaterial({
+      color: 0xb48c63,
+      transparent: true,
+      opacity: 0.7,
+    });
+    extras.push(material);
+    const line = new T.Line(geometry, material);
+    line.frustumCulled = false;
     scene.add(line);
-    const dot = ellipsoid(scene, [0.045, 0.045, 0.045], [0, 0, 0], 0xc78350);
-    dots.push(dot);
+    const dots = Array.from({ length: 3 }, () =>
+      ellipsoid(scene, [0.075, 0.075, 0.075], [0, 0, 0], 0xc78350),
+    );
+    const curve = new T.CubicBezierCurve3(
+      new T.Vector3(),
+      new T.Vector3(),
+      new T.Vector3(),
+      new T.Vector3(),
+    );
+    links.push({ a, b, geometry, curve, dots });
   }
+  const sample = new T.Vector3();
+  let previousSpread = -1;
   let frame = 0,
     disposed = false,
     night = state.night ? 1 : 0,
@@ -355,27 +380,64 @@ export function mountStudios(host, state, motion = { progress: 0.5 }) {
     sun.intensity = T.MathUtils.lerp(2.6, 0.22, night);
     fill.intensity = T.MathUtils.lerp(0.6, 0.55, night);
     lights.forEach((l) => (l.intensity = night * 3.2));
-    dots.forEach((dot, i) =>
-      dot.position.copy(
-        curves[i].getPointAt(
-          state.reduced ? 0.5 : (time * 0.00035 + i * 0.15) % 1,
-        ),
-      ),
-    );
-    if (Math.abs(night - previousNight) > 0.005) {
+    const progress = state.reduced ? 1 : motion.progress;
+    const joined = T.MathUtils.smoothstep(progress, 0.08, 0.72);
+    const spread = T.MathUtils.lerp(1.62, 1, joined);
+    groups.forEach((g, i) => {
+      g.position.set(
+        bases[i].x * spread,
+        (1 - joined) * (i % 2 ? 1.6 : 0.3),
+        bases[i].z * spread,
+      );
+      ports[i].scale.setScalar(
+        1 + (state.reduced ? 0 : Math.sin(time * 0.003 - i) * 0.16) * joined,
+      );
+    });
+    scene.updateMatrixWorld(true);
+    links.forEach(({ a, b, geometry, curve, dots }, i) => {
+      ports[a].getWorldPosition(curve.v0);
+      ports[b].getWorldPosition(curve.v3);
+      // Route below the floating room platforms, away from desks and walls.
+      curve.v1.copy(curve.v0);
+      curve.v1.y = -1.1;
+      curve.v2.copy(curve.v3);
+      curve.v2.y = -1.1;
+      const positions = geometry.attributes.position;
+      for (let j = 0; j <= 48; j++) {
+        curve.getPoint(j / 48, sample);
+        positions.setXYZ(j, sample.x, sample.y, sample.z);
+      }
+      positions.needsUpdate = true;
+      const connected = T.MathUtils.clamp((joined - i * 0.065) * 2, 0, 1);
+      geometry.setDrawRange(0, Math.floor(49 * connected));
+      dots.forEach((dot, j) => {
+        dot.visible = connected >= 0.98;
+        dot.position.copy(
+          curve.getPoint(
+            state.reduced
+              ? (j + 1) / 4
+              : (time * 0.0003 + j / 3 + i * 0.13) % 1,
+          ),
+        );
+      });
+    });
+    ground.visible = false;
+    if (
+      Math.abs(night - previousNight) > 0.005 ||
+      Math.abs(spread - previousSpread) > 0.003
+    ) {
       renderer.shadowMap.needsUpdate = true;
       previousNight = night;
+      previousSpread = spread;
     }
-    // Orbit the complete arrangement; furniture and room clearances stay fixed.
-    const progress = state.reduced ? 0.5 : motion.progress;
-    const angle = T.MathUtils.lerp(0.15, 0.82, progress);
+    const angle = T.MathUtils.lerp(-0.12, 0.9, progress);
     camera.position.set(
-      Math.sin(angle) * 22,
-      T.MathUtils.lerp(16, 12, progress),
-      Math.cos(angle) * 22,
+      Math.sin(angle) * 24,
+      T.MathUtils.lerp(20, 13, joined),
+      Math.cos(angle) * 24,
     );
     camera.lookAt(0, 0.3, 0);
-    camera.zoom = T.MathUtils.lerp(0.87, 1.04, Math.sin(progress * Math.PI));
+    camera.zoom = T.MathUtils.lerp(0.68, 1.03, joined);
     camera.updateProjectionMatrix();
     renderer.render(scene, camera);
     if (!document.hidden && !state.reduced && visible)

@@ -89,7 +89,7 @@ onMounted(async () => {
     },
     ({ conditions }) => {
       if (conditions.reduced) {
-        motion.progress = 0.5;
+        motion.progress = 1;
         return;
       }
       const desktop = conditions.desktop;
@@ -122,16 +122,20 @@ onMounted(async () => {
           },
         },
       );
-      gsap.to(motion, {
-        progress: 1,
-        ease: "none",
-        scrollTrigger: {
-          trigger: ".studio-shell",
-          start: "top bottom",
-          end: "bottom top",
-          scrub: 1,
+      gsap.fromTo(
+        motion,
+        { progress: 0 },
+        {
+          progress: 1,
+          ease: "none",
+          scrollTrigger: {
+            trigger: ".studio-shell",
+            start: "top bottom",
+            end: "center 30%",
+            scrub: 1,
+          },
         },
-      });
+      );
       gsap.from(".connection h2", {
         x: desktop ? -160 : -65,
         opacity: 0,
@@ -299,6 +303,10 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="studio-shell">
+        <div class="network-legend" aria-hidden="true">
+          <span>● {{ tr("SHARED ROOM", "共享房间") }}</span
+          ><span>06 {{ tr("SPACES / ONE NETWORK", "空间 / 同一个网络") }}</span>
+        </div>
         <div
           ref="host"
           class="studios"
@@ -322,6 +330,11 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </section>
+    <div class="network-steps">
+      <span>01 / {{ tr("DISCOVER", "发现伙伴") }}</span
+      ><i>↗</i><span>02 / {{ tr("CONNECT", "建立连接") }}</span
+      ><i>↗</i><span>03 / {{ tr("TOGETHER", "一起开始") }}</span>
+    </div>
     <section class="connection reveal">
       <div>
         <p class="eyebrow">01 / {{ tr("THE CONNECTION", "连接") }}</p>
