@@ -1,75 +1,71 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount } from "vue";
-import { useData, useRoute } from "vitepress";
+import { useData, useRoute, useRouter } from "vitepress";
 import { createThemeReveal } from "./theme-reveal.js";
 let themeReveal;
 const { lang, isDark } = useData();
 const route = useRoute();
-const mode = ref("auto");
+const router = useRouter();
+const mode = ref("day");
 const english = computed(() => lang.value === "en");
 const localeLink = computed(() =>
   english.value ? route.path.replace(/^\/en\//, "/") : "/en" + route.path,
 );
-const label = computed(() =>
-  mode.value === "auto"
-    ? english.value
-      ? "Auto"
-      : "跟随系统"
-    : mode.value === "day"
-      ? english.value
-        ? "Day"
-        : "白天"
-      : english.value
-        ? "Night"
-        : "夜晚",
-);
-let media;
-function apply() {
-  isDark.value =
-    mode.value === "night" || (mode.value === "auto" && media.matches);
-}
-function cycle(event) {
+function select(event, target) {
+  if (mode.value === target) return;
   themeReveal.reveal(event, () => {
-    const modes = ["auto", "day", "night"];
-    mode.value = modes[(modes.indexOf(mode.value) + 1) % 3];
+    mode.value = target;
     try {
-      localStorage.setItem("frpsh-world-light", mode.value);
+      localStorage.setItem("frpsh-world-light", target);
     } catch {}
-    apply();
+    isDark.value = target === "night";
   });
 }
-function remember() {
-  try {
-    localStorage.setItem("frpsh-site-language", english.value ? "zh-CN" : "en");
-  } catch {}
+function language(event) {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  const target = localeLink.value;
+  const preference = english.value ? "zh-CN" : "en";
+  themeReveal.reveal(
+    event,
+    async () => {
+      try {
+        localStorage.setItem("frpsh-site-language", preference);
+      } catch {}
+      await router.go(target);
+    },
+    "language",
+  );
 }
 onMounted(() => {
   themeReveal = createThemeReveal();
   try {
     const saved = localStorage.getItem("frpsh-world-light");
-    if (["auto", "day", "night"].includes(saved)) mode.value = saved;
+    if (["day", "night"].includes(saved)) mode.value = saved;
   } catch {}
-  media = matchMedia("(prefers-color-scheme: dark)");
-  media.addEventListener("change", apply);
-  apply();
+  isDark.value = mode.value === "night";
 });
-onBeforeUnmount(() => {
-  themeReveal?.dispose();
-  media?.removeEventListener("change", apply);
-});
+onBeforeUnmount(() => themeReveal?.dispose());
 </script>
 <template>
   <div class="docs-controls">
     <a
       :href="localeLink"
-      @click="remember"
+      @click="language"
       :aria-label="english ? '切换到中文' : 'Switch to English'"
       >{{ english ? "EN / 中文" : "中文 / EN" }}</a
-    ><button
-      @click="cycle"
-      :aria-label="english ? 'Change appearance' : '切换外观'"
     >
-      {{ label }}
-    </button>
+    <div
+      class="appearance-options"
+      role="group"
+      :aria-label="english ? 'Appearance' : '外观'"
+    >
+      <button @click="select($event, 'day')" :aria-pressed="mode === 'day'">
+        {{ english ? "Day" : "白天" }}
+      </button>
+      <button @click="select($event, 'night')" :aria-pressed="mode === 'night'">
+        {{ english ? "Night" : "黑夜" }}
+      </button>
+    </div>
   </div>
 </template>

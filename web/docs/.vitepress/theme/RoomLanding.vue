@@ -16,7 +16,7 @@ import "./rooms.css";
 const root = ref(null),
   host = ref(null),
   language = ref("en"),
-  mode = ref("auto"),
+  mode = ref("day"),
   platform = ref("unix"),
   message = ref(""),
   failed = ref(false);
@@ -26,7 +26,6 @@ const tr = (en, zh) => (language.value === "en" ? en : zh);
 const docs = (path) => (language.value === "en" ? "/en/" : "/") + path;
 let world,
   media,
-  dark,
   ctx,
   stop,
   timer,
@@ -36,24 +35,30 @@ function save(key, value) {
     localStorage.setItem(key, value);
   } catch {}
 }
-function toggleLanguage() {
-  language.value = language.value === "en" ? "zh-CN" : "en";
-  document.documentElement.lang = language.value;
-  save("frpsh-site-language", language.value);
-  message.value = "";
-  nextTick(() => ScrollTrigger.refresh());
+function toggleLanguage(event) {
+  themeReveal.reveal(
+    event,
+    async () => {
+      language.value = language.value === "en" ? "zh-CN" : "en";
+      document.documentElement.lang = language.value;
+      save("frpsh-site-language", language.value);
+      message.value = "";
+      await nextTick();
+      ScrollTrigger.refresh();
+    },
+    "language",
+  );
 }
-function light(event) {
+function light(event, target) {
+  if (mode.value === target) return;
   themeReveal.reveal(event, () => {
-    const modes = ["auto", "day", "night"];
-    mode.value = modes[(modes.indexOf(mode.value) + 1) % 3];
+    mode.value = target;
     save("frpsh-world-light", mode.value);
     preferences();
   });
 }
 function preferences() {
-  scene.night =
-    mode.value === "night" || (mode.value === "auto" && dark.matches);
+  scene.night = mode.value === "night";
   scene.reduced = media.matches;
   world?.refresh();
 }
@@ -76,14 +81,12 @@ onMounted(async () => {
     if (localStorage.getItem("frpsh-site-language") === "zh-CN")
       language.value = "zh-CN";
     const m = localStorage.getItem("frpsh-world-light");
-    if (["auto", "day", "night"].includes(m)) mode.value = m;
+    if (["day", "night"].includes(m)) mode.value = m;
   } catch {}
   document.documentElement.lang = language.value;
   media = matchMedia("(prefers-reduced-motion: reduce)");
-  dark = matchMedia("(prefers-color-scheme: dark)");
   preferences();
   media.addEventListener("change", preferences);
-  dark.addEventListener("change", preferences);
   gsap.registerPlugin(ScrollTrigger);
   ctx = gsap.matchMedia();
   ctx.add(
@@ -246,7 +249,6 @@ onBeforeUnmount(() => {
   stop?.();
   clearTimeout(timer);
   media?.removeEventListener("change", preferences);
-  dark?.removeEventListener("change", preferences);
 });
 </script>
 <template>
@@ -265,20 +267,23 @@ onBeforeUnmount(() => {
           @click="toggleLanguage"
           :aria-label="tr('切换到中文', 'Switch to English')"
         >
-          {{ language === "en" ? "EN / 中文" : "中文 / EN" }}</button
-        ><button
-          class="light-switch"
-          @click="light"
-          :aria-label="tr('Change appearance', '切换外观')"
-        >
-          {{
-            mode === "auto"
-              ? tr("Auto", "跟随系统")
-              : mode === "day"
-                ? tr("Day", "白天")
-                : tr("Night", "夜晚")
-          }}
+          {{ language === "en" ? "EN / 中文" : "中文 / EN" }}
         </button>
+        <div
+          class="appearance-options"
+          role="group"
+          :aria-label="tr('Appearance', '外观')"
+        >
+          <button @click="light($event, 'day')" :aria-pressed="mode === 'day'">
+            {{ tr("Day", "白天") }}
+          </button>
+          <button
+            @click="light($event, 'night')"
+            :aria-pressed="mode === 'night'"
+          >
+            {{ tr("Night", "黑夜") }}
+          </button>
+        </div>
       </nav>
     </header>
     <section class="hero">

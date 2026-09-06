@@ -4,7 +4,7 @@ html.theme-revealing *::after {
   transition: none !important;
 }
 html.theme-revealing::view-transition-group(root) {
-  animation-duration: 1.3s;
+  animation-duration: 1.8s;
 }
 html.theme-revealing::view-transition-old(root),
 html.theme-revealing::view-transition-new(root) {
@@ -16,8 +16,65 @@ html.theme-revealing::view-transition-old(root) {
 }
 html.theme-revealing::view-transition-new(root) {
   z-index: 2;
-  clip-path: circle(var(--theme-radius, 0px) at var(--theme-x) var(--theme-y));
+  mask-image: var(--particle-mask);
+  mask-size: 100% 100%;
+  mask-repeat: no-repeat;
 }
 html.theme-revealing::view-transition {
   pointer-events: none;
+}
+
+html.language-revealing::view-transition-old(root) {
+  filter: blur(var(--particle-haze, 0px));
+}
+.appearance-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.site-header .appearance-options button,
+.docs-controls .appearance-options button {
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+.site-header .appearance-options button[aria-pressed="true"] {
+  border-color: var(--line);
+  color: var(--accent);
+}
+.docs-controls .appearance-options button[aria-pressed="true"] {
+  border-color: var(--vp-c-divider);
+  color: var(--vp-c-brand-1);
+}
+@media (max-width: 600px) {
+  .site-header .appearance-options button,
+  .docs-controls .appearance-options button {
+    padding: 6px 5px;
+    font-size: 10px;
+  }
+}
+
+.language-ash-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 2147483647;
+  pointer-events: none;
+}
+html.language-ashing .site *,
+html.language-ashing .doc-shell * {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: none !important;
+}
+html.language-ashing .vp-doc *,
+html.language-ashing .docs-eyebrow {
+  animation: none !important;
+}
+@media (max-width: 420px) {
+  .doc-shell .docs-controls { gap: 8px; margin-left: 4px; }
+  .doc-shell .docs-controls .appearance-options button { min-width: 30px; }
+  .doc-shell .VPNavBar .wrapper { padding-left: 12px; padding-right: 8px; }
+  .doc-shell .VPNavBarTitle .title { font-size: 24px; }
 }
