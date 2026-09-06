@@ -56,3 +56,26 @@
   z-index: 100;
   pointer-events: none;
 }
+.site-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.12em;
+  flex-shrink: 0;
+}
+.appearance-options button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.appearance-options .site-icon {
+  width: 18px;
+  height: 18px;
+}
+.language-mask-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  pointer-events: none;
+  overflow: hidden;
+}

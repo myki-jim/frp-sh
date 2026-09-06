@@ -1,4 +1,5 @@
 <script setup>
+import SiteIcon from "./SiteIcon.vue";
 import { computed, ref, onMounted, onBeforeUnmount } from "vue";
 import { useData, useRoute, useRouter } from "vitepress";
 import { createThemeReveal } from "./theme-reveal.js";
@@ -60,11 +61,21 @@ onBeforeUnmount(() => themeReveal?.dispose());
       role="group"
       :aria-label="english ? 'Appearance' : '外观'"
     >
-      <button @click="select($event, 'day')" :aria-pressed="mode === 'day'">
-        {{ english ? "Day" : "白天" }}
+      <button
+        @click="select($event, 'day')"
+        :aria-pressed="mode === 'day'"
+        :aria-label="english ? 'Day' : '白天'"
+        :title="english ? 'Day' : '白天'"
+      >
+        <SiteIcon name="sun" />
       </button>
-      <button @click="select($event, 'night')" :aria-pressed="mode === 'night'">
-        {{ english ? "Night" : "黑夜" }}
+      <button
+        @click="select($event, 'night')"
+        :aria-pressed="mode === 'night'"
+        :aria-label="english ? 'Night' : '黑夜'"
+        :title="english ? 'Night' : '黑夜'"
+      >
+        <SiteIcon name="moon" />
       </button>
     </div>
   </div>
