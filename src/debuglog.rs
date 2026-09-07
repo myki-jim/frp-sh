@@ -34,6 +34,13 @@ pub fn redact(text: &str) -> String {
             s = s.replace(value, "[REDACTED]");
         }
     }
+    // Invitations carry access credentials, including when encoded in a fragment.
+    while let Some(start) = s.find("https://frp.sh/join#v1.") {
+        let end = s[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '\'' | '"'))
+            .map_or(s.len(), |n| start + n);
+        s.replace_range(start..end, "[REDACTED INVITATION]");
+    }
     // Cover URL userinfo, including TURN URLs; retain the server address.
     let mut pos = 0;
     while let Some(i) = s[pos..].find("://") {

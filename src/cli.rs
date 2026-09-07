@@ -60,6 +60,15 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Open the keyboard-operated terminal app
+    App,
+    /// Install a saved invitation and join its room
+    Connect {
+        invitation: String,
+        /// Save the connection without joining
+        #[arg(long)]
+        save_only: bool,
+    },
     /// Check the installed network helper
     Doctor {
         /// Create and close a temporary virtual adapter (requires no active LAN session)
@@ -104,7 +113,7 @@ pub enum Commands {
     /// Manage saved connection profiles
     Profile {
         #[command(subcommand)]
-        cmd: ProfileCmd,
+        cmd: Option<ProfileCmd>,
     },
     /// game multiplayer: application-layer port forwarding (e.g. Minecraft), pure forwarding without meshing
     Game {

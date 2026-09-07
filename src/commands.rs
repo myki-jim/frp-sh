@@ -110,9 +110,9 @@ enum ForwardMode {
     Guest { listen: SocketAddr, max_conns: u64 },
 }
 
-/// 重连退避：1s, 2s, 4s, 8s, ... 上限 8s（首轮 1s，恢复速度优先）。
+/// 重连退避：首次重试 1s，随后抖动退避，上限 4s。
 fn reconnect_delay(attempt: u64) -> u64 {
-    let exp = 1u64 << attempt.saturating_sub(1).min(3);
+    let exp = 1u64 << attempt.saturating_sub(2).min(2);
     use rand::Rng;
     rand::thread_rng().gen_range(exp.div_ceil(2)..=exp)
 }
@@ -212,6 +212,9 @@ pub fn session_role(command: &Option<crate::cli::Commands>) -> Option<&'static s
         }) => Some("host"),
         Some(Commands::Lan {
             cmd: LanCmd::Join(_),
+        }) => Some("guest"),
+        Some(Commands::Profile {
+            cmd: Some(crate::cli::ProfileCmd::Run { .. }),
         }) => Some("guest"),
         _ => None,
     }
@@ -695,9 +698,7 @@ async fn run_profile_session(p: &crate::config::Profile, base: &Config) -> anyho
     if let Some(r) = &p.relay_addr {
         cfg.relay_addr = r.clone();
     }
-    if p.password.is_some() {
-        cfg.password = p.password.clone();
-    }
+    cfg.password = p.password.clone();
     cfg.name = p.device_name.clone();
     let room = p.room.clone();
     match p.mode.as_str() {
@@ -1305,6 +1306,7 @@ pub async fn run_create(
         )
         .await?;
     let room_id = resp.room_id.clone();
+    let _invitation = crate::invite::activate(&cfg, &room_id, key.as_deref(), tun.is_some());
     let _roster = crate::stats::watch_room(signaling.clone(), room_id.clone(), expose_lan);
     cfg.room_tokens
         .lock()
@@ -1841,6 +1843,7 @@ pub async fn guest_session(
         .map_err(|e| FrpError::Config(format!("bad listen addr {listen}: {e}")))?;
     let key_bytes = derive_key(key.as_deref());
     let mut state = RoomState::new(room_id.to_string(), Role::Guest, listen_addr);
+    let _invitation = crate::invite::activate(cfg, room_id, key.as_deref(), tun.is_some());
     let _roster = crate::stats::watch_room(signaling.clone(), room_id.to_string(), expose_lan);
     let mut attempt: u64 = 0;
     let mut first = true;
@@ -2640,7 +2643,7 @@ async fn mesh_host_loop(
     mut punch_rx: tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>,
     plane: &Arc<crate::p2p::tun::MeshPlane>,
     dispatch_tx: &tokio::sync::mpsc::UnboundedSender<(String, Vec<u8>)>,
-    dead_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    dead_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::p2p::tun::LinkDeath>,
     room_id: &str,
     token: &str,
     force_relay: bool,
@@ -2668,8 +2671,8 @@ async fn mesh_host_loop(
     let mut turn_rebuild_at = Instant::now()
         .checked_sub(Duration::from_secs(10))
         .unwrap_or_else(Instant::now);
-    // TURN 链路异常死亡锁存：置位后本会话不再尝试 TURN，一律走 TCP 中继
-    let mut turn_dead = false;
+    // Allocate the next TURN relay without blocking other guests.
+    let mut turn_allocations = tokio::task::JoinSet::new();
     // A guest without a usable TURN offer must proceed to TCP on the next pass.
     // Track failures per guest so one peer cannot disable TURN for everyone.
     let mut turn_failed = std::collections::HashSet::new();
@@ -2679,6 +2682,7 @@ async fn mesh_host_loop(
     let mut last_guests: HashMap<String, crate::signaling::GuestInfo> = HashMap::new();
     let (relay_tx, mut relay_rx) = tokio::sync::mpsc::unbounded_channel::<(
         String,
+        crate::signaling::GuestInfo,
         Result<(
             crate::p2p::relay::RelayStream,
             std::sync::Arc<crate::stats::StreamStats>,
@@ -2700,6 +2704,26 @@ async fn mesh_host_loop(
         if now.duration_since(last_poll) >= MESH_POLL {
             last_poll = now;
             if let Ok(info) = signaling.get_room(room_id).await {
+                for g in &info.guests {
+                    if last_guests
+                        .get(&g.uuid)
+                        .is_some_and(|old| guest_connection_changed(old, g))
+                    {
+                        log::info!(
+                            "guest {} restarted or changed endpoint; replacing old link",
+                            g.uuid
+                        );
+                        plane.unregister(&g.uuid);
+                        established.remove(&g.uuid);
+                        if let Some(peer) = established_peer.remove(&g.uuid) {
+                            mesh.remove_peer(peer);
+                        }
+                        crate::stats::remove_link(&g.uuid);
+                        pending.remove(&g.uuid);
+                        turn_retry.remove(&g.uuid);
+                        turn_failed.remove(&g.uuid);
+                    }
+                }
                 last_guests = info
                     .guests
                     .iter()
@@ -2781,11 +2805,6 @@ async fn mesh_host_loop(
                 });
             if uuid.is_none() {
                 if let Ok(info) = signaling.get_room(room_id).await {
-                    last_guests = info
-                        .guests
-                        .iter()
-                        .map(|g| (g.uuid.clone(), g.clone()))
-                        .collect();
                     uuid = info
                         .guests
                         .iter()
@@ -2833,22 +2852,28 @@ async fn mesh_host_loop(
             let due = force_relay || p.deadline.map(|d| now >= d).unwrap_or(false);
             let retry_ok = p
                 .relay_at
-                .map(|t| now.duration_since(t) >= Duration::from_secs(30))
+                .map(|t| now.duration_since(t) >= Duration::from_secs(1))
                 .unwrap_or(true);
             if due && retry_ok {
                 // 有 TURN 客户端时优先走 TURN（UDP 中继，延迟优于 TCP 中继）；
                 // 在循环外处理（要 await 轮询 + remove pending，借用冲突）。
-                // turn_dead：本会话已有 TURN 链路异常死亡 → 一律走 TCP 中继会师。
-                if turn_client.is_some() && !turn_dead && !turn_failed.contains(uuid) {
-                    p.relay_attempted = true;
-                    turn_attempt = Some(uuid.clone());
-                    continue;
+                // A failed peer does not disable TURN for other guests.
+                if turn_client.is_some() && !force_relay && !turn_failed.contains(uuid) {
+                    if turn_attempt.is_none() && p.info.turn_relay.is_some() {
+                        p.relay_attempted = true;
+                        turn_attempt = Some(uuid.clone());
+                        continue;
+                    }
+                    if p.info.turn_relay.is_some() {
+                        continue;
+                    }
                 }
                 p.relay_attempted = true;
                 p.relay_at = Some(now);
                 if turn_client.is_some() && !turn_failed.contains(uuid) {
                     turn_retry.insert(uuid.clone(), now);
                 }
+                let offer = p.info.clone();
                 let uuid_c = uuid.clone();
                 let room_c = room_id.to_string();
                 let tx = relay_tx.clone();
@@ -2866,24 +2891,13 @@ async fn mesh_host_loop(
                         owner,
                     )
                     .await;
-                    let _ = tx.send((uuid_c, r));
+                    let _ = tx.send((uuid_c, offer, r));
                 });
             }
         }
         // 4.5) TURN 中继（网格）：轮询等访客通告 relay 地址（最多 5s）→ 建立 FRS1 数据面
         if let Some(uuid) = turn_attempt {
-            let mut gr = None;
-            for _ in 0..20 {
-                if let Ok(r) = signaling.get_room(room_id).await {
-                    if let Some(g) = r.guests.iter().find(|g| g.uuid == uuid) {
-                        if let Some(x) = g.turn_relay {
-                            gr = Some(x);
-                            break;
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
+            let gr = pending.get(&uuid).and_then(|p| p.info.turn_relay);
             if let Some(gr) = gr {
                 if let Some(tc) = turn_client.take() {
                     crate::ui_println!("  {}", warn("UDP hole punching failed, trying TURN relay"));
@@ -2940,21 +2954,41 @@ async fn mesh_host_loop(
         // 迟到的 TCP 中继配对结果会在第 5 节因 pending 已移除而被丢弃。
         // 另外：TURN 链路建立会 take 掉 turn_client——为后续（重）连访客保留
         // TURN 逃生能力，客户端为空且距上次尝试 ≥5s 时静默重建一个。
-        // turn_dead（TURN 链路异常死亡锁存）后不再重建/尝试 TURN。
+        // Explicit --relay never allocates TURN.
         if turn_client.is_none()
-            && !turn_dead
+            && turn_allocations.is_empty()
+            && !force_relay
             && now.duration_since(turn_rebuild_at) >= Duration::from_secs(5)
         {
             turn_rebuild_at = now;
-            let offer = signaling
-                .get_room(room_id)
-                .await
-                .ok()
-                .and_then(|i| i.server_turn);
-            if let Ok(Some(c)) = try_turn_connect_with_offer(cfg, offer).await {
-                log::info!("TURN client re-allocated (relay {})", c.relay);
-                turn_client = Some(c);
-            }
+            let signal = signaling.clone();
+            let room = room_id.to_owned();
+            let config = cfg.clone();
+            turn_allocations.spawn(async move {
+                let offer = signal
+                    .get_room(&room)
+                    .await
+                    .ok()
+                    .and_then(|i| i.server_turn);
+                try_turn_connect_with_offer(&config, offer).await
+            });
+        }
+        if let Some(Ok(Ok(Some(c)))) = turn_allocations.try_join_next() {
+            let relay = c.relay;
+            turn_client = Some(c);
+            let _ = signaling
+                .refresh_room(
+                    room_id,
+                    current_ext,
+                    utils::lan_socket_addrs(mesh_local_port),
+                    if tun.is_some() && expose_lan {
+                        utils::lan_subnet_cidrs()
+                    } else {
+                        Vec::new()
+                    },
+                    Some(relay),
+                )
+                .await;
         }
         if turn_client.is_some() {
             let mut retry: Option<String> = None;
@@ -3023,7 +3057,13 @@ async fn mesh_host_loop(
             }
         }
         // 5) 中继结果 → 注册链路
-        while let Ok((uuid, res)) = relay_rx.try_recv() {
+        while let Ok((uuid, offer, res)) = relay_rx.try_recv() {
+            if pending
+                .get(&uuid)
+                .is_none_or(|p| guest_connection_changed(&p.info, &offer))
+            {
+                continue;
+            }
             match res {
                 Ok((stream, st)) => {
                     let stream = match key_bytes {
@@ -3069,18 +3109,24 @@ async fn mesh_host_loop(
             }
         }
         // 6) 对端断线 → 重新入打洞队列
-        while let Ok(uuid) = dead_rx.try_recv() {
+        while let Ok(death) = dead_rx.try_recv() {
+            if !plane.is_current_death(&death) {
+                continue;
+            }
+            let uuid = death.uuid;
+            plane.unregister(&uuid);
             let was_turn = established.get(&uuid).map(|v| v.as_str()) == Some("turn");
             if established.remove(&uuid).is_some() {
-                established_peer.remove(&uuid);
+                if let Some(peer) = established_peer.remove(&uuid) {
+                    mesh.remove_peer(peer);
+                }
                 crate::stats::remove_link(&uuid);
                 log::warn!("peer {uuid} link lost, re-punching ...");
                 if was_turn {
                     // TURN 链路异常死亡（心跳超时）：对端多半收不到我们的 indication
                     //（严格的 NAT 过滤等）且已自行落回其它路径。锁存后本会话改走
                     // TCP 中继与对端会师，避免 host 固执重建 TURN 的死循环。
-                    turn_dead = true;
-                    turn_client = None;
+                    turn_failed.insert(uuid.clone());
                     log::warn!("TURN link for {uuid} died abnormally; falling back to TCP relay");
                 }
                 if let Some(info) = last_guests.get(&uuid) {
@@ -3137,6 +3183,13 @@ async fn mesh_host_loop(
         // 节流，避免空转
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+fn guest_connection_changed(
+    old: &crate::signaling::GuestInfo,
+    new: &crate::signaling::GuestInfo,
+) -> bool {
+    old.addr != new.addr || old.lan != new.lan || old.turn_relay != new.turn_relay
 }
 
 /// 建立直连链路：注册网格流 + 数据平面路由 + 访客局域网内核路由。

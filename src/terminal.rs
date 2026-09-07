@@ -122,6 +122,7 @@ impl Drop for Monitor {
                 io::stdout(),
                 crossterm::style::ResetColor,
                 crossterm::cursor::Show,
+                crossterm::event::DisableBracketedPaste,
                 crossterm::terminal::LeaveAlternateScreen
             );
             let _ = crossterm::terminal::disable_raw_mode();
@@ -129,7 +130,119 @@ impl Drop for Monitor {
     }
 }
 pub fn monitor(session: bool) -> Monitor {
-    if !interactive() || !session || dashboard_active() {
+    if !session {
+        return Monitor(None);
+    }
+    let mut page = 0usize;
+    let mut invite = false;
+    let mut logs = false;
+    let mut logview = crate::logview::LogView::default();
+    let mut selection = 0usize;
+    let mut notice = String::new();
+    monitor_with(move |w, h, events, tick| {
+        use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+        for event in events {
+            if let Event::Key(key) = event {
+                if key.kind == KeyEventKind::Release {
+                    continue;
+                }
+                if logs {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('g' | 'G') => logs = false,
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            EXIT.notify_one()
+                        }
+                        _ => logview.key(key),
+                    }
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('g' | 'G') => {
+                        logs = true;
+                        logview.refresh();
+                    }
+                    KeyCode::Esc if invite => {
+                        invite = false;
+                        notice.clear();
+                    }
+                    KeyCode::Char('i' | 'I') => {
+                        invite = !invite;
+                        notice.clear();
+                    }
+                    KeyCode::Char('q' | 'Q') | KeyCode::Esc => EXIT.notify_one(),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        EXIT.notify_one()
+                    }
+                    KeyCode::Right | KeyCode::Down | KeyCode::PageDown => {
+                        if invite {
+                            selection = (selection + 1) % 3;
+                        } else {
+                            page = page.saturating_add(1);
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Up | KeyCode::PageUp => {
+                        if invite {
+                            selection = (selection + 2) % 3;
+                        } else {
+                            page = page.saturating_sub(1);
+                        }
+                    }
+                    KeyCode::Enter | KeyCode::Char('c' | 'C') if invite => {
+                        notice = match crate::invite::current() {
+                            Some(value) => {
+                                let text = if selection == 0 {
+                                    value.link()
+                                } else {
+                                    value.command(selection == 1)
+                                };
+                                match text.and_then(|s| crate::invite::copy(&s)) {
+                                    Ok(()) => crate::i18n::text("Copied", "已复制").into(),
+                                    Err(e) => e.to_string(),
+                                }
+                            }
+                            None => crate::i18n::text(
+                                "Invitation available after the LAN room is ready",
+                                "LAN 房间就绪后可邀请",
+                            )
+                            .into(),
+                        };
+                    }
+                    KeyCode::Char('l' | 'L') => crate::i18n::choose(if crate::i18n::chinese() {
+                        "en"
+                    } else {
+                        "zh-CN"
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        if logs {
+            return logview.frame(w, h, tick);
+        }
+        if invite {
+            return crate::app::invite_frame(w, h, selection, &notice);
+        }
+        let frame = crate::dashboard::render(
+            w,
+            h,
+            &crate::stats::info_snapshot(),
+            &crate::stats::room_view(),
+            &crate::stats::links_snapshot(),
+            page,
+            tick / 5,
+        );
+        page %= frame.pages;
+        frame
+    })
+}
+
+pub fn monitor_with<F>(mut render: F) -> Monitor
+where
+    F: FnMut(u16, u16, Vec<crossterm::event::Event>, usize) -> crate::dashboard::Frame
+        + Send
+        + 'static,
+{
+    if !interactive() || dashboard_active() {
         return Monitor(None);
     }
     if crossterm::terminal::enable_raw_mode().is_err() {
@@ -138,6 +251,7 @@ pub fn monitor(session: bool) -> Monitor {
     if crossterm::execute!(
         io::stdout(),
         crossterm::terminal::EnterAlternateScreen,
+        crossterm::event::EnableBracketedPaste,
         crossterm::cursor::Hide
     )
     .is_err()
@@ -148,56 +262,23 @@ pub fn monitor(session: bool) -> Monitor {
     DASHBOARD.store(true, Ordering::Relaxed);
     let task = tokio::spawn(async move {
         use crossterm::{
-            event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+            event,
             style::{Color, SetForegroundColor},
         };
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
-        let mut page = 0usize;
         let mut tick = 0usize;
         let mut previous: Vec<crate::dashboard::Span> = Vec::new();
         let mut previous_size = (0, 0);
         loop {
             interval.tick().await;
+            let mut events = Vec::new();
             while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = event::read() {
-                    if key.kind == KeyEventKind::Release {
-                        continue;
-                    }
-                    match key.code {
-                        KeyCode::Char('q' | 'Q') | KeyCode::Esc => EXIT.notify_one(),
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            EXIT.notify_one()
-                        }
-                        KeyCode::Right | KeyCode::Down | KeyCode::PageDown => {
-                            page = page.saturating_add(1)
-                        }
-                        KeyCode::Left | KeyCode::Up | KeyCode::PageUp => {
-                            page = page.saturating_sub(1)
-                        }
-                        KeyCode::Char('l' | 'L') => {
-                            crate::i18n::choose(if crate::i18n::chinese() {
-                                "en"
-                            } else {
-                                "zh-CN"
-                            })
-                        }
-                        _ => {}
-                    }
+                if let Ok(event) = event::read() {
+                    events.push(event);
                 }
             }
-            let info = crate::stats::info_snapshot();
-            let links = crate::stats::links_snapshot();
             let (w, h) = crossterm::terminal::size().unwrap_or((80, 24));
-            let frame = crate::dashboard::render(
-                w,
-                h,
-                &info,
-                &crate::stats::room_view(),
-                &links,
-                page,
-                tick / 5,
-            );
-            page %= frame.pages;
+            let frame = render(w, h, events, tick);
             tick = tick.wrapping_add(1);
             let full = previous_size != (w, h)
                 || previous.len() != frame.spans.len()

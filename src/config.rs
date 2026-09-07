@@ -98,10 +98,10 @@ fn default_profile_mode() -> String {
 impl Profile {
     /// 密码打码显示（终端/列表）：不显示原始字符。
     pub fn masked_password(&self) -> String {
-        match &self.password {
-            Some(p) if p.len() > 8 => format!("{}••••{}", &p[..2], &p[p.len() - 2..]),
-            Some(_) => "••••••".into(),
-            None => "—".into(),
+        if self.password.is_some() {
+            "••••••".into()
+        } else {
+            "—".into()
         }
     }
 }
@@ -282,7 +282,21 @@ impl Config {
             std::fs::create_dir_all(dir)?;
         }
         let text = toml::to_string(self).map_err(|e| io::Error::other(e.to_string()))?;
-        std::fs::write(path, text)
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(text.as_bytes())
     }
 
     /// 保存到默认配置路径（无默认路径时报错）。
