@@ -359,7 +359,7 @@ pub async fn session(
     let mut window = Instant::now();
     loop {
         tokio::select! {
-            f=incoming.recv()=>{let f=f.context("transport ended")?;last=Instant::now();if !host {if let Some(v)=VIEW.lock().unwrap().as_mut(){v.status=crate::i18n::text("Connected · encrypted TCP relay", "已连接 · 加密 TCP 中继").into();}}match f.kind{
+            f=incoming.recv()=>{let f=f.context("transport ended")?;last=Instant::now();if !host {if let Some(v)=VIEW.lock().unwrap().as_mut(){v.mood=crate::pet::Mood::Relay;v.status=crate::i18n::text("Connected · encrypted TCP relay", "已连接 · 加密 TCP 中继").into();}}match f.kind{
                 PING=>send(&out,Frame::control(PONG,0)).await?,PONG=>{},
                 OPEN=>{ensure!(host,"publisher cannot request guest ports");if window.elapsed()>=Duration::from_secs(1){window=Instant::now();opens=0;}opens+=1;
                     let service=u16::from_be_bytes(f.data[..2].try_into()?);let permit=budget.clone().try_acquire_owned();
@@ -385,6 +385,7 @@ pub async fn session(
 struct View {
     room: String,
     status: String,
+    mood: crate::pet::Mood,
     lines: Vec<String>,
 }
 static VIEW: std::sync::Mutex<Option<View>> = std::sync::Mutex::new(None);
@@ -418,10 +419,14 @@ pub fn copy_addresses() -> anyhow::Result<()> {
 pub fn request_revoke() {
     REVOKE.store(true, Ordering::Relaxed);
 }
-fn view(room: &str, status: &str, lines: Vec<String>) {
+pub fn companion_mood() -> Option<crate::pet::Mood> {
+    VIEW.lock().unwrap().as_ref().map(|v| v.mood)
+}
+fn view(room: &str, status: &str, lines: Vec<String>, mood: crate::pet::Mood) {
     *VIEW.lock().unwrap() = Some(View {
         room: room.into(),
         status: status.into(),
+        mood,
         lines,
     });
 }
@@ -642,7 +647,7 @@ if let Some((_,task))=clients.remove(&g.uuid){task.abort();}
                 if clients.len()>=32{continue}let id=g.uuid.clone();let addr=g.addr;let relay=cfg.relay_addr.parse()?;let room=created.room_id.clone();let token=control.password.clone();let owner=created.owner_token.clone();let targets=targets.clone();let budget=budget.clone();let key=key.clone();
                 let handle=jobs.spawn(async move{let result=async {let(stream,_)=crate::p2p::relay::connect(relay,&room,crate::p2p::relay::RelayRole::Host,Some(&token),true,Some(&id),Some(owner)).await?;session(payload_stream(stream,key.as_deref()),targets,vec![],budget).await}.await;(id,addr,result)});clients.insert(g.uuid,(g.addr,handle));
             }
-            view(&created.room_id,crate::i18n::text("Private services · encrypted TCP relay","私有服务 · 加密 TCP 中继"),lines);
+            view(&created.room_id,crate::i18n::text("Private services · encrypted TCP relay","私有服务 · 加密 TCP 中继"),lines,crate::pet::Mood::Serving);
         }
     }}Ok(())}.await;
     jobs.abort_all();
@@ -689,6 +694,7 @@ pub async fn join(
                 "正在连接 · 加密 TCP 中继",
             ),
             lines.clone(),
+            crate::pet::Mood::Connecting,
         );
         let marker = UdpSocket::bind("127.0.0.1:0").await?;
         let uuid = cfg.uuid.clone().context("device ID missing")?;
@@ -726,6 +732,7 @@ pub async fn join(
                     "等待发布者 · 加密 TCP 中继",
                 ),
                 lines,
+                crate::pet::Mood::Connecting,
             );
             session(
                 payload_stream(stream, key.as_deref()),
@@ -744,6 +751,7 @@ pub async fn join(
                 "正在重连；原有应用连接已关闭",
             ),
             vec![],
+            crate::pet::Mood::Reconnecting,
         );
         tokio::select! {_=tokio::time::sleep(Duration::from_secs(attempt.min(4)))=>{},_=crate::terminal::ctrl_c()=>return Ok(())}
     }
