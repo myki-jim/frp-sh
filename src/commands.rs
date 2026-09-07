@@ -771,7 +771,9 @@ pub async fn run_serve(
     password: Option<String>,
     turn: Option<String>,
     external_ip: Option<std::net::IpAddr>,
+    limits: crate::signaling::limits::ServerLimits,
 ) -> anyhow::Result<()> {
+    limits.validate()?;
     let http_listener = TcpListener::bind(&http_addr).await?;
     let http_sock: SocketAddr = http_listener.local_addr()?;
     let udp = UdpSocket::bind(udp_addr.as_deref().unwrap_or(&http_addr)).await?;
@@ -785,6 +787,9 @@ pub async fn run_serve(
 
     crate::ui_println!("{}", step("frp-sh signaling server"));
     let mut server_rows: Vec<(&str, String)> = vec![
+        ("Max rooms", limits.max_rooms.to_string()),
+        ("Max members / room", limits.max_members.to_string()),
+        ("Max total members", limits.max_total_members.to_string()),
         ("HTTP REST", http_sock.to_string()),
         ("UDP echo", udp.local_addr()?.to_string()),
         ("TCP relay", relay_sock.to_string()),
@@ -839,11 +844,12 @@ pub async fn run_serve(
         }
         _ => None,
     };
-    let http_task = tokio::spawn(server::run_http(
+    let http_task = tokio::spawn(server::run_http_with_limits(
         http_listener,
         state.clone(),
         password.clone(),
         turn_public,
+        limits,
     ));
     let udp_task = tokio::spawn(server::run_udp_echo(udp));
     let relay_task = tokio::spawn(server::run_relay(relay_listener, state, password));

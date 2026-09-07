@@ -29,6 +29,7 @@ pub const AUTH_HEADER: &str = "X-Frp-Sh-Token";
 #[derive(Clone)]
 pub struct AppState {
     pub rooms: SharedState,
+    pub limits: super::limits::ServerLimits,
     pub password: Option<String>,
     /// 内置 TURN 的公网地址（`--turn` + 启用密码认证时下发 RoomInfo.server_turn；
     /// 凭据复用服务器密码，客户端无需任何配置即可使用）
@@ -98,7 +99,19 @@ pub async fn run_http(
     password: Option<String>,
     turn_public: Option<SocketAddr>,
 ) -> anyhow::Result<()> {
+    run_http_with_limits(listener, state, password, turn_public, Default::default()).await
+}
+
+pub async fn run_http_with_limits(
+    listener: TcpListener,
+    state: SharedState,
+    password: Option<String>,
+    turn_public: Option<SocketAddr>,
+    limits: super::limits::ServerLimits,
+) -> anyhow::Result<()> {
+    limits.validate()?;
     let app_state = AppState {
+        limits,
         rooms: state,
         password: password.clone(),
         turn_public,
@@ -175,6 +188,7 @@ async fn version_info(State(state): State<AppState>) -> Json<serde_json::Value> 
         "version": crate::version::VERSION,
         "protocol": crate::version::PROTOCOL_VERSION,
         "auth": state.password.is_some(),
+        "limits": state.limits,
     }))
 }
 
@@ -186,11 +200,22 @@ async fn create_room(
     let mut map = state.rooms.lock().await;
     // 惰性清理过期房间
     map.retain(|_, r| !r.expired());
-    if map.len() >= 1024 || req.ttl == 0 || req.ttl > 7 * 24 * 3600 {
+    if map.len() >= state.limits.max_rooms as usize {
         return Err((
-            StatusCode::BAD_REQUEST,
-            "invalid TTL or room capacity".into(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "server room limit reached".into(),
         ));
+    }
+    if map.values().map(|r| 1 + r.guests.len()).sum::<usize>()
+        >= state.limits.max_total_members as usize
+    {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "server member limit reached".into(),
+        ));
+    }
+    if req.ttl == 0 || req.ttl > 7 * 24 * 3600 {
+        return Err((StatusCode::BAD_REQUEST, "invalid TTL".into()));
     }
     // 生成不冲突的房间号（4 位数字码空间小，撞号时重试；活房间数远小于 10000）
     let mut room_id = utils::new_room_id(&req.prefix);
@@ -262,6 +287,8 @@ async fn join_room(
     Json(req): Json<JoinRoomRequest>,
 ) -> Result<Json<JoinRoomResponse>, (StatusCode, String)> {
     let mut map = state.rooms.lock().await;
+    map.retain(|_, r| !r.expired());
+    let total_members = map.values().map(|r| 1 + r.guests.len()).sum::<usize>();
     let room = map.get_mut(&room_id).ok_or_else(|| not_found(&room_id))?;
     if room.expired() {
         map.remove(&room_id);
@@ -280,12 +307,18 @@ async fn join_room(
     {
         return Err((StatusCode::BAD_REQUEST, "invalid member metadata".into()));
     }
-    if room.guests.len() >= 32
-        && !req
-            .visitor_id
-            .as_ref()
-            .is_some_and(|id| room.guests.contains_key(id))
-    {
+    let guest_uuid = req
+        .visitor_id
+        .clone()
+        .unwrap_or_else(|| format!("anon-{}", req.addr));
+    let reconnect = room.guests.contains_key(&guest_uuid);
+    if !reconnect && total_members >= state.limits.max_total_members as usize {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "server member limit reached".into(),
+        ));
+    }
+    if !reconnect && 1 + room.guests.len() >= state.limits.max_members as usize {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
             "room member limit reached".into(),
@@ -342,10 +375,6 @@ async fn join_room(
         }
     };
     // 网格模式：按 UUID 登记访客（重连复用同一条目，地址更新）
-    let guest_uuid = req
-        .visitor_id
-        .clone()
-        .unwrap_or_else(|| format!("anon-{}", req.addr));
     // 设备显示名：房内去重（重名自动加 -2/-3 后缀）
     let base_name = req
         .name

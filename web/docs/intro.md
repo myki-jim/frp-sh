@@ -67,8 +67,8 @@ sequenceDiagram
     Note over G,H: 直连成功 → FRS1 可靠流 → CNEW 隧道帧协议
     alt 打洞超时
         G->>S: TURN 中继（配置了 turn_providers 时，UDP）或
-        G->>S: 中继 HELLO GUEST（私有 TCP 兜底）
-        H->>S: 中继 HELLO HOST
+        G->>S: 中继 HELLO2 GUEST（私有 TCP 兜底）
+        H->>S: 中继 HELLO2 HOST
         S-->>G,H: 配对成功，服务器双向拷贝
     end
 ```

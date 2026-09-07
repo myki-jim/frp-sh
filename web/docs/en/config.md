@@ -104,7 +104,7 @@ UDP probe endpoint: the client sends `ECHO <token>`; the server replies `ADDR <t
 
 ### relay_addr
 
-The private TCP relay endpoint used when punching fails (when `turn_providers` is configured, TURN takes precedence over it). After connecting, send `HELLO <room_id> <HOST|GUEST>` to pair.
+The private TCP relay endpoint used when punching fails (when `turn_providers` is configured, TURN takes precedence over it). Pair using room authentication and HELLO2; see [Protocol](./protocol).
 
 ### password
 

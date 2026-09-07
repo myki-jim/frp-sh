@@ -162,6 +162,11 @@ impl SignalingClient {
         if resp.status() == StatusCode::UNAUTHORIZED {
             return Err(Self::auth_err());
         }
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Err(FrpError::Signaling(
+                "server capacity reached: room or total member limit; try again later".into(),
+            ));
+        }
         if !resp.status().is_success() {
             return Err(FrpError::Signaling(format!(
                 "create room: HTTP {}",
@@ -218,6 +223,9 @@ impl SignalingClient {
             .map_err(|e| FrpError::Signaling(format!("join room: {e}")))?;
         match resp.status() {
             StatusCode::UNAUTHORIZED => Err(Self::auth_err()),
+            StatusCode::TOO_MANY_REQUESTS => Err(FrpError::Signaling(
+                "room or server member limit reached; try again later".into(),
+            )),
             StatusCode::NOT_FOUND => Err(FrpError::RoomNotFound(room_id.to_string())),
             s if !s.is_success() => Err(FrpError::Signaling(format!("join room: HTTP {s}"))),
             _ => resp

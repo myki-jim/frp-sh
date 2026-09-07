@@ -104,7 +104,7 @@ UDP 公网探测端点：客户端发送 `ECHO <token>`，服务端回 `ADDR <to
 
 ### relay_addr
 
-打洞失败时的私有 TCP 中继端点（配置了 `turn_providers` 时，TURN 优先于它）。连接后发送 `HELLO <room_id> <HOST|GUEST>` 完成配对。
+打洞失败时的私有 TCP 中继端点（配置了 `turn_providers` 时，TURN 优先于它）。通过房间认证及 HELLO2 握手配对，见[协议](./protocol.md)。
 
 ### password
 

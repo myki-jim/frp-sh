@@ -2,7 +2,7 @@
 > 0.5.0: public listeners require a nonempty password. For the systemd example, create `/etc/frp-sh/server.env` readable only by root with `FRPSH_SERVE_PASSWORD` set. Use HTTPS for signaling.
 
 
-The signaling server is the center of the system: room registration, address exchange, and fallback relay. It is stateless and extremely light (well under 2 MB RAM when idle); a 1-core 512 MB VPS is plenty.
+The server keeps room registrations in memory, exchanges peer addresses, and provides fallback relaying. Restarting clears the registry. Size CPU, memory and public bandwidth from active rooms, polling, relay traffic and measured load; no fixed idle-memory or user-capacity guarantee is provided.
 
 ## Quick start
 
@@ -142,5 +142,25 @@ The signaling protocol is plain HTTP plus simple UDP/TCP text protocols — you 
 ## Security notes
 
 - The signaling HTTP layer has no built-in TLS: put Nginx/Caddy in front for production HTTPS termination
-- The private TCP relay uses a password-derived key for ChaCha20-Poly1305 stream encryption once `--password` is set (see [Configuration](./config)); end-to-end confidentiality still needs `--key` on both ends (P2P direct links only, see [Advanced Usage](./advanced))
+- The private TCP relay uses a password-derived key for ChaCha20-Poly1305 stream encryption once `--password` is set (see [Configuration](./config)); end-to-end confidentiality still needs `--key` on both ends (including service-room TCP relay, see [Advanced Usage](./advanced))
 - Ports are intentionally public (the room code is the access credential); restrict by source IP in the security group if you're worried about scanners
+
+## Community server capacity limits (0.5.4+)
+
+Append these options to your existing `serve` command, for example:
+
+```bash
+--max-rooms 20 --max-members 8 --max-total-members 100
+```
+
+| Option | Default | Range / meaning |
+| --- | --- | --- |
+| `--max-rooms` | 1024 | 1–1024 unexpired rooms |
+| `--max-members` | 33 | 2–33 registered devices per room, including the owner |
+| `--max-total-members` | 33792 | 1–33792 memberships across the server, including all owners |
+
+All three limits apply together and are enforced atomically by the server. Creation or admission beyond capacity returns HTTP 429. A registered device reconnecting with the same UUID reuses its slot even when full. The same device in different rooms consumes a membership in each room.
+
+These are registration limits, not live online counts: temporary disconnects retain slots; deleting or expiring the room releases them. After editing systemd `ExecStart`, run `systemctl daemon-reload` and `systemctl restart frp-sh`. Restarting clears in-memory rooms, requiring recreation/rejoining. Inspect the `limits` field on `/version` to verify settings.
+
+These controls do not provide bandwidth throttling or traffic quotas; relay bandwidth needs separate management.

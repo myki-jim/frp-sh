@@ -1,98 +1,22 @@
 # Roadmap
 
-> Historical feature record. 0.4.0 removes Web Panels and uses terminal status plus separate logs. See docs/plans/0.4.0-roadmap.md for implementation and release gates.
+## Available in 0.5.4
 
-The current version focuses on "simple, robust, good enough". Planned capabilities, in priority order.
+- Keyboard-operated terminal app, profiles, personal room presets and invitations.
+- LAN by default; game/dev parameter presets and explicit TCP/UDP service publishing.
+- Concurrent service multiplexing with bounded per-member and per-room streams.
+- Installation-time privileged helper setup and ordinary-user room operations.
+- Separate log pages, files and CLI access.
+- Configurable server room/member registration limits.
 
-## Near term
+Web panels were removed in 0.4.0. Terminal pets were removed in 0.5.3.
 
-- [ ] **Relay ↔ direct seamless switching**: while on a relay (TURN / private TCP),
-  periodically re-evaluate and upgrade to direct as soon as it recovers
-  (UDP-based data plane makes switching cheap)
-- [ ] **TURN provider discovery**: the signaling server publishes an available TURN
-  list; clients pick automatically
-- [ ] **Concurrent multi-connection**: carry multiple local TCP connections over one tunnel simultaneously (currently sequential)
-- [ ] **WebSocket signaling**: instant guest-join notification to the host instead of polling (lower direct-link latency)
-- [ ] **UPnP automatic port mapping**: an additional option before punching, when the router supports it
+## Further work
 
-## Mid term
+- Measure capacity under concurrent joins, reconnects and relay load.
+- Reduce signaling polling through adaptive intervals or event notifications.
+- Relay bandwidth fairness, rate limits and traffic budget visibility.
+- Reliable member departure/expiry semantics before treating quotas as live online counts.
+- Broader real-device and network testing, including OpenWrt.
 
-- [ ] **x25519 key exchange**: automatic per-session key agreement (replacing manual `--key`)
-- [ ] **Encrypted relay path**: end-to-end confidentiality on the private TCP relay path
-  (currently the TCP relay only has password-grade stream encryption; `--key` applies to
-  the UDP data plane: direct and TURN)
-- [ ] **Adaptive transport parameters**: auto-tune window, retransmit interval, and MTU from loss/latency
-
-## Long term
-
-- [ ] **Platform polish**: Windows/macOS installers, autostart, tray icon
-- [ ] **Relay cluster**: multi-server relay pool with nearest routing
-- [ ] **Compatibility layer**: optional integration with existing protocol ecosystems
-
-## Implemented (v0.2)
-
--  TURN relay (v0.2 main line):
-  - Built-in TURN server (`serve --turn`, RFC 5766 UDP subset, auth reuses `--password`)
-  - Client supports **multiple TURN providers** (`turn_providers`: built-in /
-    self-hosted coturn / Cloudflare TURN, etc.)
-  - **Automatic best-path selection**: parallel Allocate at connect time, pick
-    the fastest reachable provider
-  - **TURN fallback chain**: on punch failure (incl. `--relay`) → TURN relay
-    (relay addresses exchanged via signaling) → private TCP as last resort
-  - STUN public-address learning (`stun_addr`, free, no custom UDP probe needed)
-  - TODO: in-session upgrade/downgrade (relay ↔ direct seamless switching),
-    TURN provider discovery
-
-## Implemented (v0.3)
-
--  **Connection profiles** (`frp-sh profile add/list/show/edit/remove/run`): save
-  server + password + room in one line; names are assigned in sequence and can be
-  renamed; the same server + mode dedupes and merges automatically; the panel's
-  "one-click join" runs on a profile under the hood
--  **Web panels on both ends**: server panel (online rooms/devices/link rates/
-  topology map, one-click join commands, logs view) + client panel (local status /
-  sharing / logs view); passwords stay masked throughout and only land on the
-  clipboard when you copy
--  **Logging system**: terminal stays quiet, logs go to `<config dir>/logs/frp-sh.log`
-  (5 MB rotation) plus an in-memory ring buffer, pulled incrementally via the panel's
-  `/debug`; key server-side events (join / relay pairing / timeout / room removal)
-  are logged end to end
--  **Punch downgrade strategy** (`--punch-retries`, default 1): one failed punch
-  skips punching and TURN and goes straight to the TCP relay — no more repeating the
-  failing path; a dropped direct link also skips punching automatically
--  Relay WAIT deadlock fix (UUID-slot waiters can no longer be woken spuriously),
-  relay traffic-statistics accounting fix, same-NAT link-stability debugging tools
-  (panel debug)
--  One-line install scripts (Windows PowerShell / POSIX shell) — install and go
-  (skip the wizard; configure later with profiles / the panels)
-
-## Implemented (v0.1)
-
--  Room-based signaling (REST + UDP probe + TTL expiry)
--  UDP hole punching (PUNCH/ACK simultaneous handshake + port spread)
--  FRS1 reliable stream (sliding window + retransmit + keepalive + FIN handshake)
--  ChaCha20-Poly1305 end-to-end encryption (`--key`)
--  Sequential multi-connection reuse (`--max-conns`)
--  TCP relay fallback (pairing + bidirectional copy + late-direct re-check)
--  Auto-reconnect with heartbeat liveness (stream-level 3s no-frame detection,
-  tunable via `FRPSH_LIVENESS_MS`; exponential backoff + public-address refresh
-  + punch window reopened on address change; short TCP keepalive on the relay path)
--  Multi-guest mesh (`lan`: 1 host + N guests fully interconnected; the host acts
-  as a hub forwarding by destination IP; per-guest direct-first / relay-fallback
-  links with UUID-keyed relay pairing)
--  Same-LAN auto-direct (advertises LAN addresses, dual-path punching)
--  Mesh mode (`lan` series: virtual-NIC whole-machine mesh, 10.66.0.0/24; guest can reach the host's LAN)
--  Per-device unique ID (UUID) + stable derived virtual IP + host IP pool (`--guest-ips`)
--  Server password auth (`serve --password`: 401 request checks + relay auth)
--  Relay traffic encryption (ChaCha20-Poly1305 stream, anti-eavesdropping)
--  Version governance: protocol conflict control (`/version`), startup update
-  checks (skippable / big-gap forced), server & host version yellow/red hints
--  LAN exposure off by default (`--expose-lan` opts in)
--  Windows compatibility (ICMP poisoning, TUN/WinTun, auto UAC elevation, firewall auto-allow)
--  macOS utun compatibility (point-to-point route fix)
--  English CLI with colors, ASCII logo, interactive installer setup
--  End-to-end tests and real-NAT verification
-
-## Contributing
-
-PRs welcome. See [Development & Testing](./develop) and the [Protocol Spec](./protocol).
+These are development directions, not shipped capabilities or delivery dates.
