@@ -137,12 +137,12 @@ Other services on the server (e.g., ports 8000/8765) are unaffected; to move por
 
 ## Multiple servers (optional)
 
-The signaling protocol is plain HTTP plus simple UDP/TCP text protocols — you can implement a compatible server yourself (~200 lines) or run multiple instances, each with clients configured to point at it.
+Implementations must follow protocol v3 authentication, framing and resource limits; see [Protocol](./protocol). Multiple instances can be deployed with separate client configurations.
 
 ## Security notes
 
 - The signaling HTTP layer has no built-in TLS: put Nginx/Caddy in front for production HTTPS termination
-- The private TCP relay uses a password-derived key for ChaCha20-Poly1305 stream encryption once `--password` is set (see [Configuration](./config)); end-to-end confidentiality still needs `--key` on both ends (including service-room TCP relay, see [Advanced Usage](./advanced))
+- Relay transport encryption uses server/room credentials and is not secrecy from the relay operator. Service rooms support additional end-to-end payload encryption using a shared `--key`.
 - Ports are intentionally public (the room code is the access credential); restrict by source IP in the security group if you're worried about scanners
 
 ## Community server capacity limits (0.5.4+)
