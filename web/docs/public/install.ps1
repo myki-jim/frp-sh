@@ -14,6 +14,19 @@ function Get-FrpShPath([string]$CurrentPath,[string]$Destination) {
     })
     return (@($Destination) + $entries) -join ';'
 }
+function Read-ReleaseManifest([string]$Path) {
+    $lines = [IO.File]::ReadAllLines($Path)
+    if ($lines.Count -lt 2 -or $lines[0] -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid release manifest version' }
+    $entries = @{}
+    foreach ($line in $lines | Select-Object -Skip 1) {
+        if ($line -notmatch '^([a-fA-F0-9]{64})  (frp-sh-[A-Za-z0-9._-]+)$') { throw 'Invalid release manifest' }
+        $asset = $Matches[2]
+        $hash = $Matches[1]
+        if ($entries.ContainsKey($asset)) { throw 'Duplicate manifest entry' }
+        $entries[$asset] = $hash
+    }
+    return @{ Tag = ('v' + $lines[0]); Checksums = $entries }
+}
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
@@ -49,14 +62,9 @@ try {
     Invoke-WebRequest -Uri 'https://frp.sh/release-manifest.txt' -OutFile $manifestFile -UseBasicParsing -TimeoutSec 10
 } catch { Remove-Item -LiteralPath $manifestFile -ErrorAction SilentlyContinue }
 if (Test-Path -LiteralPath $manifestFile) {
-    $lines = [IO.File]::ReadAllLines($manifestFile)
-    $tag = 'v' + $lines[0].Trim()
-    foreach ($line in $lines | Select-Object -Skip 1) {
-        if ($line -match '^([a-fA-F0-9]{64})  (frp-sh-[A-Za-z0-9.-]+)$') {
-            if ($checksums.ContainsKey($Matches[2])) { throw 'Duplicate manifest entry' }
-            $checksums[$Matches[2]] = $Matches[1]
-        } else { throw 'Invalid release manifest' }
-    }
+    $manifest = Read-ReleaseManifest $manifestFile
+    $tag = $manifest.Tag
+    $checksums = $manifest.Checksums
 } else {
     $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/myki-jim/frp-sh/releases/latest' -TimeoutSec 15
     $tag = $release.tag_name
