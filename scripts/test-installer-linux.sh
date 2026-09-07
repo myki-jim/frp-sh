@@ -15,6 +15,14 @@ while [ "$#" -gt 0 ]; do
     case "$1" in -o) out="$2"; shift 2;; *) url="$1"; shift;; esac
 done
 case "$url" in
+    */release-manifest.txt)
+        printf '0.5.0\n' > "$out"
+        for kind in client net; do
+            case "$kind" in client) source="$FRPSH_FIXTURES/client";; net) source="$FRPSH_FIXTURES/helper";; esac
+            if [ "${FAIL_CHECKSUM:-0}" = 1 ]; then hash="$(printf '%064d' 0)"; else hash="$(sha256sum "$source" | cut -d ' ' -f 1)"; fi
+            printf '%s  frp-sh-%s-linux-x86_64\n' "$hash" "$kind" >> "$out"
+        done
+        exit 0;;
     */releases/latest) printf 'https://github.com/myki-jim/frp-sh/releases/tag/v0.4.0\n'; exit 0;;
     *frp-sh-client-*) source="$FRPSH_FIXTURES/client";;
     *frp-sh-net-*) source="$FRPSH_FIXTURES/helper";;

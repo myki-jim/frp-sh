@@ -29,12 +29,16 @@ if ($script:messageOutput -ne (-join @([char]0x4e2d, [char]0x6587))) { throw 'Ch
 $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Download-Verified' }, $true)
 . ([scriptblock]::Create($function.Extent.Text))
 $base = 'https://example.invalid/release'
+$checksums = @{}
+$manifestFile = Join-Path ([IO.Path]::GetTempPath()) ('absent-' + [guid]::NewGuid())
 $script:payload = [Text.Encoding]::UTF8.GetBytes('installer regression fixture')
 $sha = [Security.Cryptography.SHA256]::Create()
 $script:checksum = ([BitConverter]::ToString($sha.ComputeHash($script:payload))).Replace('-','').ToLowerInvariant()
 $sha.Dispose()
 function Invoke-WebRequest {
-    param($Uri, $OutFile, [switch]$UseBasicParsing)
+    param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec)
+    $script:requests += $Uri
+    if ($script:failSite -and $Uri.StartsWith('https://frp.sh/')) { throw 'Simulated mirror timeout' }
     if (-not $OutFile) { throw 'Download must use raw file bytes, not response Content' }
     if ($Uri.EndsWith('.sha256')) {
         [IO.File]::WriteAllBytes($OutFile, [Text.Encoding]::UTF8.GetBytes($script:checksum + "  fixture.exe`r`n"))
@@ -42,6 +46,15 @@ function Invoke-WebRequest {
 }
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('frpsh-checksum-' + [guid]::NewGuid().ToString('N'))
 try {
+    $script:requests = @()
+    $checksums['fixture.exe'] = $script:checksum
+    Download-Verified 'fixture.exe' $temp
+    if ($script:requests.Count -ne 1 -or $script:requests[0] -ne 'https://frp.sh/downloads/fixture.exe') { throw 'Fast path contacted GitHub' }
+    $script:requests = @(); $script:failSite = $true
+    Download-Verified 'fixture.exe' $temp
+    if ($script:requests[-1] -ne ($base + '/fixture.exe')) { throw 'Mirror failure did not fall back' }
+    $script:failSite = $false
+    $checksums = @{}
     Download-Verified 'fixture.exe' $temp
     foreach ($bad in @('invalid', ('0' * 64))) {
         $script:checksum = $bad

@@ -7,7 +7,7 @@ if [ "$(id -u)" != 0 ]; then
     say "Installing the network helper requires one administrator approval." "安装网络辅助服务需要一次管理员授权。"
     bootstrap="$(mktemp)"
     trap 'rm -f "$bootstrap"' EXIT HUP INT TERM
-    curl -fL --proto '=https' --tlsv1.2 https://frp.sh/install.sh -o "$bootstrap"
+    curl -fL --proto '=https' --tlsv1.2 --connect-timeout 5 --max-time 30 --retry 1 https://frp.sh/install.sh -o "$bootstrap"
     sudo env FRPSH_INSTALL_UID="$(id -u)" FRPSH_LANG="$lang" sh "$bootstrap"
     say "Installed. LAN sessions do not need sudo." "安装完成，LAN 会话无需 sudo。"
     exit 0
@@ -76,23 +76,40 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
-release_url="$(curl -fsSL --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' https://github.com/myki-jim/frp-sh/releases/latest)"
-case "$release_url" in https://github.com/myki-jim/frp-sh/releases/tag/v[0-9]*) ;;
-*) printf 'Invalid release URL\\n'; exit 1;; esac
-tag="${release_url##*/}"
-case "$tag" in *[!A-Za-z0-9.-]*) exit 1;; esac
+# One manifest pins both binaries even while the website publishes a new release.
+manifest="$stage/release-manifest.txt"
+site=https://frp.sh/downloads
+if curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 5 --max-time 10 https://frp.sh/release-manifest.txt -o "$manifest"; then
+    tag="v$(sed -n '1p' "$manifest" | tr -d '\r')"
+else
+    rm -f "$manifest"
+    release_url="$(curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 5 --max-time 15 -o /dev/null -w '%{url_effective}' https://github.com/myki-jim/frp-sh/releases/latest)"
+    case "$release_url" in https://github.com/myki-jim/frp-sh/releases/tag/v[0-9]*) ;; *) exit 1;; esac
+    tag="${release_url##*/}"
+fi
+printf '%s\n' "$tag" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$' || { printf 'Invalid release version\n'; exit 1; }
 base="https://github.com/myki-jim/frp-sh/releases/download/$tag"
 fetch() {
     asset="$1"; out="$2"
-    curl -fL --proto '=https' --tlsv1.2 "$base/$asset" -o "$out"
-    curl -fL --proto '=https' --tlsv1.2 "$base/$asset.sha256" -o "$out.sha256"
-    expected="$(awk '{print $1}' "$out.sha256")"
-    case "$expected" in *[!a-fA-F0-9]*|'') printf 'Invalid checksum\n'; exit 1;; esac
-    [ "${#expected}" = 64 ] || exit 1
-    if command -v sha256sum >/dev/null; then actual="$(sha256sum "$out" | awk '{print $1}')"
-    else actual="$(shasum -a 256 "$out" | awk '{print $1}')"; fi
-    [ "$actual" = "$expected" ] || { printf 'Checksum mismatch: %s\n' "$asset"; exit 1; }
-    chmod 755 "$out"
+    if [ -f "$manifest" ]; then
+        expected="$(awk -v name="$asset" 'NR > 1 && $2 == name {print $1}' "$manifest")"
+    else
+        curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 5 --max-time 15 "$base/$asset.sha256" -o "$out.sha256" || return 1
+        expected="$(awk '{print $1}' "$out.sha256")"
+    fi
+    case "$expected" in *[!a-fA-F0-9]*|'') printf 'Invalid checksum\n'; return 1;; esac
+    [ "${#expected}" = 64 ] || return 1
+    expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
+    for source in "$site" "$base"; do
+        if curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 5 --max-time 90 --speed-limit 1024 --speed-time 10 --retry 1 --retry-delay 1 "$source/$asset" -o "$out"; then
+            if command -v sha256sum >/dev/null; then actual="$(sha256sum "$out" | awk '{print $1}')"
+            else actual="$(shasum -a 256 "$out" | awk '{print $1}')"; fi
+            if [ "$actual" = "$expected" ]; then chmod 755 "$out"; return 0; fi
+        fi
+        rm -f "$out"
+        say "Download failed verification or timed out; trying another source..." "下载超时或校验未通过，正在切换下载源…"
+    done
+    printf 'Could not download verified asset: %s\n' "$asset"; return 1
 }
 say "Downloading and verifying client and network helper..." "正在下载并校验客户端和网络辅助程序…"
 fetch "frp-sh-client-$suffix" "$stage/frp-sh"

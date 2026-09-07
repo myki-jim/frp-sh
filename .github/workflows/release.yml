@@ -151,6 +151,7 @@ jobs:
           mkdir -p web/docs/public/downloads
           cp .artifacts/* web/docs/public/downloads/
           printf '%s\n' "${GITHUB_REF_NAME#v}" > web/docs/public/latest-version.txt
+          python3 scripts/build-download-manifest.py
           ls -la web/docs/public/downloads/
 
       - name: Commit and push
@@ -158,7 +159,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add web/docs/public/downloads/
-          git add web/docs/public/latest-version.txt
+          git add web/docs/public/latest-version.txt web/docs/public/release-manifest.txt
           if git diff --cached --quiet; then
             echo "no changes"
           else
