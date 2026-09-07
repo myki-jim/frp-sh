@@ -1,5 +1,7 @@
 # Installation and maintenance (0.5.0)
 
+Installers prefer the website downloads and automatically fall back to GitHub. A version manifest pins SHA-256 hashes for both the client and helper to prevent mixed releases. Windows upgrades reuse an existing signature-verified Wintun driver. The website uses a global CDN, not a mainland-China CDN; performance depends on the local network.
+
 LAN operations use an installed system network helper. Authorize installation once, then run the client from your ordinary account: creating, joining and reconnecting do not request UAC or sudo. Explicit TCP/UDP service forwarding does not require this helper; Game virtual LAN does.
 
 > 0.5.0 upgrades signaling protocol v3 and the network helper. Reinstall on both devices and update the server.
