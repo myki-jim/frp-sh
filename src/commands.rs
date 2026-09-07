@@ -984,6 +984,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
         turn_providers: Vec::new(),
         name: None, // 设备显示名默认主机名；可手动编辑 config 加 name 字段
         profiles: std::collections::BTreeMap::new(),
+        pet: Default::default(),
     };
 
     // 保存

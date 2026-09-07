@@ -15,6 +15,8 @@ fn default_relay() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub pet: crate::pet::Settings,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub presets: std::collections::BTreeMap<String, crate::presets::RoomPreset>,
     #[serde(default)]
@@ -169,6 +171,7 @@ impl Default for Config {
             stun_addr: None,
             turn_providers: Vec::new(),
             name: None,
+            pet: Default::default(),
             profiles: std::collections::BTreeMap::new(),
         }
     }
@@ -475,8 +478,9 @@ mod tests {
             uuid: Some("123e4567-e89b-12d3-a456-426614174000".into()),
             password: Some("secret".into()),
             stun_addr: Some("stun.cloudflare.com:3478".into()),
-            turn_providers: vec!["turn://frp-sh:secret@1.2.3.4:3478".into()],
+            turn_providers: vec!["turn://fixture-user:fixture-password@127.0.0.1:3478".into()],
             name: Some("test-box".into()),
+            pet: Default::default(),
             profiles: std::collections::BTreeMap::new(),
         };
         cfg.save(&path).unwrap();
