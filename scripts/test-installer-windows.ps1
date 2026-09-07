@@ -8,6 +8,15 @@ $tokens = $null
 $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
 if ($errors) { throw ($errors | Out-String) }
+$pathFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-FrpShPath'}, $true)
+. ([scriptblock]::Create($pathFunction.Extent.Text))
+$destination = 'C:\Program Files\frp-sh'
+$legacy = 'C:\Users\Example\AppData\Local\frp-sh'
+$current = $legacy + ';C:\Windows;"C:\PROGRAM FILES\frp-sh\";;' + $destination
+$updated = Get-FrpShPath $current $destination
+if ($updated -ne ($destination + ';' + $legacy + ';C:\Windows')) { throw 'New installation does not take precedence or PATH entries were lost' }
+if ((Get-FrpShPath $updated $destination) -ne $updated) { throw 'Repeated installation duplicates PATH entries' }
+if ((Get-FrpShPath '' $destination) -ne $destination) { throw 'Empty PATH handling failed' }
 $text = [IO.File]::ReadAllText($path)
 $null = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$tokens, [ref]$errors)
 if ($errors) { throw ($errors | Out-String) }
