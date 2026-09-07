@@ -14,6 +14,7 @@ use std::{
 pub enum Page {
     Home,
     Profiles,
+    Presets,
     Join,
     Settings,
     Help,
@@ -23,7 +24,8 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Self::Home => tr("Home", "首页"),
-            Self::Profiles => tr("Profiles", "连接配置"),
+            Self::Profiles => tr("Saved connections", "已保存连接"),
+            Self::Presets => tr("Room presets", "房间预设"),
             Self::Join => tr("Join", "加入房间"),
             Self::Settings => tr("Settings", "设置"),
             Self::Help => tr("Help", "帮助"),
@@ -32,7 +34,8 @@ impl Page {
     }
     fn next(self) -> Self {
         match self {
-            Self::Home => Self::Profiles,
+            Self::Home => Self::Presets,
+            Self::Presets => Self::Profiles,
             Self::Profiles => Self::Join,
             Self::Join => Self::Settings,
             Self::Settings => Self::Help,
@@ -53,6 +56,7 @@ struct Form {
     original: Option<String>,
     settings: bool,
     launch: Option<String>,
+    preset_edit: bool,
 }
 struct State {
     cfg: Config,
@@ -63,6 +67,8 @@ struct State {
     notice: String,
     deleting: bool,
     join: String,
+    join_key: String,
+    join_key_focus: bool,
     logs: crate::logview::LogView,
 }
 enum Action {
@@ -294,35 +300,136 @@ impl State {
             original: profile.map(|p| p.name),
             settings,
             launch: None,
+            preset_edit: false,
         });
     }
-    fn service_form(&mut self, kind: &str) {
+    fn preset_entries(&self) -> Vec<(String, crate::presets::RoomPreset, bool)> {
+        let mut entries: Vec<_> = ["lan", "game", "dev"]
+            .into_iter()
+            .map(|n| {
+                (
+                    n.into(),
+                    crate::presets::RoomPreset::builtin(n).unwrap(),
+                    true,
+                )
+            })
+            .collect();
+        entries.extend(
+            self.cfg
+                .presets
+                .iter()
+                .map(|(n, p)| (n.clone(), p.clone(), false)),
+        );
+        entries
+    }
+    fn room_form(
+        &mut self,
+        preset: crate::presets::RoomPreset,
+        name: String,
+        editing: bool,
+        original: Option<String>,
+    ) {
+        let field = |label, value| Field {
+            label,
+            value,
+            secret: false,
+        };
         self.form = Some(Form {
             fields: vec![
-                Field {
-                    label: tr("Service name", "服务名称"),
-                    value: String::new(),
-                    secret: false,
-                },
+                field(
+                    tr(
+                        "Preset name (only needed to save)",
+                        "预设名称（保存时填写）",
+                    ),
+                    name,
+                ),
+                field(
+                    tr("Scene: lan / game / dev", "场景：lan / game / dev"),
+                    preset.scene,
+                ),
+                field(
+                    tr("Lifetime in seconds", "有效时间（秒）"),
+                    preset.ttl.to_string(),
+                ),
+                field("MTU (576..1400)", preset.mtu.to_string()),
+                field(
+                    tr("Force relay: true / false", "强制中继：true / false"),
+                    preset.relay.to_string(),
+                ),
+                field(
+                    tr("Room prefix (optional)", "房间号前缀（可选）"),
+                    preset.prefix,
+                ),
+                field(
+                    tr("Punch spread (0..16)", "打洞范围（0..16）"),
+                    preset.spread.to_string(),
+                ),
                 Field {
                     label: tr(
-                        "TCP ports / origins (space separated)",
-                        "TCP 端口或 URL（空格分隔）",
+                        "Payload passphrase (session only)",
+                        "额外加密口令（仅本次，不保存）",
                     ),
                     value: String::new(),
-                    secret: false,
-                },
-                Field {
-                    label: tr("UDP ports (space separated)", "UDP 端口（空格分隔）"),
-                    value: String::new(),
-                    secret: false,
+                    secret: true,
                 },
             ],
-            focus: 1,
-            original: None,
+            focus: if editing { 0 } else { 1 },
+            original,
             settings: false,
-            launch: Some(kind.into()),
+            launch: Some("room".into()),
+            preset_edit: editing,
         });
+    }
+    fn form_preset(&self) -> anyhow::Result<crate::presets::RoomPreset> {
+        let f = self.form.as_ref().unwrap();
+        let value = |i: usize| f.fields[i].value.trim();
+        let p = crate::presets::RoomPreset {
+            scene: value(1).into(),
+            ttl: value(2).parse()?,
+            mtu: value(3).parse()?,
+            relay: value(4).parse()?,
+            prefix: value(5).into(),
+            spread: value(6).parse()?,
+        };
+        p.validate()?;
+        Ok(p)
+    }
+    fn save_preset(&mut self) -> anyhow::Result<()> {
+        let p = self.form_preset()?;
+        let form = self.form.as_ref().unwrap();
+        let name = form.fields[0].value.trim().to_string();
+        crate::presets::validate_name(&name)?;
+        anyhow::ensure!(
+            form.original.as_ref() == Some(&name) || !self.cfg.presets.contains_key(&name),
+            "Preset name already exists"
+        );
+        let previous = self.cfg.presets.clone();
+        if let Some(old) = &form.original {
+            self.cfg.presets.remove(old);
+        }
+        self.cfg.presets.insert(name.clone(), p);
+        if let Err(e) = self.save() {
+            self.cfg.presets = previous;
+            return Err(e);
+        }
+        if form.preset_edit {
+            self.selected = self
+                .cfg
+                .presets
+                .keys()
+                .position(|n| n == &name)
+                .unwrap_or(0)
+                + 3;
+            self.form = None;
+        } else {
+            self.form.as_mut().unwrap().original = Some(name);
+        }
+        self.notice = tr(
+            "Preset saved; session passphrase was not stored",
+            "预设已保存，未保存本次加密口令",
+        )
+        .into();
+        Ok(())
     }
     fn save_form(&mut self) -> anyhow::Result<()> {
         let form = self.form.as_ref().unwrap();
@@ -421,7 +528,11 @@ impl State {
                     f.value.push_str(&text);
                 }
             } else if self.page == Page::Join && self.join.len() + text.len() <= 12000 {
-                self.join.push_str(&text);
+                if self.join_key_focus {
+                    self.join_key.push_str(&text);
+                } else {
+                    self.join.push_str(&text);
+                }
             }
             return Ok(None);
         }
@@ -439,36 +550,30 @@ impl State {
                 self.form = None;
                 return Ok(None);
             }
-            if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                if let Some(kind) = self.form.as_ref().and_then(|f| f.launch.clone()) {
-                    let f = self.form.as_ref().unwrap();
-                    let tcp: Vec<_> = f.fields[1]
-                        .value
-                        .split_whitespace()
-                        .map(str::to_owned)
-                        .collect();
-                    let udp: Vec<_> = f.fields[2]
-                        .value
-                        .split_whitespace()
-                        .map(str::to_owned)
-                        .collect();
-                    crate::services::published(&tcp, &udp, None)?;
-                    let mut args = vec![kind.clone(), "create".into()];
-                    if kind == "game" {
-                        args.extend(["--kind".into(), "server".into()]);
+            if self
+                .form
+                .as_ref()
+                .is_some_and(|f| f.launch.as_deref() == Some("room"))
+            {
+                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.save_preset()?;
+                    return Ok(None);
+                }
+                if key.code == KeyCode::Enter {
+                    if self.form.as_ref().unwrap().preset_edit {
+                        self.save_preset()?;
+                        return Ok(None);
                     }
-                    if !f.fields[0].value.trim().is_empty() {
-                        args.extend(["--label".into(), f.fields[0].value.trim().into()]);
-                    }
-                    for port in tcp {
-                        args.extend(["--tcp".into(), port]);
-                    }
-                    for port in udp {
-                        args.extend(["--udp".into(), port]);
+                    let mut args = self.form_preset()?.arguments();
+                    let passphrase = &self.form.as_ref().unwrap().fields[7].value;
+                    if !passphrase.is_empty() {
+                        args.extend(["--key".into(), passphrase.clone()]);
                     }
                     self.form = None;
                     return Ok(Some(Action::Session(args)));
                 }
+            }
+            if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 self.save_form()?;
                 return Ok(None);
             }
@@ -501,7 +606,19 @@ impl State {
         }
         if self.deleting {
             if key.code == KeyCode::Enter {
-                if let Some(p) = self.selected_profile() {
+                if self.page == Page::Presets {
+                    if let Some((name, _, false)) =
+                        self.preset_entries().get(self.selected).cloned()
+                    {
+                        let previous = self.cfg.presets.clone();
+                        self.cfg.presets.remove(&name);
+                        if let Err(e) = self.save() {
+                            self.cfg.presets = previous;
+                            return Err(e);
+                        }
+                        self.selected = self.selected.saturating_sub(1);
+                    }
+                } else if let Some(p) = self.selected_profile() {
                     self.cfg.profiles.remove(&p.name);
                     self.save()?;
                     self.selected = self.selected.saturating_sub(1);
@@ -513,8 +630,13 @@ impl State {
             return Ok(None);
         }
         if key.code == KeyCode::Esc {
+            self.join_key.clear();
             self.page = Page::Home;
             self.notice.clear();
+            return Ok(None);
+        }
+        if key.code == KeyCode::Tab && self.page == Page::Join {
+            self.join_key_focus = !self.join_key_focus;
             return Ok(None);
         }
         if key.code == KeyCode::Tab {
@@ -536,6 +658,7 @@ impl State {
                         let name = invitation.save(&mut self.cfg);
                         self.save()?;
                         self.join.clear();
+                        self.join_key.clear();
                         return Ok(Some(Action::Session(vec![
                             "profile".into(),
                             "run".into(),
@@ -550,34 +673,46 @@ impl State {
                                 .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
                         "Enter a room ID or invitation link"
                     );
-                    return Ok(Some(Action::Session(
-                        vec!["join".into(), input.into()]
-                            .into_iter()
-                            .chain(
-                                key.modifiers
-                                    .contains(KeyModifiers::CONTROL)
-                                    .then(|| "--network".into()),
-                            )
-                            .collect(),
-                    )));
+                    let mut args = vec!["join".into(), input.into()];
+                    if !self.join_key.is_empty() {
+                        args.extend(["--key".into(), std::mem::take(&mut self.join_key)]);
+                    }
+                    return Ok(Some(Action::Session(args)));
                 }
                 KeyCode::Backspace => {
-                    self.join.pop();
+                    if self.join_key_focus {
+                        self.join_key.pop();
+                    } else {
+                        self.join.pop();
+                    }
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.join.clear()
+                    if self.join_key_focus {
+                        self.join_key.clear();
+                    } else {
+                        self.join.clear();
+                    }
                 }
                 KeyCode::Char(c)
                     if !key
                         .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                        && self.join.len() < 12000 =>
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    self.join.push(c)
+                    let target = if self.join_key_focus {
+                        &mut self.join_key
+                    } else {
+                        &mut self.join
+                    };
+                    if target.len() < 12000 {
+                        target.push(c);
+                    }
                 }
                 _ => {}
             }
             return Ok(None);
+        }
+        if matches!(key.code, KeyCode::Char('1'..='7')) {
+            self.notice.clear();
         }
         match key.code {
             KeyCode::Char('q' | 'Q') => return Ok(Some(Action::Quit)),
@@ -605,6 +740,10 @@ impl State {
                 self.page = Page::Profiles;
                 self.selected = 0;
             }
+            KeyCode::Char('7') => {
+                self.page = Page::Presets;
+                self.selected = 0;
+            }
             KeyCode::Char('3') => self.page = Page::Join,
             KeyCode::Char('4') => self.page = Page::Settings,
             KeyCode::Char('5') => self.page = Page::Help,
@@ -616,6 +755,8 @@ impl State {
             KeyCode::Down | KeyCode::Right => {
                 self.selected = (self.selected + 1).min(if self.page == Page::Profiles {
                     self.cfg.profiles.len().saturating_sub(1)
+                } else if self.page == Page::Presets {
+                    self.preset_entries().len().saturating_sub(1)
                 } else {
                     if self.page == Page::Home {
                         5
@@ -623,6 +764,38 @@ impl State {
                         3
                     }
                 })
+            }
+            KeyCode::Char('n' | 'N') if self.page == Page::Presets => {
+                self.room_form(Default::default(), String::new(), true, None)
+            }
+            KeyCode::Char('e' | 'E' | 'c' | 'C') if self.page == Page::Presets => {
+                if let Some((name, p, builtin)) = self.preset_entries().get(self.selected).cloned()
+                {
+                    let copy = builtin || matches!(key.code, KeyCode::Char('c' | 'C'));
+                    self.room_form(
+                        p,
+                        if copy {
+                            format!("{name}-copy")
+                        } else {
+                            name.clone()
+                        },
+                        true,
+                        if copy { None } else { Some(name) },
+                    );
+                }
+            }
+            KeyCode::Delete if self.page == Page::Presets => {
+                self.deleting = self
+                    .preset_entries()
+                    .get(self.selected)
+                    .is_some_and(|(_, _, builtin)| !builtin);
+                if !self.deleting {
+                    self.notice = tr(
+                        "Built-in presets are read-only; press C to copy",
+                        "内置预设只读，按 C 复制后修改",
+                    )
+                    .into();
+                }
             }
             KeyCode::Char('n' | 'N') if self.page == Page::Profiles => self.open_form(None, false),
             KeyCode::Char('e' | 'E') if self.page == Page::Profiles => {
@@ -642,16 +815,27 @@ impl State {
             }
             KeyCode::Enter => match self.page {
                 Page::Home => match self.selected {
-                    0 => return Ok(Some(Action::Session(vec!["game".into(), "create".into()]))),
-                    1 => self.service_form("game"),
-                    2 => self.service_form("dev"),
-                    3 => self.page = Page::Join,
+                    0 => return Ok(Some(Action::Session(vec!["create".into()]))),
+                    1 => self.room_form(Default::default(), String::new(), false, None),
+                    2 => {
+                        self.page = Page::Join;
+                        self.selected = 0;
+                    }
+                    3 => {
+                        self.page = Page::Presets;
+                        self.selected = 0;
+                    }
                     4 => {
                         self.page = Page::Profiles;
                         self.selected = 0;
                     }
                     _ => self.page = Page::Settings,
                 },
+                Page::Presets => {
+                    if let Some((name, p, _)) = self.preset_entries().get(self.selected).cloned() {
+                        self.room_form(p, name, false, None);
+                    }
+                }
                 Page::Profiles => {
                     if let Some(p) = self.selected_profile() {
                         anyhow::ensure!(!p.room.is_empty(), "Set a room with E before joining");
@@ -710,10 +894,24 @@ impl State {
                     0,
                 ));
             }
-            hint = tr(
-                "Tab / ↑ ↓ Field   Ctrl+U Clear   Ctrl+S Save   Esc Cancel",
-                "Tab / ↑ ↓ 字段   Ctrl+U 清空   Ctrl+S 保存   Esc 取消",
-            );
+            if form.launch.as_deref() == Some("room") {
+                hint = if form.preset_edit {
+                    tr(
+                        "Tab Field   Enter Save   Esc Cancel",
+                        "Tab 字段   Enter 保存   Esc 取消",
+                    )
+                } else {
+                    tr(
+                        "Tab Field   Enter Create   Ctrl+S Save preset   Esc Back",
+                        "Tab 字段   Enter 创建   Ctrl+S 保存预设   Esc 返回",
+                    )
+                };
+            } else {
+                hint = tr(
+                    "Tab / ↑ ↓ Field   Ctrl+U Clear   Ctrl+S Save   Esc Cancel",
+                    "Tab / ↑ ↓ 字段   Ctrl+U 清空   Ctrl+S 保存   Esc 取消",
+                );
+            }
         } else {
             match self.page {
                 Page::Home => {
@@ -726,22 +924,23 @@ impl State {
                         0,
                     ));
                     lines.push((String::new(), 0));
+                    let per = (h.saturating_sub(12) as usize / 2).max(1);
+                    let start = self.selected / per * per;
                     for (i, label) in [
-                        tr("Game / LAN multiplayer", "游戏 / 局域网联机"),
+                        tr("Create room · default LAN", "创建房间 · 默认 LAN"),
+                        tr("Customize room", "自定义创建房间"),
+                        tr("Join room", "加入房间"),
                         tr(
-                            "Game server · explicit TCP / UDP services",
-                            "游戏服务器 · 指定 TCP / UDP 服务",
+                            "My presets · Game / Dev / custom",
+                            "房间预设 · 游戏 / 开发 / 自定义",
                         ),
-                        tr(
-                            "Dev · share Web, API or SSH",
-                            "开发协作 · 共享 Web、API 或 SSH",
-                        ),
-                        tr("Join with a link or room ID", "使用链接或房间号加入"),
-                        tr("Saved connections", "管理连接配置"),
-                        tr("Device & server settings", "设备与服务器设置"),
+                        tr("Saved connections", "已保存连接"),
+                        tr("Settings", "设置"),
                     ]
                     .iter()
                     .enumerate()
+                    .skip(start)
+                    .take(per)
                     {
                         lines.push((
                             format!("{}  {label}", if i == self.selected { "›" } else { " " }),
@@ -749,6 +948,41 @@ impl State {
                         ));
                         lines.push((String::new(), 0));
                     }
+                }
+                Page::Presets => {
+                    lines.push((
+                        tr(
+                            "Presets configure LAN rooms; they never store room credentials.",
+                            "预设用于配置 LAN 房间，不保存房间凭据。",
+                        )
+                        .into(),
+                        2,
+                    ));
+                    let entries = self.preset_entries();
+                    let per = (h.saturating_sub(12) as usize).max(1);
+                    let start = self.selected / per * per;
+                    for (i, (name, p, builtin)) in entries.iter().enumerate().skip(start).take(per)
+                    {
+                        lines.push((
+                            format!(
+                                "{} {}  · {} · MTU {}{}",
+                                if i == self.selected { "›" } else { " " },
+                                name,
+                                p.scene,
+                                p.mtu,
+                                if *builtin {
+                                    tr(" · built-in", " · 内置")
+                                } else {
+                                    ""
+                                }
+                            ),
+                            if i == self.selected { 1 } else { 0 },
+                        ));
+                    }
+                    hint = tr(
+                        "Enter Use   N New   E Edit   C Copy   Delete Remove   Esc Back",
+                        "Enter 使用   N 新建   E 编辑   C 复制   Delete 删除   Esc 返回",
+                    );
                 }
                 Page::Profiles => {
                     if self.cfg.profiles.is_empty() {
@@ -804,7 +1038,9 @@ impl State {
                         0,
                     ));
                     lines.push((String::new(), 0));
-                    let value = if self.join.starts_with("https://") {
+                    let value = if self.join.is_empty() {
+                        tr("Room ID / invitation", "房间号 / 邀请链接").into()
+                    } else if self.join.starts_with("https://") {
                         format!(
                             "{} ({} bytes)",
                             tr("Invitation entered", "已输入邀请"),
@@ -813,19 +1049,31 @@ impl State {
                     } else {
                         self.join.clone()
                     };
-                    lines.push((format!("› {value}▏"), 1));
+                    lines.push((
+                        format!("{} {value}", if self.join_key_focus { " " } else { "›" }),
+                        1,
+                    ));
+                    lines.push((
+                        format!(
+                            "{} {}: {}",
+                            if self.join_key_focus { "›" } else { " " },
+                            tr("Extra passphrase (optional)", "额外加密口令（可选）"),
+                            "•".repeat(self.join_key.chars().count().min(24))
+                        ),
+                        1,
+                    ));
                     lines.push((String::new(), 0));
                     lines.push((
                         tr(
-                            "Invitations save a profile. Ctrl+Enter explicitly permits device networking.",
-                            "邀请会保存配置。Ctrl+Enter 明确允许整机网络访问。",
+                            "Room numbers join LAN directly. Invitations also save the connection.",
+                            "输入房间号直接加入 LAN；邀请链接还会保存连接。",
                         )
                         .into(),
                         2,
                     ));
                     hint = tr(
-                        "Enter Services   Ctrl+Enter Allow device network   Tab Pages",
-                        "Enter 加入服务   Ctrl+Enter 允许设备组网   Tab 切页",
+                        "Enter Join   Tab Field   Esc Back",
+                        "Enter 加入   Tab 字段   Esc 返回",
                     );
                 }
                 Page::Settings => {
@@ -868,7 +1116,7 @@ impl State {
                 Page::Logs => unreachable!(),
                 Page::Help => {
                     for text in [
-                        tr("Tab / 1–6    Navigate pages", "Tab / 1–6    切换页面"),
+                        tr("Tab / 1–7    Navigate pages", "Tab / 1–7    切换页面"),
                         tr(
                             "Esc          Back to home / cancel editing",
                             "Esc          返回首页 / 取消编辑",
@@ -902,7 +1150,14 @@ impl State {
                 format!(
                     "{} {}?",
                     tr("Remove", "删除"),
-                    self.selected_profile().map(|p| p.name).unwrap_or_default()
+                    if self.page == Page::Presets {
+                        self.preset_entries()
+                            .get(self.selected)
+                            .map(|p| p.0.clone())
+                            .unwrap_or_default()
+                    } else {
+                        self.selected_profile().map(|p| p.name).unwrap_or_default()
+                    }
                 ),
                 3,
             ));
@@ -926,8 +1181,8 @@ impl State {
                 y: 2,
                 text: clean(
                     tr(
-                        "1 Home   2 Profiles   3 Join   4 Settings   5 Help   6 Logs",
-                        "1 首页   2 配置   3 加入   4 设置   5 帮助   6 日志",
+                        "1 Home  2 Saved  3 Join  4 Settings  5 Help  6 Logs  7 Presets",
+                        "1 首页  2 连接  3 加入  4 设置  5 帮助  6 日志  7 预设",
                     ),
                     w.saturating_sub(4) as usize,
                 ),
@@ -949,6 +1204,8 @@ pub async fn run(path: Option<PathBuf>, page: Page) -> anyhow::Result<()> {
         notice: String::new(),
         deleting: false,
         join: String::new(),
+        join_key: String::new(),
+        join_key_focus: false,
         logs: Default::default(),
     }));
     loop {
@@ -1022,11 +1279,65 @@ mod navigation_tests {
             notice: String::new(),
             deleting: false,
             join: String::new(),
+            join_key: String::new(),
+            join_key_focus: false,
             logs: Default::default(),
         }
     }
     fn key(code: KeyCode) -> Event {
         Event::Key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE))
+    }
+    #[test]
+    fn presets_save_rename_copy_and_delete_without_credentials() {
+        let mut s = state();
+        let path =
+            std::env::temp_dir().join(format!("frpsh-presets-{}.toml", uuid::Uuid::new_v4()));
+        s.path = Some(path.clone());
+        s.page = Page::Presets;
+        s.event(key(KeyCode::Char('n'))).unwrap();
+        let f = s.form.as_mut().unwrap();
+        f.fields[0].value = "my-game".into();
+        f.fields[1].value = "game".into();
+        f.fields[7].value = "never-store-this-key".into();
+        s.event(key(KeyCode::Enter)).unwrap();
+        assert!(s.cfg.presets.contains_key("my-game"));
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("never-store-this-key"));
+        s.selected = 3;
+        s.event(key(KeyCode::Char('e'))).unwrap();
+        s.form.as_mut().unwrap().fields[0].value = "renamed".into();
+        s.event(key(KeyCode::Enter)).unwrap();
+        assert!(!s.cfg.presets.contains_key("my-game"));
+        assert!(Config::load(Some(&path))
+            .unwrap()
+            .presets
+            .contains_key("renamed"));
+        s.event(key(KeyCode::Char('c'))).unwrap();
+        s.event(key(KeyCode::Enter)).unwrap();
+        assert_eq!(s.cfg.presets.len(), 2);
+        s.event(key(KeyCode::Delete)).unwrap();
+        s.event(key(KeyCode::Esc)).unwrap();
+        assert_eq!(s.cfg.presets.len(), 2);
+        s.event(key(KeyCode::Delete)).unwrap();
+        s.event(key(KeyCode::Enter)).unwrap();
+        assert_eq!(s.cfg.presets.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn create_is_one_step_and_custom_edits_do_not_overwrite_presets() {
+        let mut s = state();
+        assert!(
+            matches!(s.event(key(KeyCode::Enter)).unwrap(), Some(Action::Session(a)) if a == ["create"])
+        );
+        let p = crate::presets::RoomPreset::default();
+        s.cfg.presets.insert("mine".into(), p.clone());
+        s.room_form(p.clone(), "mine".into(), false, None);
+        s.form.as_mut().unwrap().fields[3].value = "1280".into();
+        assert!(
+            matches!(s.event(key(KeyCode::Enter)).unwrap(), Some(Action::Session(a)) if a.contains(&"1280".to_string()))
+        );
+        assert_eq!(s.cfg.presets["mine"], p);
     }
     #[test]
     fn pages_and_forms_handle_navigation_without_triggering_shortcuts() {
@@ -1057,6 +1368,7 @@ mod navigation_tests {
         for page in [
             Page::Home,
             Page::Profiles,
+            Page::Presets,
             Page::Join,
             Page::Settings,
             Page::Help,

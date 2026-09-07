@@ -15,6 +15,8 @@ fn default_relay() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub presets: std::collections::BTreeMap<String, crate::presets::RoomPreset>,
     #[serde(default)]
     pub language: Option<String>,
     #[serde(skip)]
@@ -156,6 +158,7 @@ pub fn hostname() -> String {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            presets: Default::default(),
             language: None,
             room_tokens: Default::default(),
             signaling_addr: default_signaling(),
@@ -463,6 +466,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("frpsh-test-{}", std::process::id()));
         let path = dir.join("config.toml");
         let cfg = Config {
+            presets: Default::default(),
             language: None,
             room_tokens: Default::default(),
             signaling_addr: "http://1.2.3.4:9000".into(),

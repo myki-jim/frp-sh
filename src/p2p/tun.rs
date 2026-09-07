@@ -134,7 +134,12 @@ mod session_tests {
         let host = crate::p2p::enc::EncStream::new(host, &key);
         let guest = crate::p2p::enc::EncStream::new(guest, &key);
         let (device, mut helper) = tokio::io::duplex(1024);
-        let session = tokio::spawn(run_packets(guest, device));
+        let guest_stats = crate::stats::StreamStats::new(crate::stats::KIND_RELAY);
+        let session = tokio::spawn(run_packets_with_stats(
+            guest,
+            device,
+            Some(guest_stats.clone()),
+        ));
         let (plane, mut dead) = MeshPlane::new();
         let (dispatch, mut packets) = tokio::sync::mpsc::channel(256);
         let stats = crate::stats::StreamStats::new(crate::stats::KIND_RELAY);
@@ -149,6 +154,12 @@ mod session_tests {
         assert!(!session.is_finished(), "guest died after mesh heartbeat");
         assert!(dead.try_recv().is_err());
         assert!(stats.rtt_last.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert!(
+            guest_stats
+                .rtt_last
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+        );
         let mut packet = [0u8; 20];
         packet[0] = 0x45;
         packet[3] = 20;
@@ -296,10 +307,23 @@ pub async fn run<TR>(transport: TR, dev: crate::helper::Device) -> Result<()>
 where
     TR: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    run_packets(transport, dev).await
+    run_packets_with_stats(transport, dev, crate::stats::sole_link_stats()).await
 }
 
-async fn run_packets<TR, D>(mut transport: TR, mut dev: D) -> Result<()>
+#[cfg(test)]
+async fn run_packets<TR, D>(transport: TR, dev: D) -> Result<()>
+where
+    TR: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    D: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    run_packets_with_stats(transport, dev, None).await
+}
+
+async fn run_packets_with_stats<TR, D>(
+    mut transport: TR,
+    mut dev: D,
+    stats: Option<Arc<crate::stats::StreamStats>>,
+) -> Result<()>
 where
     TR: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     D: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -307,6 +331,7 @@ where
     let mut pkt = [0u8; 65536];
     let mut acc: Vec<u8> = Vec::new();
     let mut rbuf = [0u8; 16384];
+    let mut ping_at: Option<std::time::Instant> = None;
     let mut last_received = tokio::time::Instant::now();
     let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(3));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -319,6 +344,7 @@ where
                 return Err(FrpError::Protocol("peer heartbeat timeout".into()));
             }
             _ = heartbeat.tick() => {
+                ping_at = Some(std::time::Instant::now());
                 crate::tunnel::write_frame(&mut transport, b"FRPING").await?;
                 transport.flush().await?;
             }
@@ -350,7 +376,11 @@ where
                             crate::tunnel::write_frame(&mut transport, b"FRPONG").await?;
                             transport.flush().await?;
                         }
-                        Ok(Some(f)) if f == b"FRPONG" => {}
+                        Ok(Some(f)) if f == b"FRPONG" => {
+                            if let (Some(start), Some(st)) = (ping_at.take(), stats.as_ref()) {
+                                st.on_rtt(start.elapsed().as_micros().clamp(1, u32::MAX as u128) as u32);
+                            }
+                        }
                         Ok(Some(f)) => {
                             dev.write_all(&f).await.map_err(FrpError::Io)?;
                         }

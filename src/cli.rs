@@ -2,7 +2,7 @@
 
 use clap::builder::styling::{AnsiColor, Effects};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 /// 彩色 help 配色（clap Styles）：标题黄、命令/参数绿、占位符青、错误红。
 /// `--help` / `--version` 输出自动套用，无需逐处修改。
@@ -60,13 +60,21 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Create a LAN room; game/dev are optional parameter presets
+    Create(RoomCreateArgs),
+    /// Manage room parameter presets (separate from saved connections)
+    Preset,
+    #[command(external_subcommand)]
+    Shortcut(Vec<OsString>),
     /// Open the keyboard-operated terminal app
     App,
-    /// Join according to the room capabilities; --network explicitly permits device access
+    /// Join a room (LAN by default); service rooms remain compatible
     Join {
         room_id: String,
         #[arg(long)]
         network: bool,
+        #[arg(long)]
+        key: Option<String>,
         #[arg(long)]
         listen: Option<String>,
         #[arg(long)]
@@ -432,4 +440,28 @@ impl ForwardCreateArgs {
         }
         crate::services::published(&tcp, &self.udp, self.label.as_deref())
     }
+}
+
+#[derive(clap::Args, Debug)]
+pub struct RoomCreateArgs {
+    #[arg(value_parser = ["lan", "game", "dev"])]
+    pub scene: Option<String>,
+    #[arg(long)]
+    pub preset: Option<String>,
+    #[arg(long)]
+    pub ttl: Option<u64>,
+    #[arg(long)]
+    pub mtu: Option<u16>,
+    #[arg(long)]
+    pub spread: Option<u32>,
+    #[arg(long)]
+    pub prefix: Option<String>,
+    #[arg(long, conflicts_with = "auto_route")]
+    pub relay: bool,
+    /// Restore automatic direct/relay selection when a preset forces relay
+    #[arg(long)]
+    pub auto_route: bool,
+    /// Additional payload passphrase (not saved in presets)
+    #[arg(long)]
+    pub key: Option<String>,
 }

@@ -97,6 +97,14 @@ pub fn cards(info: &SessionInfo, view: &RoomView, links: &[LinkRow]) -> Vec<Devi
                         link.7 as f64 / 1000.0,
                         tr("latency", "延迟")
                     )
+                } else if std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+                    - link.3
+                    >= 12
+                {
+                    tr("Latency unavailable", "延迟暂不可用").into()
                 } else {
                     tr("Measuring latency", "正在测量延迟").into()
                 },

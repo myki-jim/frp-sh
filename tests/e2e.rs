@@ -52,6 +52,7 @@ async fn try_start_server(password: Option<&str>) -> Option<TestServer> {
     tokio::spawn(server::run_relay(relay_listener, state, pw.clone()));
     Some(TestServer {
         cfg: Config {
+            presets: Default::default(),
             language: None,
             room_tokens: Default::default(),
             signaling_addr: format!("http://127.0.0.1:{http_port}"),

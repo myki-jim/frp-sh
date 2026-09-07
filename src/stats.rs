@@ -14,6 +14,11 @@ pub const KIND_DIRECT: u8 = 0;
 pub const KIND_TURN: u8 = 1;
 pub const KIND_RELAY: u8 = 2;
 
+pub fn sole_link_stats() -> Option<Arc<StreamStats>> {
+    let links = links_cell().lock().unwrap();
+    (links.len() == 1).then(|| links[0].stats.clone())
+}
+
 pub fn kind_name(kind: u8) -> &'static str {
     match kind {
         KIND_DIRECT => "direct",

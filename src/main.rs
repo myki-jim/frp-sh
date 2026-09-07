@@ -105,6 +105,31 @@ async fn real_main() -> anyhow::Result<()> {
         punch_retries,
         ..
     } = cli;
+    command = match command {
+        Some(Commands::Shortcut(values)) => {
+            anyhow::ensure!(
+                values.len() == 1
+                    && values[0].to_str().is_some_and(|v| !v.is_empty()
+                        && v.len() <= 16
+                        && v.bytes().all(|c| c.is_ascii_digit())),
+                "Use frp-sh <room number>, create, join, or --help"
+            );
+            Some(Commands::Join {
+                room_id: values[0].to_string_lossy().into_owned(),
+                network: true,
+                listen: None,
+                service: None,
+                key: None,
+            })
+        }
+        Some(Commands::Create(args)) => Some(Commands::Lan {
+            cmd: LanCmd::Create(frp_sh::presets::resolve(
+                args,
+                &Config::load_auto(config.as_deref())?,
+            )?),
+        }),
+        other => other,
+    };
     frp_sh::config::set_punch_retries(punch_retries);
 
     frp_sh::config::set_cli_name(name);
@@ -138,6 +163,7 @@ async fn real_main() -> anyhow::Result<()> {
             Some(Commands::Profile {
                 cmd: None | Some(cli::ProfileCmd::List),
             }) => Some(frp_sh::app::Page::Profiles),
+            Some(Commands::Preset) => Some(frp_sh::app::Page::Presets),
             Some(Commands::Config) => Some(frp_sh::app::Page::Settings),
             _ => None,
         };
@@ -193,7 +219,19 @@ async fn real_main() -> anyhow::Result<()> {
     // Update checks are explicit and never delay a connection.
 
     match command {
-        Some(Commands::Logs { .. } | Commands::Connect { .. }) => unreachable!(),
+        Some(
+            Commands::Logs { .. }
+            | Commands::Connect { .. }
+            | Commands::Create(_)
+            | Commands::Shortcut(_),
+        ) => unreachable!(),
+        Some(Commands::Preset) => {
+            let cfg = Config::load_auto(config.as_deref())?;
+            frp_sh::ui_println!("lan / game / dev (built-in LAN presets)");
+            for (name, p) in cfg.presets {
+                frp_sh::ui_println!("{} · {} · MTU {} · {}s", name, p.scene, p.mtu, p.ttl);
+            }
+        }
         Some(Commands::App) => anyhow::bail!("The terminal app requires an interactive terminal"),
         Some(Commands::Update) => frp_sh::update::maybe_check_update(true).await?,
         Some(Commands::Doctor { network_test }) => {
@@ -359,7 +397,8 @@ async fn real_main() -> anyhow::Result<()> {
         },
         Some(Commands::Join {
             room_id,
-            network,
+            network: _,
+            key,
             listen,
             service,
         }) => {
@@ -370,9 +409,8 @@ async fn real_main() -> anyhow::Result<()> {
             );
             let info = api.get_room(&room_id).await?;
             if !info.services.is_empty() {
-                frp_sh::services::join(cfg, room_id, listen, service, None).await?;
+                frp_sh::services::join(cfg, room_id, listen, service, key.clone()).await?;
             } else {
-                anyhow::ensure!(network,"this room provides whole-device networking; use join <room> --network to allow it, or join a service-only room");
                 frp_sh::helper::status().await?;
                 let mut tun = frp_sh::commands::TunOpts::guest_default();
                 if let Some(id) = cfg.uuid.as_deref() {
@@ -384,7 +422,7 @@ async fn real_main() -> anyhow::Result<()> {
                     room_id,
                     "127.0.0.1:1".into(),
                     false,
-                    None,
+                    key,
                     0,
                     2,
                     Some(tun),
