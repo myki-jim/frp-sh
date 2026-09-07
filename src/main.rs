@@ -157,14 +157,12 @@ async fn real_main() -> anyhow::Result<()> {
             }),
         });
     }
-    frp_sh::pet::initialize(config.clone(), Config::load_auto(config.as_deref())?.pet);
     if frp_sh::terminal::interactive() {
         let page = match &command {
             None | Some(Commands::App) => Some(frp_sh::app::Page::Home),
             Some(Commands::Profile {
                 cmd: None | Some(cli::ProfileCmd::List),
             }) => Some(frp_sh::app::Page::Profiles),
-            Some(Commands::Pet) => Some(frp_sh::app::Page::Pets),
             Some(Commands::Preset) => Some(frp_sh::app::Page::Presets),
             Some(Commands::Config) => Some(frp_sh::app::Page::Settings),
             _ => None,
@@ -227,11 +225,6 @@ async fn real_main() -> anyhow::Result<()> {
             | Commands::Create(_)
             | Commands::Shortcut(_),
         ) => unreachable!(),
-        Some(Commands::Pet) => {
-            for id in 0..20 {
-                frp_sh::ui_println!("{:02} {}", id + 1, frp_sh::pet::name(id));
-            }
-        }
         Some(Commands::Preset) => {
             let cfg = Config::load_auto(config.as_deref())?;
             frp_sh::ui_println!("lan / game / dev (built-in LAN presets)");

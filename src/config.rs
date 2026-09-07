@@ -15,8 +15,6 @@ fn default_relay() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default)]
-    pub pet: crate::pet::Settings,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub presets: std::collections::BTreeMap<String, crate::presets::RoomPreset>,
     #[serde(default)]
@@ -171,7 +169,6 @@ impl Default for Config {
             stun_addr: None,
             turn_providers: Vec::new(),
             name: None,
-            pet: Default::default(),
             profiles: std::collections::BTreeMap::new(),
         }
     }
@@ -465,6 +462,14 @@ mod tests {
     }
 
     #[test]
+    fn removed_pet_settings_remain_loadable() {
+        let config: Config = toml::from_str("name = 'existing-device'\n[pet]\nlook = 'cat'\nvisible = true\nreduced_motion = false\n").unwrap();
+        assert_eq!(config.name.as_deref(), Some("existing-device"));
+        let saved = toml::to_string(&config).unwrap();
+        assert!(!saved.contains("[pet]"));
+    }
+
+    #[test]
     fn save_load_roundtrip() {
         let dir = std::env::temp_dir().join(format!("frpsh-test-{}", std::process::id()));
         let path = dir.join("config.toml");
@@ -480,7 +485,6 @@ mod tests {
             stun_addr: Some("stun.cloudflare.com:3478".into()),
             turn_providers: vec!["turn://fixture-user:fixture-password@127.0.0.1:3478".into()],
             name: Some("test-box".into()),
-            pet: Default::default(),
             profiles: std::collections::BTreeMap::new(),
         };
         cfg.save(&path).unwrap();

@@ -15,7 +15,6 @@ pub enum Page {
     Home,
     Profiles,
     Presets,
-    Pets,
     Join,
     Settings,
     Help,
@@ -26,7 +25,6 @@ impl Page {
         match self {
             Self::Home => tr("Home", "首页"),
             Self::Profiles => tr("Saved connections", "已保存连接"),
-            Self::Pets => tr("Companion", "终端宠物"),
             Self::Presets => tr("Room presets", "房间预设"),
             Self::Join => tr("Join", "加入房间"),
             Self::Settings => tr("Settings", "设置"),
@@ -36,8 +34,7 @@ impl Page {
     }
     fn next(self) -> Self {
         match self {
-            Self::Home => Self::Pets,
-            Self::Pets => Self::Presets,
+            Self::Home => Self::Presets,
             Self::Presets => Self::Profiles,
             Self::Profiles => Self::Join,
             Self::Join => Self::Settings,
@@ -644,29 +641,12 @@ impl State {
         }
         if key.code == KeyCode::Tab {
             self.page = self.page.next();
-            self.selected = if self.page == Page::Pets {
-                self.cfg.pet.look.min(19)
-            } else {
-                0
-            };
+            self.selected = 0;
             self.notice.clear();
             return Ok(None);
         }
         if self.page == Page::Logs {
             self.logs.key(key);
-            return Ok(None);
-        }
-        if self.page == Page::Pets {
-            let mut updated = self.cfg.pet.clone();
-            if crate::pet::edit(key.code, &mut self.selected, &mut updated) {
-                let previous = std::mem::replace(&mut self.cfg.pet, updated.clone());
-                if let Err(e) = self.save() {
-                    self.cfg.pet = previous;
-                    return Err(e);
-                }
-                crate::pet::configure(updated);
-                self.notice = tr("Companion settings saved", "宠物设置已保存").into();
-            }
             return Ok(None);
         }
         if self.page == Page::Join {
@@ -735,11 +715,6 @@ impl State {
             self.notice.clear();
         }
         match key.code {
-            KeyCode::Char('p' | 'P') => {
-                self.page = Page::Pets;
-                self.selected = self.cfg.pet.look.min(19);
-                self.notice.clear();
-            }
             KeyCode::Char('q' | 'Q') => return Ok(Some(Action::Quit)),
             KeyCode::Char('l' | 'L') => {
                 crate::i18n::choose(if crate::i18n::chinese() {
@@ -879,29 +854,13 @@ impl State {
         Ok(None)
     }
     fn frame(&mut self, w: u16, h: u16, tick: usize) -> Frame {
-        if self.page == Page::Pets {
-            return crate::pet::wardrobe(w, h, self.selected, &self.cfg.pet, tick, &self.notice);
-        }
-        let original_w = w;
-        let original_h = h;
-        let show_pet = self.page == Page::Home && self.form.is_none() && !self.deleting;
-        let h = if show_pet {
-            crate::pet::content_height(w, h, &self.cfg.pet)
-        } else {
-            h
-        };
-        let w = if show_pet {
-            crate::pet::space(w, h, &self.cfg.pet)
-        } else {
-            w
-        };
         if self.page == Page::Logs {
             return self.logs.frame(w, h, tick);
         }
         let mut lines = Vec::new();
         let mut hint = tr(
-            "Tab Pages   Enter Open   P Pet   G Logs   Q Quit",
-            "Tab 切页   Enter 打开   P 宠物   G 日志   Q 退出",
+            "Tab Pages   Enter Open   G Logs   L Language   Q Quit",
+            "Tab 切页   Enter 打开   G 日志   L 语言   Q 退出",
         );
         let title = if self.form.is_some() {
             tr("Edit configuration", "编辑配置")
@@ -964,15 +923,8 @@ impl State {
                         .into(),
                         0,
                     ));
-                    if h >= 20 {
-                        lines.push((String::new(), 0));
-                    }
-                    let per = if h < 20 {
-                        h.saturating_sub(10) as usize
-                    } else {
-                        h.saturating_sub(12) as usize / 2
-                    }
-                    .max(1);
+                    lines.push((String::new(), 0));
+                    let per = (h.saturating_sub(12) as usize / 2).max(1);
                     let start = self.selected / per * per;
                     for (i, label) in [
                         tr("Create room · default LAN", "创建房间 · 默认 LAN"),
@@ -994,9 +946,7 @@ impl State {
                             format!("{}  {label}", if i == self.selected { "›" } else { " " }),
                             if i == self.selected { 1 } else { 0 },
                         ));
-                        if h >= 20 {
-                            lines.push((String::new(), 0));
-                        }
+                        lines.push((String::new(), 0));
                     }
                 }
                 Page::Presets => {
@@ -1163,7 +1113,7 @@ impl State {
                         2,
                     ));
                 }
-                Page::Logs | Page::Pets => unreachable!(),
+                Page::Logs => unreachable!(),
                 Page::Help => {
                     for text in [
                         tr("Tab / 1–7    Navigate pages", "Tab / 1–7    切换页面"),
@@ -1239,32 +1189,17 @@ impl State {
                 tone: 2,
             });
         }
-        if show_pet {
-            crate::pet::append(
-                &mut frame,
-                original_w,
-                original_h,
-                &self.cfg.pet,
-                crate::pet::Mood::Rest,
-                tick,
-            );
-        }
         frame
     }
 }
 
 pub async fn run(path: Option<PathBuf>, page: Page) -> anyhow::Result<()> {
     let cfg = Config::load_auto(path.as_deref())?;
-    let selected = if page == Page::Pets {
-        cfg.pet.look.min(19)
-    } else {
-        0
-    };
     let state = Arc::new(Mutex::new(State {
         cfg,
         path: path.clone(),
         page,
-        selected,
+        selected: 0,
         form: None,
         notice: String::new(),
         deleting: false,
@@ -1434,7 +1369,6 @@ mod navigation_tests {
             Page::Home,
             Page::Profiles,
             Page::Presets,
-            Page::Pets,
             Page::Join,
             Page::Settings,
             Page::Help,
