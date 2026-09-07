@@ -176,16 +176,9 @@ The default subnet is `10.66.0.0/24` (one VLAN). For multiple VLANs, open separa
 rooms on different subnets (`--ip` + `--netmask` support any subnet). Everyone in one
 room shares one subnet and can reach each other directly.
 
-### Why is the default port 25565? Is that Minecraft's?
+### Is 25565 still the default?
 
-Yes —25565 is the default Minecraft (Java Edition) server port. frp-sh was designed for "play with friends" scenarios, so both the host service and the guest listen default to 25565 for out-of-the-box server hosting.
-
-Any port works: the host sets `--service` to its service address, the guest sets `--listen` to its local port. For example, a web service on port 3000:
-
-```bash
-frp-sh game create --service 127.0.0.1:3000
-frp-sh game join game-a3f9c2 --listen 127.0.0.1:3000
-```
+No. In 0.5.0 Game defaults to virtual LAN networking without a tunnel service port. For explicit game servers or development services, enter the actual TCP/UDP ports. 25565 is only an example for certain games.
 
 ### `invalid room id` rules
 

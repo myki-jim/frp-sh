@@ -145,6 +145,33 @@ async fn real_main() -> anyhow::Result<()> {
             return frp_sh::app::run(config, page).await;
         }
     }
+    match &mut command {
+        Some(Commands::Dev {
+            cmd: DevCmd::Create(args),
+        }) => {
+            if args.service.is_empty() && args.tcp.is_empty() && args.udp.is_empty() {
+                args.service = required_endpoint("", "--service")?;
+            }
+            args.published()?;
+        }
+        Some(Commands::Game {
+            cmd: GameCmd::Create(args),
+        }) if !args.network() => {
+            if args.service.is_empty() && args.tcp.is_empty() && args.udp.is_empty() {
+                args.service = required_endpoint("", "--service")?;
+            }
+            args.published()?;
+        }
+        Some(Commands::Dev {
+            cmd: DevCmd::Join(args),
+        })
+        | Some(Commands::Game {
+            cmd: GameCmd::Join(args),
+        }) if !args.listen.is_empty() => {
+            args.listen = required_endpoint(&args.listen, "--listen")?;
+        }
+        _ => {}
+    }
     let session_ui = matches!(
         frp_sh::commands::session_role(&command),
         Some("host" | "guest")
@@ -173,6 +200,7 @@ async fn real_main() -> anyhow::Result<()> {
             frp_sh::helper::status().await?;
             if network_test {
                 let device = frp_sh::p2p::tun::create(&frp_sh::p2p::tun::TunConfig {
+                    allow_lan: false,
                     name: "frp0".into(),
                     ip: "10.254.254.1".into(),
                     netmask: "255.255.255.252".into(),
@@ -212,79 +240,158 @@ async fn real_main() -> anyhow::Result<()> {
             match cmd {
                 GameCmd::Create(args) => {
                     let cfg = Config::load_auto(config.as_deref())?;
-                    let prefix = args.prefix.unwrap_or_default();
-                    // game 系列：纯端口转发，不组网
-                    frp_sh::commands::run_create(
-                        cfg,
-                        prefix,
-                        args.ttl,
-                        args.service,
-                        args.relay,
-                        args.key,
-                        args.max_conns,
-                        args.spread,
-                        None,
-                        Vec::new(),
-                        false,
-                    )
-                    .await?;
+                    if args.network() {
+                        frp_sh::commands::run_create(
+                            cfg,
+                            args.prefix.unwrap_or_default(),
+                            args.ttl,
+                            "127.0.0.1:1".into(),
+                            args.relay,
+                            args.key,
+                            0,
+                            args.spread,
+                            Some(frp_sh::commands::TunOpts::host_default()),
+                            vec![],
+                            false,
+                        )
+                        .await?;
+                    } else {
+                        let services = args.published()?;
+                        frp_sh::services::host(
+                            cfg,
+                            args.prefix.unwrap_or_default(),
+                            args.ttl,
+                            services,
+                            args.key,
+                        )
+                        .await?;
+                    }
                 }
                 GameCmd::Join(args) => {
                     let cfg = Config::load_auto(config.as_deref())?;
+                    let api = frp_sh::signaling::SignalingClient::new_with_password(
+                        &cfg.signaling_addr,
+                        cfg.password.as_deref(),
+                    );
+                    if !api.get_room(&args.room_id).await?.services.is_empty() {
+                        return frp_sh::services::join(
+                            cfg,
+                            args.room_id,
+                            (!args.listen.is_empty()).then_some(args.listen),
+                            args.service,
+                            args.key,
+                        )
+                        .await;
+                    }
+                    if args.listen.is_empty() {
+                        frp_sh::helper::status().await?;
+                    }
+
+                    let tun = args.listen.is_empty().then(|| {
+                        let mut t = frp_sh::commands::TunOpts::guest_default();
+                        if let Some(id) = cfg.uuid.as_deref() {
+                            t.ip = frp_sh::utils::derive_vnet_ip(id);
+                        }
+                        t
+                    });
+                    let requested = tun.as_ref().map(|t| t.ip.clone());
+                    let listen = if tun.is_some() {
+                        "127.0.0.1:1".into()
+                    } else {
+                        args.listen
+                    };
                     frp_sh::commands::run_join(
                         cfg,
                         args.room_id,
-                        args.listen,
+                        listen,
                         args.relay,
                         args.key,
                         args.max_conns,
                         args.spread,
-                        None,
-                        None,
+                        tun,
+                        requested,
                         false,
                     )
                     .await?;
                 }
             }
         }
-        Some(Commands::Dev { cmd }) => {
-            check_config_hint(&config);
-            match cmd {
-                DevCmd::Create(args) => {
-                    let cfg = Config::load_auto(config.as_deref())?;
-                    let prefix = args.prefix.unwrap_or_default();
-                    // dev 系列：应用层端口转发，不组网
-                    frp_sh::commands::run_create(
-                        cfg,
-                        prefix,
-                        args.ttl,
-                        args.service,
-                        args.relay,
-                        args.key,
-                        args.max_conns,
-                        args.spread,
-                        None,
-                        Vec::new(),
-                        false,
-                    )
-                    .await?;
+        Some(Commands::Dev { cmd }) => match cmd {
+            DevCmd::Create(args) => {
+                let cfg = Config::load_auto(config.as_deref())?;
+                let services = args.published()?;
+                frp_sh::services::host(
+                    cfg,
+                    args.prefix.unwrap_or_default(),
+                    args.ttl,
+                    services,
+                    args.key,
+                )
+                .await?;
+            }
+            DevCmd::Join(args) => {
+                let cfg = Config::load_auto(config.as_deref())?;
+                frp_sh::services::join(
+                    cfg,
+                    args.room_id,
+                    (!args.listen.is_empty()).then_some(args.listen),
+                    args.service,
+                    args.key,
+                )
+                .await?;
+            }
+            DevCmd::Add {
+                service,
+                mut tcp,
+                udp,
+                label,
+            } => {
+                if let Some(s) = service {
+                    tcp.insert(0, s);
                 }
-                DevCmd::Join(args) => {
-                    let cfg = Config::load_auto(config.as_deref())?;
-                    frp_sh::commands::run_join(
-                        cfg,
-                        args.room_id,
-                        args.listen,
-                        args.relay,
-                        args.key,
-                        args.max_conns,
-                        args.spread,
-                        None,
-                        None,
-                        false,
-                    )
-                    .await?;
+                frp_sh::services::change(
+                    frp_sh::services::published(&tcp, &udp, label.as_deref())?,
+                    None,
+                )?;
+            }
+            DevCmd::Remove { service_id } => frp_sh::services::change(vec![], Some(service_id))?,
+            DevCmd::Revoke => frp_sh::services::revoke().await?,
+        },
+        Some(Commands::Join {
+            room_id,
+            network,
+            listen,
+            service,
+        }) => {
+            let cfg = Config::load_auto(config.as_deref())?;
+            let api = frp_sh::signaling::SignalingClient::new_with_password(
+                &cfg.signaling_addr,
+                cfg.password.as_deref(),
+            );
+            let info = api.get_room(&room_id).await?;
+            if !info.services.is_empty() {
+                frp_sh::services::join(cfg, room_id, listen, service, None).await?;
+            } else {
+                anyhow::ensure!(network,"this room provides whole-device networking; use join <room> --network to allow it, or join a service-only room");
+                frp_sh::helper::status().await?;
+                let mut tun = frp_sh::commands::TunOpts::guest_default();
+                if let Some(id) = cfg.uuid.as_deref() {
+                    tun.ip = frp_sh::utils::derive_vnet_ip(id);
                 }
+                let ip = Some(tun.ip.clone());
+                frp_sh::commands::run_join(
+                    cfg,
+                    room_id,
+                    "127.0.0.1:1".into(),
+                    false,
+                    None,
+                    0,
+                    2,
+                    Some(tun),
+                    ip,
+                    false,
+                )
+                .await?;
             }
         }
         Some(Commands::Lan { cmd }) => {
@@ -412,4 +519,26 @@ fn check_config_hint(config: &Option<std::path::PathBuf>) {
              Run `frp-sh config` to configure your server interactively.\n"
         );
     }
+}
+
+fn required_endpoint(value: &str, flag: &str) -> anyhow::Result<String> {
+    use std::io::Write;
+    let mut value = value.to_owned();
+    if value.trim().is_empty() {
+        anyhow::ensure!(
+            frp_sh::terminal::interactive(),
+            "missing {flag}: specify a local port, e.g. {flag} 3000"
+        );
+        print!(
+            "{}: ",
+            if frp_sh::i18n::chinese() {
+                "请输入本机端口或回环地址（如 3000）"
+            } else {
+                "Local port or loopback address (e.g. 3000)"
+            }
+        );
+        std::io::stdout().flush()?;
+        std::io::stdin().read_line(&mut value)?;
+    }
+    Ok(frp_sh::access::local_endpoint(&value)?.to_string())
 }

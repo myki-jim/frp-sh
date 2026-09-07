@@ -256,6 +256,7 @@ pub async fn guest_forward(
     listen: SocketAddr,
     max_conns: u64,
 ) -> Result<()> {
+    crate::access::validate_local_endpoint(listen)?;
     let listener = TcpListener::bind(listen).await.map_err(FrpError::Io)?;
     crate::ui_println!("listening on {listen}, waiting for local connections (Ctrl-C to end) ...");
     let mut conns: u64 = 0;
@@ -291,6 +292,7 @@ pub async fn host_forward(
     service: SocketAddr,
     max_conns: u64,
 ) -> Result<()> {
+    crate::access::validate_local_endpoint(service)?;
     crate::ui_println!("waiting for the guest to connect (Ctrl-C to end) ...");
     let mut conns: u64 = 0;
     loop {

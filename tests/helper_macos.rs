@@ -16,6 +16,7 @@ async fn self_ping_uses_loopback_without_tunnel_traffic() {
     assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
     let ip = "10.66.0.40";
     let mut device = frp_sh::helper::open(&frp_sh::p2p::tun::TunConfig {
+        allow_lan: false,
         name: "frp1".into(),
         ip: ip.into(),
         netmask: "255.255.255.0".into(),

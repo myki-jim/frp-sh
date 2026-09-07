@@ -134,8 +134,15 @@ pub async fn connect(
         .await
         .map_err(|_| FrpError::Relay("relay connect timeout".into()))??;
     tcp.set_nodelay(true)?;
-    let tcp = enable_keepalive(tcp)?;
-    let mut stream: RelayStream = if encrypted {
+    let mut tcp = enable_keepalive(tcp)?;
+    if token.is_some_and(|t| t.starts_with("r3_")) {
+        if !crate::utils::validate_room_id(room_id) {
+            return Err(FrpError::Relay("invalid room ID".into()));
+        }
+        tcp.write_all(format!("R3 {room_id}\n").as_bytes()).await?;
+        tcp.flush().await?;
+    }
+    let mut stream: RelayStream = if encrypted || token.is_some_and(|t| t.starts_with("r3_")) {
         let key = crate::p2p::enc::key_from_password(
             token.ok_or_else(|| FrpError::Relay("relay password required".into()))?,
         );

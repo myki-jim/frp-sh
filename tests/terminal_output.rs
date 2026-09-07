@@ -7,6 +7,25 @@ fn cli(args: &[&str]) -> std::process::Output {
         .output()
         .unwrap()
 }
+
+#[test]
+fn service_input_fails_before_any_network_or_helper_access() {
+    for args in [
+        vec!["--json", "dev", "create"],
+        vec!["--json", "dev", "create", "--service", "169.254.169.254:80"],
+        vec!["--json", "game", "join", "1234", "--listen", "0.0.0.0:3000"],
+    ] {
+        let output = cli(&args);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        let message = error["message"].as_str().unwrap();
+        assert!(
+            message.contains("missing --") || message.contains("loopback"),
+            "{message}"
+        );
+    }
+}
 #[test]
 fn localized_help_and_json_are_deterministic() {
     let english = cli(&["--lang", "en", "--plain", "--help"]);

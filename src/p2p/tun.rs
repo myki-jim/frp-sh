@@ -24,7 +24,7 @@ mod session_tests {
     #[tokio::test]
     async fn replacing_peer_closes_both_old_halves_and_ignores_old_death() {
         let (plane, mut dead) = MeshPlane::new();
-        let (tx, mut packets) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut packets) = tokio::sync::mpsc::channel(256);
         let (old, mut remote) = tokio::io::duplex(1024);
         plane.register("peer", vec![], Box::new(old), tx.clone(), None);
         let (new, remote_new) = tokio::io::duplex(1024);
@@ -75,7 +75,7 @@ mod session_tests {
         let (device, _helper) = tokio::io::duplex(1024);
         let task = tokio::spawn(run_packets(guest, device));
         let (plane, _dead) = MeshPlane::new();
-        let (tx, _packets) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _packets) = tokio::sync::mpsc::channel(256);
         plane.register("peer", vec![], Box::new(host), tx, None);
         for _ in 0..10 {
             tokio::time::advance(Duration::from_secs(3)).await;
@@ -136,7 +136,7 @@ mod session_tests {
         let (device, mut helper) = tokio::io::duplex(1024);
         let session = tokio::spawn(run_packets(guest, device));
         let (plane, mut dead) = MeshPlane::new();
-        let (dispatch, mut packets) = tokio::sync::mpsc::unbounded_channel();
+        let (dispatch, mut packets) = tokio::sync::mpsc::channel(256);
         let stats = crate::stats::StreamStats::new(crate::stats::KIND_RELAY);
         plane.register(
             "guest",
@@ -180,6 +180,8 @@ mod session_tests {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunConfig {
+    #[serde(default)]
+    pub allow_lan: bool,
     pub name: String,
     pub ip: String,
     pub netmask: String,
@@ -377,9 +379,8 @@ pub struct MeshPlane {
     /// uuid → 路由表 (网络地址, 前缀)，含访客虚拟 IP(/32) 与暴露的局域网子网
     routes: std::sync::RwLock<std::collections::HashMap<String, Vec<(u32, u8)>>>,
     /// uuid → 对端写通道
-    writers: std::sync::RwLock<
-        std::collections::HashMap<String, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
-    >,
+    writers:
+        std::sync::RwLock<std::collections::HashMap<String, tokio::sync::mpsc::Sender<Vec<u8>>>>,
     /// uuid → 关闭通知（unregister 时唤醒 reader 退出）
     closes: std::sync::RwLock<
         std::collections::HashMap<String, Arc<tokio_util::sync::CancellationToken>>,
@@ -412,11 +413,11 @@ impl MeshPlane {
         uuid: &str,
         routes: Vec<(u32, u8)>,
         transport: Box<dyn crate::p2p::relay::AsyncReadWrite>,
-        dispatch_tx: tokio::sync::mpsc::UnboundedSender<(String, Vec<u8>)>,
+        dispatch_tx: tokio::sync::mpsc::Sender<(String, Vec<u8>)>,
         stats: Option<Arc<crate::stats::StreamStats>>,
     ) {
         self.unregister(uuid); // 清理旧链路（如中继 → 直连切换）
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
         let close = Arc::new(tokio_util::sync::CancellationToken::new());
         let (mut rd, mut wr) = tokio::io::split(transport);
         self.routes
@@ -459,10 +460,10 @@ impl MeshPlane {
                                 acc.extend_from_slice(&rbuf[..n]);
                                 loop {
                                     match crate::tunnel::take_frame(&mut acc) {
-                                        Ok(Some(f)) if f.is_empty() => { let _ = dt.send((uuid_r.clone(), Vec::new())); }
+                                        Ok(Some(f)) if f.is_empty() => { let _ = dt.try_send((uuid_r.clone(), Vec::new())); }
                                         // 心跳：FRPING → 原路回 FRPONG；FRPONG → 记录 RTT
                                         Ok(Some(f)) if f == b"FRPING" => {
-                                            let _ = tx_pong.send(b"FRPONG".to_vec());
+                                            let _ = tx_pong.try_send(b"FRPONG".to_vec());
                                         }
                                         Ok(Some(f)) if f == b"FRPONG" => {
                                             if let Some(st) = &st_r {
@@ -472,7 +473,7 @@ impl MeshPlane {
                                                 }
                                             }
                                         }
-                                        Ok(Some(f)) => { let _ = dt.send((uuid_r.clone(), f)); }
+                                        Ok(Some(f)) => { let _ = dt.try_send((uuid_r.clone(), f)); }
                                         Ok(None) => break,
                                         Err(_) => break 'reader,
                                     }
@@ -543,8 +544,21 @@ impl MeshPlane {
         }
     }
 
+    fn source_allowed(&self, uuid: &str, pkt: &[u8]) -> bool {
+        if pkt.len() < 20 || pkt[0] >> 4 != 4 {
+            return false;
+        }
+        let source = u32::from_be_bytes(pkt[12..16].try_into().unwrap());
+        self.routes.read().unwrap().get(uuid).is_some_and(|routes| {
+            routes.iter().any(|(net, prefix)| {
+                *prefix <= 32
+                    && source & (u32::MAX.checked_shl(32 - *prefix as u32).unwrap_or(0))
+                        == *net & (u32::MAX.checked_shl(32 - *prefix as u32).unwrap_or(0))
+            })
+        })
+    }
     /// 为 IP 包选择目标链路（最长前缀匹配；无匹配返回 None）。
-    fn route_for(&self, pkt: &[u8]) -> Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>> {
+    fn route_for(&self, pkt: &[u8]) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
         if pkt.len() < 20 || (pkt[0] >> 4) != 4 {
             return None; // 仅支持 IPv4（虚拟网段为 IPv4）
         }
@@ -578,7 +592,7 @@ impl MeshPlane {
 pub async fn run_mesh_plane(
     mut dev: crate::helper::Device,
     plane: Arc<MeshPlane>,
-    mut dispatch_rx: tokio::sync::mpsc::UnboundedReceiver<(String, Vec<u8>)>,
+    mut dispatch_rx: tokio::sync::mpsc::Receiver<(String, Vec<u8>)>,
 ) -> Result<()> {
     let mut pkt = [0u8; 65536];
     loop {
@@ -589,7 +603,7 @@ pub async fn run_mesh_plane(
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         if let Some(tx) = plane.route_for(&pkt[..n]) {
-                            let _ = tx.send(pkt[..n].to_vec());
+                            let _ = tx.try_send(pkt[..n].to_vec());
                         }
                     }
                 }
@@ -597,10 +611,11 @@ pub async fn run_mesh_plane(
             msg = dispatch_rx.recv() => {
                 match msg {
                     Some((_, f)) if f.is_empty() => { /* 对端结束会话，等 reader 报死亡 */ }
-                    Some((_, f)) => {
+                    Some((uuid, f)) => {
+                        if !plane.source_allowed(&uuid,&f) { continue; }
                         // 目标为其他对端 → 直转；否则交给本机网络栈
                         if let Some(tx) = plane.route_for(&f) {
-                            let _ = tx.send(f);
+                            let _ = tx.try_send(f);
                         } else {
                             if dev.write_all(&f).await.is_err() { break; }
                         }
@@ -881,19 +896,19 @@ mod tests {
             .write()
             .unwrap()
             .insert("B".into(), vec![(u32::from_be_bytes([10, 66, 0, 0]), 24)]);
-        let (tx_a, _rx_a) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (tx_a, _rx_a) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
         plane.writers.write().unwrap().insert("A".into(), tx_a);
         plane.writers.write().unwrap().insert("B".into(), tx_b);
 
         // 精确命中 /32（最长前缀优先 → A）
         let r = plane.route_for(&pkt([10, 66, 0, 5]));
         assert!(r.is_some());
-        let _ = r.unwrap().send(pkt([1, 2, 3, 4]));
+        let _ = r.unwrap().try_send(pkt([1, 2, 3, 4]));
         // 走 /24 → B
         let r = plane.route_for(&pkt([10, 66, 0, 9]));
         assert!(r.is_some());
-        let _ = r.unwrap().send(pkt([5, 6, 7, 8]));
+        let _ = r.unwrap().try_send(pkt([5, 6, 7, 8]));
         // 网段外 → 无路由
         assert!(plane.route_for(&pkt([10, 66, 1, 1])).is_none());
         // 非 IPv4 / 太短 → 无路由

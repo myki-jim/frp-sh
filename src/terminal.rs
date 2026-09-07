@@ -157,6 +157,7 @@ pub fn monitor(session: bool) -> Monitor {
                     continue;
                 }
                 match key.code {
+                    KeyCode::Char('r' | 'R') => crate::services::request_revoke(),
                     KeyCode::Char('g' | 'G') => {
                         logs = true;
                         logview.refresh();
@@ -207,6 +208,11 @@ pub fn monitor(session: bool) -> Monitor {
                             .into(),
                         };
                     }
+                    KeyCode::Char('c' | 'C') => {
+                        if let Err(e) = crate::services::copy_addresses() {
+                            log::debug!("copy unavailable: {e}");
+                        }
+                    }
                     KeyCode::Char('l' | 'L') => crate::i18n::choose(if crate::i18n::chinese() {
                         "en"
                     } else {
@@ -221,6 +227,10 @@ pub fn monitor(session: bool) -> Monitor {
         }
         if invite {
             return crate::app::invite_frame(w, h, selection, &notice);
+        }
+        if let Some(frame) = crate::services::frame(w, h, page) {
+            page %= frame.pages;
+            return frame;
         }
         let frame = crate::dashboard::render(
             w,

@@ -52,6 +52,7 @@ struct Form {
     focus: usize,
     original: Option<String>,
     settings: bool,
+    launch: Option<String>,
 }
 struct State {
     cfg: Config,
@@ -169,8 +170,8 @@ pub fn invite_frame(w: u16, h: u16, selected: usize, notice: &str) -> Frame {
     }
     lines.push((
         tr(
-            "Contains server access credentials and the room key.",
-            "邀请包含服务器访问凭据和房间密钥。",
+            "Contains room access credentials. Valid until revoked or expired.",
+            "邀请包含房间访问凭据，到期或撤销后失效。",
         )
         .into(),
         3,
@@ -292,6 +293,35 @@ impl State {
             focus: 0,
             original: profile.map(|p| p.name),
             settings,
+            launch: None,
+        });
+    }
+    fn service_form(&mut self, kind: &str) {
+        self.form = Some(Form {
+            fields: vec![
+                Field {
+                    label: tr("Service name", "服务名称"),
+                    value: String::new(),
+                    secret: false,
+                },
+                Field {
+                    label: tr(
+                        "TCP ports / origins (space separated)",
+                        "TCP 端口或 URL（空格分隔）",
+                    ),
+                    value: String::new(),
+                    secret: false,
+                },
+                Field {
+                    label: tr("UDP ports (space separated)", "UDP 端口（空格分隔）"),
+                    value: String::new(),
+                    secret: false,
+                },
+            ],
+            focus: 1,
+            original: None,
+            settings: false,
+            launch: Some(kind.into()),
         });
     }
     fn save_form(&mut self) -> anyhow::Result<()> {
@@ -410,6 +440,35 @@ impl State {
                 return Ok(None);
             }
             if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if let Some(kind) = self.form.as_ref().and_then(|f| f.launch.clone()) {
+                    let f = self.form.as_ref().unwrap();
+                    let tcp: Vec<_> = f.fields[1]
+                        .value
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect();
+                    let udp: Vec<_> = f.fields[2]
+                        .value
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect();
+                    crate::services::published(&tcp, &udp, None)?;
+                    let mut args = vec![kind.clone(), "create".into()];
+                    if kind == "game" {
+                        args.extend(["--kind".into(), "server".into()]);
+                    }
+                    if !f.fields[0].value.trim().is_empty() {
+                        args.extend(["--label".into(), f.fields[0].value.trim().into()]);
+                    }
+                    for port in tcp {
+                        args.extend(["--tcp".into(), port]);
+                    }
+                    for port in udp {
+                        args.extend(["--udp".into(), port]);
+                    }
+                    self.form = None;
+                    return Ok(Some(Action::Session(args)));
+                }
                 self.save_form()?;
                 return Ok(None);
             }
@@ -491,11 +550,16 @@ impl State {
                                 .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
                         "Enter a room ID or invitation link"
                     );
-                    return Ok(Some(Action::Session(vec![
-                        "lan".into(),
-                        "join".into(),
-                        input.into(),
-                    ])));
+                    return Ok(Some(Action::Session(
+                        vec!["join".into(), input.into()]
+                            .into_iter()
+                            .chain(
+                                key.modifiers
+                                    .contains(KeyModifiers::CONTROL)
+                                    .then(|| "--network".into()),
+                            )
+                            .collect(),
+                    )));
                 }
                 KeyCode::Backspace => {
                     self.join.pop();
@@ -553,7 +617,11 @@ impl State {
                 self.selected = (self.selected + 1).min(if self.page == Page::Profiles {
                     self.cfg.profiles.len().saturating_sub(1)
                 } else {
-                    3
+                    if self.page == Page::Home {
+                        5
+                    } else {
+                        3
+                    }
                 })
             }
             KeyCode::Char('n' | 'N') if self.page == Page::Profiles => self.open_form(None, false),
@@ -574,9 +642,11 @@ impl State {
             }
             KeyCode::Enter => match self.page {
                 Page::Home => match self.selected {
-                    0 => return Ok(Some(Action::Session(vec!["lan".into(), "create".into()]))),
-                    1 => self.page = Page::Join,
-                    2 => {
+                    0 => return Ok(Some(Action::Session(vec!["game".into(), "create".into()]))),
+                    1 => self.service_form("game"),
+                    2 => self.service_form("dev"),
+                    3 => self.page = Page::Join,
+                    4 => {
                         self.page = Page::Profiles;
                         self.selected = 0;
                     }
@@ -657,7 +727,15 @@ impl State {
                     ));
                     lines.push((String::new(), 0));
                     for (i, label) in [
-                        tr("Create a room", "创建房间"),
+                        tr("Game / LAN multiplayer", "游戏 / 局域网联机"),
+                        tr(
+                            "Game server · explicit TCP / UDP services",
+                            "游戏服务器 · 指定 TCP / UDP 服务",
+                        ),
+                        tr(
+                            "Dev · share Web, API or SSH",
+                            "开发协作 · 共享 Web、API 或 SSH",
+                        ),
                         tr("Join with a link or room ID", "使用链接或房间号加入"),
                         tr("Saved connections", "管理连接配置"),
                         tr("Device & server settings", "设备与服务器设置"),
@@ -739,15 +817,15 @@ impl State {
                     lines.push((String::new(), 0));
                     lines.push((
                         tr(
-                            "An invitation saves the connection and joins automatically.",
-                            "邀请会保存连接配置并自动加入。",
+                            "Invitations save a profile. Ctrl+Enter explicitly permits device networking.",
+                            "邀请会保存配置。Ctrl+Enter 明确允许整机网络访问。",
                         )
                         .into(),
                         2,
                     ));
                     hint = tr(
-                        "Enter Join   Ctrl+U Clear   Tab Pages   Esc Home",
-                        "Enter 加入   Ctrl+U 清空   Tab 切页   Esc 首页",
+                        "Enter Services   Ctrl+Enter Allow device network   Tab Pages",
+                        "Enter 加入服务   Ctrl+Enter 允许设备组网   Tab 切页",
                     );
                 }
                 Page::Settings => {
@@ -965,7 +1043,7 @@ mod navigation_tests {
         s.event(key(KeyCode::Char('3'))).unwrap();
         s.event(Event::Paste("1234".into())).unwrap();
         assert!(
-            matches!(s.event(key(KeyCode::Enter)).unwrap(),Some(Action::Session(args)) if args==["lan","join","1234"])
+            matches!(s.event(key(KeyCode::Enter)).unwrap(),Some(Action::Session(args)) if args==["join","1234"])
         );
         s.event(key(KeyCode::Esc)).unwrap();
         assert!(s.page == Page::Home);

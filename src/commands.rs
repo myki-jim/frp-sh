@@ -187,6 +187,7 @@ fn spin(msg: impl Into<String>) -> indicatif::ProgressBar {
 /// LAN operations need the installed helper; the CLI stays unprivileged.
 pub fn needs_network_helper(command: &Option<crate::cli::Commands>) -> bool {
     matches!(command, Some(crate::cli::Commands::Lan { .. }))
+        || matches!(command, Some(crate::cli::Commands::Game { cmd: crate::cli::GameCmd::Create(args) }) if args.network())
 }
 
 /// 会话角色（用于单实例锁）：同一角色同机只允许一个实例。
@@ -213,6 +214,7 @@ pub fn session_role(command: &Option<crate::cli::Commands>) -> Option<&'static s
         Some(Commands::Lan {
             cmd: LanCmd::Join(_),
         }) => Some("guest"),
+        Some(Commands::Join { .. }) => Some("guest"),
         Some(Commands::Profile {
             cmd: Some(crate::cli::ProfileCmd::Run { .. }),
         }) => Some("guest"),
@@ -300,6 +302,7 @@ async fn run_data_plane(
             ForwardMode::Guest { .. } => "frp1",
         };
         let dev = crate::p2p::tun::create(&crate::p2p::tun::TunConfig {
+            allow_lan: false,
             name: dev_name.into(),
             ip: o.ip.clone(),
             netmask: o.netmask.clone(),
@@ -729,8 +732,13 @@ async fn run_profile_session(p: &crate::config::Profile, base: &Config) -> anyho
             )
             .await
         }
-        "dev" | "game" => {
-            let listen = p.listen.clone().unwrap_or_else(|| "127.0.0.1:25565".into());
+        "dev" => crate::services::join(cfg, room, p.listen.clone(), None, p.key.clone()).await,
+        "game" => {
+            let listen = p.listen.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "legacy game profile needs a listen port; choose lan for virtual networking"
+                )
+            })?;
             run_join(
                 cfg,
                 room,
@@ -769,6 +777,11 @@ pub async fn run_serve(
     let udp = UdpSocket::bind(udp_addr.as_deref().unwrap_or(&http_addr)).await?;
     let relay_listener = TcpListener::bind(&relay_addr).await?;
     let relay_sock: SocketAddr = relay_listener.local_addr()?;
+    anyhow::ensure!(
+        password.as_deref().is_some_and(|p| !p.trim().is_empty())
+            || (http_sock.ip().is_loopback() && relay_sock.ip().is_loopback()),
+        "public signaling and relay listeners require a nonempty --password"
+    );
 
     crate::ui_println!("{}", step("frp-sh signaling server"));
     let mut server_rows: Vec<(&str, String)> = vec![
@@ -1260,7 +1273,7 @@ async fn turn_data_plane(
 /// - `expose_lan`：是否把本机局域网接入隧道（lan 系列 `--expose-lan`；默认不暴露）
 #[allow(clippy::too_many_arguments)]
 pub async fn run_create(
-    cfg: Config,
+    mut cfg: Config,
     prefix: String,
     ttl: u64,
     service: String,
@@ -1272,6 +1285,11 @@ pub async fn run_create(
     guest_ips: Vec<String>,
     expose_lan: bool,
 ) -> anyhow::Result<String> {
+    let service = if tun.is_none() {
+        crate::access::local_endpoint(&service)?.to_string()
+    } else {
+        service
+    };
     let _screen = crate::terminal::monitor(true);
     let signaling =
         SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
@@ -1306,6 +1324,9 @@ pub async fn run_create(
         )
         .await?;
     let room_id = resp.room_id.clone();
+    let room_token = signaling.secure_room(&room_id).await?;
+    cfg.password = Some(room_token.clone());
+    let key = key.or(Some(room_token));
     let _invitation = crate::invite::activate(&cfg, &room_id, key.as_deref(), tun.is_some());
     let _roster = crate::stats::watch_room(signaling.clone(), room_id.clone(), expose_lan);
     cfg.room_tokens
@@ -1416,6 +1437,9 @@ pub async fn host_session(
     let service_addr: SocketAddr = service
         .parse()
         .map_err(|e| FrpError::Config(format!("bad service addr {service}: {e}")))?;
+    if tun.is_none() {
+        crate::access::validate_local_endpoint(service_addr)?;
+    }
     let mut state = RoomState::new(room_id.to_string(), Role::Host, service_addr);
     let key_bytes = derive_key(key.as_deref());
     let mut attempt: u64 = 0;
@@ -1759,7 +1783,7 @@ async fn host_punch_phase(
 /// `requested_ip`：访客显式指定的虚拟 IP（`--ip`）；无则 None（由 UUID 派生或服务器分配）。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_join(
-    cfg: Config,
+    mut cfg: Config,
     room_id: String,
     listen: String,
     force_relay: bool,
@@ -1770,6 +1794,30 @@ pub async fn run_join(
     requested_ip: Option<String>,
     expose_lan: bool,
 ) -> anyhow::Result<()> {
+    let api = SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
+    let info = api.get_room(&room_id).await?;
+    if !info.services.is_empty() {
+        return crate::services::join(
+            cfg,
+            room_id,
+            (!listen.is_empty() && listen != "127.0.0.1:1" && tun.is_none()).then_some(listen),
+            None,
+            key,
+        )
+        .await;
+    }
+    let key = if let Some(token) = info.access_token {
+        crate::debuglog::protect(&token);
+        cfg.password = Some(token.clone());
+        key.or(Some(token))
+    } else {
+        key
+    };
+    let listen = if tun.is_none() {
+        crate::access::local_endpoint(&listen)?.to_string()
+    } else {
+        listen
+    };
     let _screen = crate::terminal::monitor(true);
     let signaling =
         SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
@@ -1841,6 +1889,9 @@ pub async fn guest_session(
     let listen_addr: SocketAddr = listen
         .parse()
         .map_err(|e| FrpError::Config(format!("bad listen addr {listen}: {e}")))?;
+    if tun.is_none() {
+        crate::access::validate_local_endpoint(listen_addr)?;
+    }
     let key_bytes = derive_key(key.as_deref());
     let mut state = RoomState::new(room_id.to_string(), Role::Guest, listen_addr);
     let _invitation = crate::invite::activate(cfg, room_id, key.as_deref(), tun.is_some());
@@ -1908,6 +1959,7 @@ pub async fn guest_session(
                 continue;
             }
         };
+        crate::access::require_room_mode(tun.is_some(), info.tun_ip.is_some())?;
         let host_addr = info.host_addr;
         let host_tun_ip = info.tun_ip.clone();
         // 房主打洞候选：公网地址 + 局域网地址（同局域网直连）
@@ -1922,6 +1974,9 @@ pub async fn guest_session(
                 .host_subnets
                 .iter()
                 .filter(|c| {
+                    if !expose_lan {
+                        return false;
+                    }
                     let overlap = local.iter().any(|l| utils::cidrs_overlap(c, l));
                     if overlap {
                         skipped.push(c.to_string());
@@ -2454,7 +2509,9 @@ fn mesh_routes_for(info: &crate::signaling::GuestInfo) -> Vec<(u32, u8)> {
     }
     for cidr in &info.subnets {
         if let Some((net, pfx)) = utils::parse_cidr(cidr) {
-            routes.push((net, pfx));
+            if pfx >= 16 && std::net::Ipv4Addr::from(net).is_private() {
+                routes.push((net, pfx));
+            }
         }
     }
     routes
@@ -2500,10 +2557,11 @@ pub async fn host_mesh_session(
 
     // 网格数据平面：TUN 一次创建，重连只重建对端链路（测试可传 None 跳过 TUN）
     let (plane, mut dead_rx) = crate::p2p::tun::MeshPlane::new();
-    let (dispatch_tx, dispatch_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (dispatch_tx, dispatch_rx) = tokio::sync::mpsc::channel(256);
     let mut real_name = "frp0".to_string();
     if let Some(t) = &tun {
         let dev = crate::p2p::tun::create(&crate::p2p::tun::TunConfig {
+            allow_lan: expose_lan,
             name: "frp0".into(),
             ip: t.ip.clone(),
             netmask: t.netmask.clone(),
@@ -2642,7 +2700,7 @@ async fn mesh_host_loop(
     mesh: &crate::p2p::stream::UdpMesh,
     mut punch_rx: tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>,
     plane: &Arc<crate::p2p::tun::MeshPlane>,
-    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<(String, Vec<u8>)>,
+    dispatch_tx: &tokio::sync::mpsc::Sender<(String, Vec<u8>)>,
     dead_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::p2p::tun::LinkDeath>,
     room_id: &str,
     token: &str,
@@ -2703,7 +2761,22 @@ async fn mesh_host_loop(
         // 1) 轮询房间，同步访客列表（新访客进入打洞；地址变化在下轮打洞生效）
         if now.duration_since(last_poll) >= MESH_POLL {
             last_poll = now;
-            if let Ok(info) = signaling.get_room(room_id).await {
+            let snapshot = signaling.get_room(room_id).await;
+            if matches!(
+                &snapshot,
+                Err(FrpError::Authentication(_) | FrpError::RoomNotFound(_))
+            ) {
+                for uuid in established.keys() {
+                    plane.unregister(uuid);
+                }
+                return Err(snapshot.unwrap_err().into());
+            }
+            if let Ok(mut info) = snapshot {
+                if !expose_lan {
+                    for g in &mut info.guests {
+                        g.subnets.clear();
+                    }
+                }
                 for g in &info.guests {
                     if last_guests
                         .get(&g.uuid)
@@ -3197,7 +3270,7 @@ fn guest_connection_changed(
 async fn mesh_establish_link(
     mesh: &crate::p2p::stream::UdpMesh,
     plane: &Arc<crate::p2p::tun::MeshPlane>,
-    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<(String, Vec<u8>)>,
+    dispatch_tx: &tokio::sync::mpsc::Sender<(String, Vec<u8>)>,
     uuid: &str,
     peer: SocketAddr,
     key_bytes: Option<[u8; 32]>,

@@ -38,6 +38,9 @@ pub struct AppState {
 #[derive(Debug)]
 pub struct Room {
     pub owner_token: String,
+    pub access_token: Option<String>,
+    pub services: Vec<crate::services::ServiceInfo>,
+    pub cancelled: tokio_util::sync::CancellationToken,
     pub room_id: String,
     pub host_addr: SocketAddr,
     pub guest_addr: Option<SocketAddr>,
@@ -106,6 +109,8 @@ pub async fn run_http(
         .route("/room/create", post(create_room))
         .route("/room/{id}/join", post(join_room))
         .route("/room/{id}/refresh", post(refresh_room))
+        .route("/room/{id}/secure", post(secure_room))
+        .route("/room/{id}/services", post(set_services))
         .route("/room/{id}", get(get_room).delete(delete_room))
         .with_state(app_state.clone())
         .layer(axum::middleware::from_fn_with_state(
@@ -127,19 +132,31 @@ async fn auth_middleware(
     if path == "/version" || path == "/health" {
         return Ok(next.run(req).await);
     }
-    let required = state.password.as_ref();
-    if let Some(pw) = required {
-        // Authentication is header-only; URLs must not carry credentials.
-        let token = req
-            .headers()
-            .get(AUTH_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        match token {
-            Some(t) if constant_time_eq(&t, pw) => {}
-            _ => return Err((StatusCode::UNAUTHORIZED, "unauthorized".into())),
-        }
+    let token = req
+        .headers()
+        .get(AUTH_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let admin = state
+        .password
+        .as_deref()
+        .is_some_and(|pw| constant_time_eq(token, pw));
+    let room_id = path
+        .strip_prefix("/room/")
+        .and_then(|p| p.split('/').next());
+    let rooms = state.rooms.lock().await;
+    let room = room_id.and_then(|id| rooms.get(id));
+    let member = room.is_some_and(|r| {
+        !r.expired()
+            && r.access_token
+                .as_deref()
+                .is_some_and(|t| constant_time_eq(token, t))
+    });
+    let protected = room.is_some_and(|r| r.access_token.is_some());
+    if !(admin || member || (state.password.is_none() && !protected && !token.starts_with("r3_"))) {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".into()));
     }
+    drop(rooms);
     Ok(next.run(req).await)
 }
 
@@ -189,11 +206,25 @@ async fn create_room(
             "room capacity exhausted".into(),
         ));
     }
+    if req.host_lan.len() > 16
+        || req.host_subnets.len() > 16
+        || req.guest_ips.len() > 32
+        || req.prefix.len() > 24
+        || !req
+            .prefix
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid room metadata".into()));
+    }
     let owner_token = utils::random_hex(32);
     map.insert(
         room_id.clone(),
         Room {
             owner_token: owner_token.clone(),
+            access_token: None,
+            services: Vec::new(),
+            cancelled: tokio_util::sync::CancellationToken::new(),
             room_id: room_id.clone(),
             host_addr: req.addr,
             guest_addr: None,
@@ -235,6 +266,45 @@ async fn join_room(
     if room.expired() {
         map.remove(&room_id);
         return Err(not_found(&room_id));
+    }
+    if req.addr_lan.len() > 16
+        || req.guest_subnets.len() > 16
+        || req
+            .visitor_id
+            .as_ref()
+            .is_some_and(|s| s.len() > 128 || s.chars().any(char::is_whitespace))
+        || req
+            .name
+            .as_ref()
+            .is_some_and(|s| s.len() > 80 || s.chars().any(char::is_control))
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid member metadata".into()));
+    }
+    if room.guests.len() >= 32
+        && !req
+            .visitor_id
+            .as_ref()
+            .is_some_and(|id| room.guests.contains_key(id))
+    {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "room member limit reached".into(),
+        ));
+    }
+    if let Some(ip) = &req.requested_ip {
+        if !ip
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_private())
+            || room.tun_ip.as_ref() == Some(ip)
+            || room.guests.iter().any(|(id, g)| {
+                Some(id) != req.visitor_id.as_ref() && g.vnet_ip.as_ref() == Some(ip)
+            })
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                "virtual address is invalid or already assigned".into(),
+            ));
+        }
     }
     // 虚拟 IP 分配：访客显式指定 > UUID 复用 > 按序取池中未分配的
     let assigned_ip = if room.guest_ips.is_empty() {
@@ -336,6 +406,8 @@ async fn get_room(
         return Err(not_found(&room_id));
     }
     Ok(Json(RoomInfo {
+        access_token: room.access_token.clone(),
+        services: room.services.clone(),
         room_id: room.room_id.clone(),
         host_addr: room.host_addr,
         guest_addr: room.guest_addr,
@@ -351,7 +423,11 @@ async fn get_room(
         guests: room.guests.values().cloned().collect(),
         host_version: room.host_version.clone(),
         host_name: room.host_name.clone(),
-        server_turn: state.turn_public,
+        server_turn: if room.access_token.is_some() {
+            None
+        } else {
+            state.turn_public
+        },
     }))
 }
 
@@ -396,8 +472,48 @@ async fn delete_room(
         Some(r) if !owns(&headers, r) => return StatusCode::FORBIDDEN,
         _ => {}
     }
-    map.remove(&room_id);
+    if let Some(room) = map.remove(&room_id) {
+        room.cancelled.cancel();
+    }
     StatusCode::NO_CONTENT
+}
+
+async fn secure_room(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mut rooms = state.rooms.lock().await;
+    let room = rooms.get_mut(&id).ok_or_else(|| not_found(&id))?;
+    if !owns(&headers, room) {
+        return Err((StatusCode::FORBIDDEN, "room owner required".into()));
+    }
+    room.cancelled.cancel();
+    room.cancelled = tokio_util::sync::CancellationToken::new();
+    room.guests.clear();
+    room.relay_hosts.clear();
+    room.relay_guests.clear();
+    room.relay_host = None;
+    room.relay_guest = None;
+    let token = format!("r3_{}", utils::random_hex(32));
+    room.access_token = Some(token.clone());
+    Ok(Json(serde_json::json!({"token":token})))
+}
+async fn set_services(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(services): Json<Vec<crate::services::ServiceInfo>>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    crate::services::validate_catalog(&services)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid service catalog".into()))?;
+    let mut rooms = state.rooms.lock().await;
+    let room = rooms.get_mut(&id).ok_or_else(|| not_found(&id))?;
+    if !owns(&headers, room) || room.access_token.is_none() || room.tun_ip.is_some() {
+        return Err((StatusCode::FORBIDDEN, "service room owner required".into()));
+    }
+    room.services = services;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn not_found(room_id: &str) -> (StatusCode, String) {
@@ -434,9 +550,16 @@ fn fmt_ip(addr: SocketAddr) -> String {
 // ---------- TCP 中继 ----------
 
 /// 等待配对的最长时间
-const RELAY_PAIR_TIMEOUT: Duration = Duration::from_secs(600);
+const RELAY_PAIR_TIMEOUT: Duration = Duration::from_secs(15);
 
+struct PendingSignal(tokio_util::sync::CancellationToken);
+impl Drop for PendingSignal {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
 pub struct PendingRelay {
+    done: PendingSignal,
     id: String,
     stream: crate::p2p::relay::RelayStream,
 }
@@ -472,7 +595,48 @@ async fn handle_relay_conn(
     password: Option<String>,
 ) -> anyhow::Result<()> {
     tcp.set_nodelay(true)?;
-    let tcp = crate::p2p::relay::enable_keepalive(tcp)?;
+    let mut tcp = crate::p2p::relay::enable_keepalive(tcp)?;
+    let mut prefix = [0; 3];
+    let n = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let n = tcp.peek(&mut prefix).await?;
+            if n == 0 || n >= 3 {
+                return Ok::<_, std::io::Error>(n);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    let mut selected_room = None;
+    let password = if n == 3 && &prefix == b"R3 " {
+        let mut line = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let b = tcp.read_u8().await?;
+                if b == b'\n' {
+                    break;
+                }
+                anyhow::ensure!(line.len() < 140, "room preface too long");
+                line.push(b);
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        let id = String::from_utf8(line)?[3..].trim().to_string();
+        let rooms = state.lock().await;
+        let room = rooms
+            .get(&id)
+            .filter(|r| !r.expired())
+            .ok_or_else(|| anyhow::anyhow!("room unavailable"))?;
+        let token = room
+            .access_token
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("room authorization unavailable"))?;
+        selected_room = Some(id);
+        Some(token)
+    } else {
+        password
+    };
     let mut stream: crate::p2p::relay::RelayStream = match password {
         Some(p) => Box::new(crate::p2p::enc::EncStream::new(
             tcp,
@@ -509,12 +673,17 @@ async fn handle_relay_conn(
     let room = map
         .get_mut(&room_id)
         .ok_or_else(|| anyhow::anyhow!("room not found"))?;
+    if room.access_token.is_some() && selected_room.as_deref() != Some(room_id.as_str()) {
+        anyhow::bail!("room authorization required");
+    }
     if room.expired() || (role == "HOST" && !constant_time_eq(&owner, &room.owner_token)) {
         drop(map);
         stream.write_all(b"ERROR AUTH\r\n").await?;
         stream.flush().await?;
         return Ok(());
     }
+    let cancelled = room.cancelled.clone();
+    let expires = room.expires_at;
     let other = if uuid == "-" {
         if role == "HOST" {
             room.relay_guest.take()
@@ -527,11 +696,16 @@ async fn handle_relay_conn(
         room.relay_hosts.remove(&uuid)
     };
     if let Some(other) = other {
+        other.done.0.cancel();
         drop(map);
         stream.write_all(b"OK\r\n").await?;
         stream.flush().await?;
         let mut other = other.stream;
-        let _ = tokio::io::copy_bidirectional(&mut stream, &mut other).await;
+        tokio::select! {
+            _ = tokio::io::copy_bidirectional(&mut stream, &mut other) => {},
+            _ = cancelled.cancelled() => {},
+            _ = tokio::time::sleep(Duration::from_secs(expires.saturating_sub(utils::now_unix()))) => {},
+        }
         return Ok(());
     }
     if room.relay_hosts.len() + room.relay_guests.len() >= 128 {
@@ -541,7 +715,9 @@ async fn handle_relay_conn(
     stream.write_all(b"WAIT\r\n").await?;
     stream.flush().await?;
     let id = utils::random_hex(16);
+    let paired = tokio_util::sync::CancellationToken::new();
     let pending = PendingRelay {
+        done: PendingSignal(paired.clone()),
         id: id.clone(),
         stream,
     };
@@ -549,6 +725,10 @@ async fn handle_relay_conn(
     let room = map
         .get_mut(&room_id)
         .ok_or_else(|| anyhow::anyhow!("room removed"))?;
+    anyhow::ensure!(
+        !cancelled.is_cancelled() && !room.expired(),
+        "room authorization expired"
+    );
     // Recheck the peer after I/O outside the room lock.
     let other = if uuid == "-" {
         if role == "HOST" {
@@ -562,10 +742,15 @@ async fn handle_relay_conn(
         room.relay_hosts.remove(&uuid)
     };
     if let Some(other) = other {
+        other.done.0.cancel();
         drop(map);
         let mut a = pending.stream;
         let mut b = other.stream;
-        let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
+        tokio::select! {
+            _ = tokio::io::copy_bidirectional(&mut a, &mut b) => {},
+            _ = cancelled.cancelled() => {},
+            _ = tokio::time::sleep(Duration::from_secs(expires.saturating_sub(utils::now_unix()))) => {},
+        }
         return Ok(());
     }
     if uuid == "-" {
@@ -580,7 +765,7 @@ async fn handle_relay_conn(
         room.relay_guests.insert(uuid.clone(), pending);
     }
     drop(map);
-    tokio::time::sleep(RELAY_PAIR_TIMEOUT).await;
+    tokio::select! {_=tokio::time::sleep(RELAY_PAIR_TIMEOUT)=>{},_=paired.cancelled()=>return Ok(()),_=cancelled.cancelled()=>return Ok(())}
     let mut map = state.lock().await;
     if let Some(room) = map.get_mut(&room_id) {
         if uuid == "-" {

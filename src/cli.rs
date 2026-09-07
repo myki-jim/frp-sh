@@ -62,6 +62,16 @@ pub struct Cli {
 pub enum Commands {
     /// Open the keyboard-operated terminal app
     App,
+    /// Join according to the room capabilities; --network explicitly permits device access
+    Join {
+        room_id: String,
+        #[arg(long)]
+        network: bool,
+        #[arg(long)]
+        listen: Option<String>,
+        #[arg(long)]
+        service: Option<u16>,
+    },
     /// Install a saved invitation and join its room
     Connect {
         invitation: String,
@@ -95,7 +105,7 @@ pub enum Commands {
         /// cloud firewall can't open TCP+UDP on the same port)
         #[arg(long)]
         udp_addr: Option<String>,
-        /// Server password (optional): clients must configure the same password;
+        /// Server password (required for public listeners): clients configure the same password;
         /// enables request authentication and relay traffic encryption
         #[arg(long)]
         password: Option<String>,
@@ -115,7 +125,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<ProfileCmd>,
     },
-    /// game multiplayer: application-layer port forwarding (e.g. Minecraft), pure forwarding without meshing
+    /// Game multiplayer: virtual LAN by default; --service shares a single TCP server
     Game {
         #[command(subcommand)]
         cmd: GameCmd,
@@ -150,14 +160,25 @@ pub enum LogCmd {
 /// Common parameters for port-forwarding modes (shared by game / dev).
 #[derive(clap::Args, Debug)]
 pub struct ForwardCreateArgs {
+    /// Game room kind; LAN needs no game port
+    #[arg(long, value_parser=["lan", "server"])]
+    pub kind: Option<String>,
+    /// Publish additional local TCP ports (repeatable)
+    #[arg(long)]
+    pub tcp: Vec<String>,
+    /// Publish local UDP ports (repeatable)
+    #[arg(long)]
+    pub udp: Vec<String>,
+    #[arg(long)]
+    pub label: Option<String>,
     /// Room prefix (optional; default: none — plain 4-digit code like 4832)
     #[arg(short, long)]
     pub prefix: Option<String>,
     /// Room lifetime in seconds (default 12 hours)
     #[arg(short, long, default_value_t = 12 * 3600)]
     pub ttl: u64,
-    /// Local service address (traffic is forwarded to it once the tunnel is up)
-    #[arg(long, default_value = "127.0.0.1:25565")]
+    /// Explicit local loopback TCP service or port (e.g. 3000); game defaults to LAN when omitted
+    #[arg(long, default_value = "")]
     pub service: String,
     /// Skip hole punching and use the relay directly
     #[arg(long)]
@@ -175,13 +196,15 @@ pub struct ForwardCreateArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct ForwardJoinArgs {
+    #[arg(long)]
+    pub service: Option<u16>,
     /// Room ID, e.g. game-a3f9c2
     pub room_id: String,
     /// Force relay mode
     #[arg(short, long)]
     pub relay: bool,
-    /// Local listen address (players/programs connect to this port)
-    #[arg(long, default_value = "127.0.0.1:25565")]
+    /// Local loopback TCP listen address or port; game defaults to LAN when omitted
+    #[arg(long, default_value = "")]
     pub listen: String,
     /// Shared passphrase: must match the host to enable end-to-end encryption
     #[arg(long)]
@@ -204,6 +227,21 @@ pub enum GameCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum DevCmd {
+    /// Add local services to the active hosted room
+    Add {
+        #[arg(long)]
+        service: Option<String>,
+        #[arg(long)]
+        tcp: Vec<String>,
+        #[arg(long)]
+        udp: Vec<String>,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Remove a published service (terminates existing streams)
+    Remove { service_id: u16 },
+    /// Revoke every current invitation and disconnect members
+    Revoke,
     /// Create a room (host)
     Create(ForwardCreateArgs),
     /// Join a room (guest)
@@ -373,4 +411,25 @@ pub enum ProfileCmd {
         /// Profile name (optional; default profile otherwise)
         name: Option<String>,
     },
+}
+
+impl ForwardCreateArgs {
+    pub fn network(&self) -> bool {
+        self.kind.as_deref() != Some("server")
+            && self.service.is_empty()
+            && self.tcp.is_empty()
+            && self.udp.is_empty()
+    }
+    pub fn published(&self) -> anyhow::Result<Vec<crate::services::Published>> {
+        anyhow::ensure!(
+            self.kind.as_deref() != Some("lan"),
+            "--kind lan does not accept service ports"
+        );
+        anyhow::ensure!(self.max_conns==0,"--max-conns belongs to legacy forwarding; service rooms enforce per-member and room-wide concurrency limits");
+        let mut tcp = self.tcp.clone();
+        if !self.service.is_empty() {
+            tcp.insert(0, self.service.clone());
+        }
+        crate::services::published(&tcp, &self.udp, self.label.as_deref())
+    }
 }

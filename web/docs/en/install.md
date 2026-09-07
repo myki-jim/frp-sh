@@ -1,8 +1,8 @@
-# Installation and maintenance (0.4.0)
+# Installation and maintenance (0.5.0)
 
-LAN operations use an installed system network helper. Authorize installation once, then run the client from your ordinary account: creating, joining and reconnecting do not request UAC or sudo. Game/dev port forwarding does not require this helper.
+LAN operations use an installed system network helper. Authorize installation once, then run the client from your ordinary account: creating, joining and reconnecting do not request UAC or sudo. Explicit TCP/UDP service forwarding does not require this helper; Game virtual LAN does.
 
-> The 0.4.0 development branch is not a published release. Online installers retrieve the latest published release, not this development branch.
+> 0.5.0 upgrades signaling protocol v3 and the network helper. Reinstall on both devices and update the server.
 
 ## Install
 
