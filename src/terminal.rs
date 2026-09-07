@@ -133,9 +133,6 @@ pub fn monitor(session: bool) -> Monitor {
     if !session {
         return Monitor(None);
     }
-    let mut pet_open = false;
-    let mut pet_selected = crate::pet::settings().look;
-    let mut pet_tracker = crate::pet::Tracker::default();
     let mut page = 0usize;
     let mut invite = false;
     let mut logs = false;
@@ -148,25 +145,6 @@ pub fn monitor(session: bool) -> Monitor {
         for event in events {
             if let Event::Key(key) = event {
                 if key.kind == KeyEventKind::Release {
-                    continue;
-                }
-                if pet_open {
-                    if matches!(key.code, KeyCode::Esc | KeyCode::Char('p' | 'P')) {
-                        pet_open = false;
-                        notice.clear();
-                    } else if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        EXIT.notify_one();
-                    } else {
-                        let mut updated = crate::pet::settings();
-                        if crate::pet::edit(key.code, &mut pet_selected, &mut updated) {
-                            notice = match crate::pet::persist(updated) {
-                                Ok(()) => crate::i18n::text("Saved", "已保存").into(),
-                                Err(e) => e.to_string(),
-                            };
-                        }
-                    }
                     continue;
                 }
                 if leaving {
@@ -191,11 +169,6 @@ pub fn monitor(session: bool) -> Monitor {
                     continue;
                 }
                 match key.code {
-                    KeyCode::Char('p' | 'P') => {
-                        pet_open = true;
-                        pet_selected = crate::pet::settings().look;
-                        notice.clear();
-                    }
                     KeyCode::Char('r' | 'R') => crate::services::request_revoke(),
                     KeyCode::Char('g' | 'G') => {
                         logs = true;
@@ -261,16 +234,6 @@ pub fn monitor(session: bool) -> Monitor {
                 }
             }
         }
-        if pet_open {
-            return crate::pet::wardrobe(
-                w,
-                h,
-                pet_selected,
-                &crate::pet::settings(),
-                tick,
-                &notice,
-            );
-        }
         if leaving {
             return crate::app::shell(
                 w,
@@ -293,27 +256,13 @@ pub fn monitor(session: bool) -> Monitor {
         if invite {
             return crate::app::invite_frame(w, h, selection, &notice);
         }
-        let pet = crate::pet::settings();
-        let mood = pet_tracker.update(
-            crate::services::companion_mood().unwrap_or_else(|| {
-                crate::pet::observe(
-                    &crate::stats::info_snapshot(),
-                    &crate::stats::room_view(),
-                    &crate::stats::links_snapshot(),
-                )
-            }),
-            tick,
-        );
-        let content_width = crate::pet::space(w, h, &pet);
-        let content_height = crate::pet::content_height(w, h, &pet);
-        if let Some(mut frame) = crate::services::frame(content_width, content_height, page) {
+        if let Some(frame) = crate::services::frame(w, h, page) {
             page %= frame.pages;
-            crate::pet::append(&mut frame, w, h, &pet, mood, tick);
             return frame;
         }
-        let mut frame = crate::dashboard::render(
-            content_width,
-            content_height,
+        let frame = crate::dashboard::render(
+            w,
+            h,
             &crate::stats::info_snapshot(),
             &crate::stats::room_view(),
             &crate::stats::links_snapshot(),
@@ -321,7 +270,6 @@ pub fn monitor(session: bool) -> Monitor {
             tick / 5,
         );
         page %= frame.pages;
-        crate::pet::append(&mut frame, w, h, &pet, mood, tick);
         frame
     })
 }

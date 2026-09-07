@@ -64,8 +64,6 @@ pub enum Commands {
     Create(RoomCreateArgs),
     /// Manage room parameter presets (separate from saved connections)
     Preset,
-    /// Choose a terminal companion and control its animation
-    Pet,
     #[command(external_subcommand)]
     Shortcut(Vec<OsString>),
     /// Open the keyboard-operated terminal app

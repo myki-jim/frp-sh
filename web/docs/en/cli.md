@@ -76,11 +76,3 @@ Use a full server release asset or `cargo build --release`; the normal client do
 ```
 
 Public listeners require a nonempty password. Allow TCP/UDP 8080 and TCP 8081, and use HTTPS for signaling credentials. Optional built-in TURN only connects live allocations on the same instance; it cannot proxy arbitrary UDP targets.
-
-## Terminal companion
-
-Press P or run `frp-sh pet`: choose from 20 complete ASCII looks with the arrow keys, Enter saves, H hides/shows, M reduces motion. Wardrobe previews are labeled and do not affect network state.
-
-At 80×24 the companion rests in a compact reserved footer. At 104 columns and 22 rows it uses a detailed sidebar; smaller windows hide it. It never overlays device cards and stays out of logs, invitations and forms. Settings are local, separate from room presets and Profiles.
-
-Connection evidence drives idle, waiting, connecting, direct, relay, instability and reconnecting states. Relay is not a failure. Sustained latency above 200 ms provides a quality hint with five-second debounce; an unpaired relay remains connecting. No additional probes are sent.
