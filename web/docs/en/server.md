@@ -143,7 +143,7 @@ Implementations must follow protocol v3 authentication, framing and resource lim
 
 - The signaling HTTP layer has no built-in TLS: put Nginx/Caddy in front for production HTTPS termination
 - Relay transport encryption uses server/room credentials and is not secrecy from the relay operator. Service rooms support additional end-to-end payload encryption using a shared `--key`.
-- Ports are intentionally public (the room code is the access credential); restrict by source IP in the security group if you're worried about scanners
+- A room code is an identifier, not an authorization credential. Protect invitations and server credentials; restrict listener exposure as appropriate.
 
 ## Community server capacity limits (0.5.4+)
 

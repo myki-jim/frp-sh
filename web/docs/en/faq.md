@@ -182,7 +182,7 @@ Format: `prefix-6hex` (e.g., `game-a3f9c2`). `--prefix` keeps only lowercase alp
 
 ### How does a session end?
 
-By default sessions **reconnect automatically** (backoff from 2s, capped at 15s), so link jitter won't end them. A session truly ends when:
+By default sessions **reconnect automatically** (with path-specific backoff), so link jitter won't end them. A session truly ends when:
 
 - Either side presses `Ctrl-C` (the host deletes the room on exit)
 - The room expires or is deleted (both sides end automatically)
