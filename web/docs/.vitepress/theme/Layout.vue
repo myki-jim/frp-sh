@@ -17,6 +17,7 @@ const route = useRoute();
 let disposeMotion,
   stopMotion,
   generation = 0;
+const Invite = defineAsyncComponent(() => import("./RoomInvite.vue"));
 const Landing = defineAsyncComponent(() => import("./RoomLanding.vue"));
 const { frontmatter, lang } = useData();
 onMounted(() => {
@@ -48,6 +49,7 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <Landing v-if="frontmatter.cinematic" />
+  <Invite v-else-if="frontmatter.invitation" />
   <div v-else ref="shell" class="doc-shell">
     <div class="docs-reading-progress" aria-hidden="true"></div>
     <DefaultTheme.Layout>

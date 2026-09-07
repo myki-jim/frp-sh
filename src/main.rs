@@ -10,11 +10,13 @@ use frp_sh::config::Config;
 /// 会直接栈溢出（启动即崩溃）。改用大栈 worker 线程承载主逻辑即可规避。
 fn main() {
     let result = run_main();
-    log::logger().flush();
     if let Err(e) = result {
+        log::error!(target: "runtime", "{e:#}");
+        log::logger().flush();
         frp_sh::terminal::error("E_RUNTIME", &format!("{e:#}"));
         std::process::exit(1);
     }
+    log::logger().flush();
 }
 fn run_main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -97,7 +99,7 @@ async fn real_main() -> anyhow::Result<()> {
     frp_sh::debuglog::init(filter);
 
     let cli::Cli {
-        command,
+        mut command,
         config,
         name,
         punch_retries,
@@ -107,6 +109,42 @@ async fn real_main() -> anyhow::Result<()> {
 
     frp_sh::config::set_cli_name(name);
 
+    if let Some(Commands::Connect {
+        invitation,
+        save_only,
+    }) = &command
+    {
+        let value = frp_sh::invite::Invitation::parse(invitation)?;
+        let mut cfg = Config::load_auto(config.as_deref())?;
+        let profile = value.save(&mut cfg);
+        if let Some(path) = &config {
+            cfg.save(path)?;
+        } else {
+            cfg.save_default()?;
+        }
+        if *save_only {
+            frp_sh::ui_println!("Invitation saved");
+            return Ok(());
+        }
+        command = Some(Commands::Profile {
+            cmd: Some(cli::ProfileCmd::Run {
+                name: Some(profile),
+            }),
+        });
+    }
+    if frp_sh::terminal::interactive() {
+        let page = match &command {
+            None | Some(Commands::App) => Some(frp_sh::app::Page::Home),
+            Some(Commands::Profile {
+                cmd: None | Some(cli::ProfileCmd::List),
+            }) => Some(frp_sh::app::Page::Profiles),
+            Some(Commands::Config) => Some(frp_sh::app::Page::Settings),
+            _ => None,
+        };
+        if let Some(page) = page {
+            return frp_sh::app::run(config, page).await;
+        }
+    }
     let session_ui = matches!(
         frp_sh::commands::session_role(&command),
         Some("host" | "guest")
@@ -128,7 +166,8 @@ async fn real_main() -> anyhow::Result<()> {
     // Update checks are explicit and never delay a connection.
 
     match command {
-        Some(Commands::Logs { .. }) => unreachable!(),
+        Some(Commands::Logs { .. } | Commands::Connect { .. }) => unreachable!(),
+        Some(Commands::App) => anyhow::bail!("The terminal app requires an interactive terminal"),
         Some(Commands::Update) => frp_sh::update::maybe_check_update(true).await?,
         Some(Commands::Doctor { network_test }) => {
             frp_sh::helper::status().await?;
@@ -166,7 +205,7 @@ async fn real_main() -> anyhow::Result<()> {
             frp_sh::commands::run_config(config).await?;
         }
         Some(Commands::Profile { cmd }) => {
-            frp_sh::commands::run_profile(cmd, config).await?;
+            frp_sh::commands::run_profile(cmd.unwrap_or(cli::ProfileCmd::List), config).await?;
         }
         Some(Commands::Game { cmd }) => {
             check_config_hint(&config);

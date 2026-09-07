@@ -307,8 +307,8 @@ pub fn render(
         x,
         footer + 1,
         tr(
-            "← →  Devices    L  Language    Q  Leave",
-            "← →  翻页    L  中英文    Q  退出房间",
+            "← → Devices   I Invite   G Logs   L Language   Q Leave",
+            "← → 翻页   I 邀请   G 日志   L 中英文   Q 退出",
         )
         .into(),
         2,

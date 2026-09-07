@@ -22,6 +22,73 @@ mod session_tests {
     use std::time::Duration;
 
     #[tokio::test]
+    async fn replacing_peer_closes_both_old_halves_and_ignores_old_death() {
+        let (plane, mut dead) = MeshPlane::new();
+        let (tx, mut packets) = tokio::sync::mpsc::unbounded_channel();
+        let (old, mut remote) = tokio::io::duplex(1024);
+        plane.register("peer", vec![], Box::new(old), tx.clone(), None);
+        let (new, remote_new) = tokio::io::duplex(1024);
+        plane.register("peer", vec![], Box::new(new), tx.clone(), None);
+        let mut byte = [0u8];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), remote.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(
+            dead.try_recv().is_err(),
+            "intentional replacement must not report a dead new peer"
+        );
+        drop(remote_new);
+        let old_death = tokio::time::timeout(Duration::from_secs(1), dead.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (third, mut remote_third) = tokio::io::duplex(1024);
+        plane.register("peer", vec![], Box::new(third), tx, None);
+        assert!(!plane.is_current_death(&old_death));
+        crate::tunnel::write_frame(&mut remote_third, b"new-link-packet")
+            .await
+            .unwrap();
+        assert_eq!(packets.recv().await.unwrap().1, b"new-link-packet");
+        plane.unregister("peer");
+    }
+    #[tokio::test(start_paused = true)]
+    async fn silent_peer_is_detected_without_waiting_for_tcp_keepalive() {
+        let (guest, _silent_peer) = tokio::io::duplex(1024);
+        let (device, _helper) = tokio::io::duplex(1024);
+        let task = tokio::spawn(run_packets(guest, device));
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(13)).await;
+        assert!(task
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("heartbeat timeout"));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn idle_direct_mesh_answers_guest_heartbeats() {
+        let (guest, host) = tokio::io::duplex(4096);
+        let (device, _helper) = tokio::io::duplex(1024);
+        let task = tokio::spawn(run_packets(guest, device));
+        let (plane, _dead) = MeshPlane::new();
+        let (tx, _packets) = tokio::sync::mpsc::unbounded_channel();
+        plane.register("peer", vec![], Box::new(host), tx, None);
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(3)).await;
+            for _ in 0..12 {
+                tokio::task::yield_now().await;
+            }
+            assert!(!task.is_finished());
+        }
+        plane.unregister("peer");
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn guest_answers_mesh_heartbeats_without_sending_them_to_helper() {
         let (guest, mut host) = tokio::io::duplex(1024);
         let (device, mut helper) = tokio::io::duplex(1024);
@@ -238,10 +305,21 @@ where
     let mut pkt = [0u8; 65536];
     let mut acc: Vec<u8> = Vec::new();
     let mut rbuf = [0u8; 16384];
+    let mut last_received = tokio::time::Instant::now();
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(3));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
     loop {
         tokio::select! {
             // biased + 单次 read：未选中的分支要么未轮询要么处于 pending（未消费数据），不会丢包
             biased;
+            _ = tokio::time::sleep_until(last_received + std::time::Duration::from_secs(12)) => {
+                return Err(FrpError::Protocol("peer heartbeat timeout".into()));
+            }
+            _ = heartbeat.tick() => {
+                crate::tunnel::write_frame(&mut transport, b"FRPING").await?;
+                transport.flush().await?;
+            }
             r = dev.read(&mut pkt) => {
                 match r {
                     Ok(0) => return Err(FrpError::Tun("network helper closed the device session".into())),
@@ -253,12 +331,14 @@ where
                     }
                 }
             }
-            n = transport.read(&mut rbuf) => {
+            n = tokio::time::timeout_at(last_received + std::time::Duration::from_secs(12), transport.read(&mut rbuf)) => {
+                let n = n.map_err(|_| FrpError::Protocol("peer heartbeat timeout".into()))?;
                 let n = match n {
                     Ok(0) => return Err(FrpError::Protocol("peer transport closed".into())),
                     Err(e) => return Err(FrpError::Io(e)),
                     Ok(n) => n,
                 };
+                last_received = tokio::time::Instant::now();
                 acc.extend_from_slice(&rbuf[..n]);
                 loop {
                     match crate::tunnel::take_frame(&mut acc) {
@@ -289,6 +369,10 @@ where
 ///
 /// - TUN 读到的 IP 包 → 按目标 IP 最长前缀匹配 → 对应对端写通道（无匹配则丢弃）
 /// - 对端流读到的 IP 包 → 目标为其他对端 → 直接转发；否则写入 TUN（交给本机网络栈）
+pub struct LinkDeath {
+    pub uuid: String,
+    lifetime: Arc<tokio_util::sync::CancellationToken>,
+}
 pub struct MeshPlane {
     /// uuid → 路由表 (网络地址, 前缀)，含访客虚拟 IP(/32) 与暴露的局域网子网
     routes: std::sync::RwLock<std::collections::HashMap<String, Vec<(u32, u8)>>>,
@@ -297,13 +381,15 @@ pub struct MeshPlane {
         std::collections::HashMap<String, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     >,
     /// uuid → 关闭通知（unregister 时唤醒 reader 退出）
-    closes: std::sync::RwLock<std::collections::HashMap<String, Arc<tokio::sync::Notify>>>,
+    closes: std::sync::RwLock<
+        std::collections::HashMap<String, Arc<tokio_util::sync::CancellationToken>>,
+    >,
     /// 对端死亡通知（reader 结束时发送 uuid）
-    dead_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    dead_tx: tokio::sync::mpsc::UnboundedSender<LinkDeath>,
 }
 
 impl MeshPlane {
-    pub fn new() -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    pub fn new() -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<LinkDeath>) {
         let (dead_tx, dead_rx) = tokio::sync::mpsc::unbounded_channel();
         (
             Arc::new(Self {
@@ -331,7 +417,7 @@ impl MeshPlane {
     ) {
         self.unregister(uuid); // 清理旧链路（如中继 → 直连切换）
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let close = Arc::new(tokio::sync::Notify::new());
+        let close = Arc::new(tokio_util::sync::CancellationToken::new());
         let (mut rd, mut wr) = tokio::io::split(transport);
         self.routes
             .write()
@@ -364,8 +450,9 @@ impl MeshPlane {
             let mut rbuf = [0u8; 16384];
             'reader: loop {
                 tokio::select! {
-                    _ = close_r.notified() => break,
-                    r = rd.read(&mut rbuf) => {
+                    _ = close_r.cancelled() => return,
+                    r = tokio::time::timeout(std::time::Duration::from_secs(if st_r.is_some() { 12 } else { 86400 }), rd.read(&mut rbuf)) => {
+                        let r = match r { Ok(r) => r, Err(_) => { log::warn!("peer heartbeat timeout"); break; } };
                         match r {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
@@ -395,37 +482,56 @@ impl MeshPlane {
                     }
                 }
             }
-            let _ = dead_tx.send(uuid_r);
+            if !close_r.is_cancelled() {
+                let _ = dead_tx.send(LinkDeath {
+                    uuid: uuid_r,
+                    lifetime: close_r.clone(),
+                });
+                close_r.cancel();
+            }
         });
         // writer：发包 → 帧封装 → 对端流（tx 被移除/丢弃时 rx 关闭 → 退出）；
         // 有统计句柄时每 3s 发送一次 FRPING 心跳（测量经中继的端到端 RTT）
+        let writer_dead = self.dead_tx.clone();
+        let writer_uuid = uuid.to_string();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            tick.tick().await; // 首个 tick 立即返回，跳过
-            loop {
-                tokio::select! {
-                    pkt = rx.recv() => {
-                        match pkt {
-                            Some(p) => {
-                                if crate::tunnel::write_frame(&mut wr, &p).await.is_err() {
+            let writing = async {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(3));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                tick.tick().await; // 首个 tick 立即返回，跳过
+                loop {
+                    tokio::select! {
+                        pkt = rx.recv() => {
+                            match pkt {
+                                Some(p) => {
+                                    if crate::tunnel::write_frame(&mut wr, &p).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                        _ = tick.tick() => {
+                            if stats.is_some() {
+                                *ping_at.lock().unwrap() = Some(std::time::Instant::now());
+                                if crate::tunnel::write_frame(&mut wr, b"FRPING").await.is_err() {
                                     break;
                                 }
-                            }
-                            None => break,
-                        }
-                    }
-                    _ = tick.tick() => {
-                        if stats.is_some() {
-                            *ping_at.lock().unwrap() = Some(std::time::Instant::now());
-                            if crate::tunnel::write_frame(&mut wr, b"FRPING").await.is_err() {
-                                break;
                             }
                         }
                     }
                 }
-            }
+            };
+            tokio::select! { _ = close.cancelled() => {}, _ = writing => { if !close.is_cancelled() { let _ = writer_dead.send(LinkDeath { uuid: writer_uuid, lifetime: close.clone() }); close.cancel(); } } }
         });
+    }
+
+    pub fn is_current_death(&self, death: &LinkDeath) -> bool {
+        self.closes
+            .read()
+            .unwrap()
+            .get(&death.uuid)
+            .is_some_and(|c| Arc::ptr_eq(c, &death.lifetime))
     }
 
     /// 移除一个对端链路（停止其读写任务）。
@@ -433,7 +539,7 @@ impl MeshPlane {
         self.routes.write().unwrap().remove(uuid);
         self.writers.write().unwrap().remove(uuid);
         if let Some(c) = self.closes.write().unwrap().remove(uuid) {
-            c.notify_one();
+            c.cancel();
         }
     }
 

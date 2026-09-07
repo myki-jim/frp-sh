@@ -819,3 +819,64 @@ async fn server_auth_rejects_wrong_password() {
         "expected password error, got: {err}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mesh_same_device_rejoins_while_old_transport_is_still_open() {
+    let srv = start_server().await;
+    let room = create_room(&srv.cfg).await;
+    let config = srv.cfg.clone();
+    let room_h = room.clone();
+    let host = tokio::spawn(async move {
+        commands::host_mesh_session(&config, &room_h, true, None, 0, None, false, None).await
+    });
+    let client = SignalingClient::new(&srv.cfg.signaling_addr);
+    let mut old_stream = None;
+    for _ in 0..3 {
+        let engine = PunchEngine::bind().await.unwrap();
+        let addr = engine.local_addr().unwrap();
+        client
+            .join_room(
+                &room,
+                addr,
+                vec![],
+                Some("repeat-guest".into()),
+                None,
+                vec![],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let (mut stream, _) = frp_sh::p2p::relay::connect(
+            srv.cfg.relay_addr.parse().unwrap(),
+            &room,
+            frp_sh::p2p::relay::RelayRole::Guest,
+            None,
+            false,
+            Some("repeat-guest"),
+            None,
+        )
+        .await
+        .unwrap();
+        stream.write_all(b"\0\0\0\x06FRPING").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let n = stream.read_u32().await.unwrap();
+                let mut frame = vec![0; n as usize];
+                stream.read_exact(&mut frame).await.unwrap();
+                if frame == b"FRPONG" {
+                    break;
+                }
+                if frame == b"FRPING" {
+                    stream.write_all(b"\0\0\0\x06FRPONG").await.unwrap();
+                }
+            }
+        })
+        .await
+        .expect("new session never paired while old connection was open");
+        old_stream = Some(stream);
+    }
+    drop(old_stream);
+    host.abort();
+    let _ = host.await;
+}
