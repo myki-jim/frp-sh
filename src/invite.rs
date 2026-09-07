@@ -4,20 +4,29 @@ use anyhow::{bail, ensure, Context};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
-const PREFIX: &str = "https://frp.sh/join#v1.";
+const PREFIX: &str = "https://frp.sh/join#v2.";
 static ACTIVE: Mutex<Option<Invitation>> = Mutex::new(None);
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Invitation {
+    #[serde(default = "default_mode")]
+    pub mode: String,
     pub server: String,
     pub room: String,
     pub relay: String,
     pub password: Option<String>,
     pub key: Option<String>,
 }
+fn default_mode() -> String {
+    "lan".into()
+}
 impl Invitation {
     pub fn validate(&self) -> anyhow::Result<()> {
+        ensure!(
+            matches!(self.mode.as_str(), "lan" | "dev"),
+            "invalid invitation mode"
+        );
         let url = reqwest::Url::parse(&self.server).context("Invalid invitation server")?;
         ensure!(
             matches!(url.scheme(), "http" | "https")
@@ -62,6 +71,7 @@ impl Invitation {
         let token = link
             .trim()
             .strip_prefix(PREFIX)
+            .or_else(|| link.trim().strip_prefix("https://frp.sh/join#v1."))
             .context("Expected a frp.sh invitation link")?;
         let bytes = hex::decode(token).context("Invalid invitation encoding")?;
         // Do not include serde's input fragments (which may contain credentials) in errors.
@@ -86,7 +96,7 @@ impl Invitation {
         let name = cfg
             .profiles
             .values()
-            .find(|p| p.server == self.server && p.room == self.room && p.mode == "lan")
+            .find(|p| p.server == self.server && p.room == self.room && p.mode == self.mode)
             .map(|p| p.name.clone())
             .unwrap_or_else(|| cfg.next_profile_name());
         cfg.profiles.insert(
@@ -97,7 +107,7 @@ impl Invitation {
                 room: self.room.clone(),
                 password: self.password.clone(),
                 key: self.key.clone(),
-                mode: "lan".into(),
+                mode: self.mode.clone(),
                 device_name: None,
                 relay_addr: Some(self.relay.clone()),
                 listen: None,
@@ -116,13 +126,20 @@ impl Drop for Active {
     }
 }
 pub fn activate(cfg: &Config, room: &str, key: Option<&str>, lan: bool) -> Active {
-    *ACTIVE.lock().unwrap() = lan.then(|| Invitation {
+    activate_mode(cfg, room, key, if lan { "lan" } else { "dev" })
+}
+pub fn replace_mode(cfg: &Config, room: &str, key: Option<&str>, mode: &str) {
+    *ACTIVE.lock().unwrap() = Some(Invitation {
+        mode: mode.into(),
         server: cfg.signaling_addr.clone(),
         room: room.into(),
         relay: cfg.relay_addr.clone(),
         password: cfg.password.clone(),
         key: key.map(str::to_owned),
     });
+}
+pub fn activate_mode(cfg: &Config, room: &str, key: Option<&str>, mode: &str) -> Active {
+    replace_mode(cfg, room, key, mode);
     Active
 }
 pub fn current() -> Option<Invitation> {
@@ -181,6 +198,7 @@ mod tests {
     #[test]
     fn invitation_roundtrip_is_data_not_shell_code() {
         let invite = Invitation {
+            mode: "lan".into(),
             server: "https://example.test:8080".into(),
             room: "room_1234".into(),
             relay: "127.0.0.1:8081".into(),
@@ -196,7 +214,7 @@ mod tests {
             assert!(!cmd.contains("private-test-key"));
             assert!(cmd.contains(&link));
         }
-        assert!(!crate::debuglog::redact(&link).contains("#v1."));
+        assert!(!crate::debuglog::redact(&link).contains("#v2."));
         let mut cfg = Config::default();
         let first = decoded.save(&mut cfg);
         let second = decoded.save(&mut cfg);
@@ -215,6 +233,7 @@ mod tests {
             assert!(Invitation::parse(link).is_err());
         }
         let mut invite = Invitation {
+            mode: "lan".into(),
             server: "file:///tmp/test".into(),
             room: "1234".into(),
             relay: "127.0.0.1:8081".into(),

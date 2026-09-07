@@ -1,175 +1,72 @@
 # Quickstart
 
-From binary to your first tunnel in about five minutes. You need three things:
+0.5.0 uses protocol v3. Upgrade the server, clients and installed network helper together, then create new rooms. Older versions report a protocol conflict.
 
-1. A server with a public IP (any VPS)
-2. The host computer (the one running the game/service)
-3. The guest computer (a friend's machine)
+## Install or update
 
-## Step 1: Deploy the signaling server
-
-On the public server:
-
-```bash
-# Build (slow the first time)
-cargo build --release
-
-# Start the signaling server
-./target/release/frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081
+```powershell
+irm https://frp.sh/install.ps1 | iex
 ```
 
-Three services come up together:
-
-- **HTTP REST** (8080/tcp): room registration and lookup
-- **UDP public probe** (8080/udp): clients learn their public address
-- **TCP relay** (8081/tcp): data forwarding when punching fails (add `--turn 0.0.0.0:3478` to provide a standard TURN UDP relay — see [Server Deployment](./server))
-
-> Open `8080/tcp`, `8080/udp`, and `8081/tcp` in both the cloud security group and the OS firewall (`3478/udp` too when TURN is enabled).
-
-For a permanent setup see [Deploy the Server](./server).
-
-## Step 2: Configure the client
-
-Both host and guest need a config pointing at that server. **Use a connection profile**
-(one line, written to your local config automatically):
-
-```bash
-# Save the server connection (--set-default marks it as the default profile; without
-# a room it's "configuration" only — the room is filled in when you join one)
-frp-sh profile add --server http://YOUR-SERVER-IP:8080 --password YOUR_PASSWORD --set-default
-
-# Joining a room afterwards (first time, or to fill in the room code; the same
-# server + mode merge into the same profile automatically)
-frp-sh profile add --server http://YOUR-SERVER-IP:8080 --password YOUR_PASSWORD --room 7411
-frp-sh profile run          # start a session from the default profile in one go
-frp-sh profile list         # view existing profiles (passwords masked)
+```sh
+curl -fsSL https://frp.sh/install.sh | sh
 ```
 
-> Save connection details with profile add, then start with profile run.
+Administrator access is needed only for installation. Run daily sessions in an ordinary terminal. Service mode does not create a virtual adapter.
 
-Manual way (TOML config file — the default config points at `127.0.0.1`, local
-testing on one machine only):
+## Terminal app and Profiles
 
-```toml
-# config/server.toml
-signaling_addr = "http://YOUR-SERVER-IP:8080"   # HTTP signaling
-relay_addr     = "YOUR-SERVER-IP:8081"          # TCP relay
+Run `frp-sh`, then press `2` for **Profiles**. Alternatively run `frp-sh profile`; scripts can use `frp-sh --plain profile list`.
+
+Use `N` to add, `E` to edit, `D` to set the default, `Enter` to connect and `Delete` to remove. `G` opens separate logs; `Tab` changes pages. Importing an invitation saves a Profile automatically.
+
+Configure your server in Settings. New invitations contain room credentials, not the server administrator password. Share them privately.
+
+## Game and LAN networking
+
+```sh
+frp-sh game create
+frp-sh game join 1234
+frp-sh lan join 1234
 ```
 
-Use it with `--config`:
+Open your game's LAN world, then connect using the host's virtual IP. frp-sh does not require a game port in this mode, though the game itself may require one. Automatic discovery is not guaranteed for every game.
 
-```bash
-frp-sh --config config/server.toml lan create
+Physical LAN sharing is off by default. The generic `frp-sh join 1234 --network` explicitly permits whole-device networking; joining services does not grant that permission.
+
+## Game servers and development services
+
+```sh
+frp-sh game create --kind server --tcp 25565
+frp-sh game create --kind server --udp 19132
+frp-sh dev create --service http://127.0.0.1:3000 --label Web
+frp-sh dev create --tcp 3000 --tcp 8080 --udp 9000
+frp-sh dev join 1234
+frp-sh join 1234
 ```
 
-## Step 3: Pick your series
+These ports are examples, not defaults. Missing creation parameters prompt in an interactive terminal and fail immediately in scripts or JSON mode. A room supports up to 16 host-published services, 32 members, 64 simultaneous streams per member and 256 streams across the host.
 
-frp-sh has three usage series. This tutorial leads with **mesh (`lan`)**, the most
-powerful, most general mode:
+Service rooms use encrypted TCP relay transport. TCP, WebSocket and SSH connections run concurrently. UDP datagrams and source flows remain separate, but TCP relay can add ordered-delivery latency. UDP is marked unverified until traffic arrives. Use a Game/LAN room for direct UDP networking.
 
-| Series | Command | Use case |
-|--------|---------|----------|
-| **Mesh (recommended)** | `frp-sh lan create/join` | reach the peer's whole machine + their entire LAN (Tailscale-like) |
-| **Game** | `frp-sh game create/join` | multiplayer games like Minecraft, pure port forwarding (default 25565) |
-| **Dev** | `frp-sh dev create/join` | development, application-level port forwarding |
+Guest listeners bind to loopback. If the suggested port is busy, an available port is allocated; use the address actually shown. `C` copies addresses, `I` opens invitations and install-and-join commands, and `G` opens logs.
 
-### Mesh: host creates a room (`lan`)
-
-On the host machine:
-
-```bash
-frp-sh lan create
+```sh
+frp-sh dev join 1234 --service 1 --listen 4000
+# In another terminal on the publishing host:
+frp-sh dev add --tcp 8081 --label API
+frp-sh dev remove 2
+frp-sh dev revoke
 ```
 
-Example output:
+Service changes close existing application streams and reconnect without replaying requests. To close the last service, exit the host session rather than leaving an empty room. `dev revoke` or `R` on the host revokes current invitations and established connections. Copy a new invitation to admit members again. An optional custom `--key` must match at both ends and is included in invitations.
 
-```text
-  Room created : lan-a3f9c2
-  Signaling    : http://YOUR-SERVER-IP:8080
-  Your ID      : 123e4567-e89b-12d3-a456-426614174000
-  LAN addrs    : 192.168.1.5:51234
-  Vnet IP      : 10.66.0.1（对端可 ping/直连此 IP）
-  Mode         : LAN mesh (virtual NIC)
-  LAN subnets  : 192.168.1.0/24（访客加入后可访问）
-  Waiting for a guest to join ...
+## Self-hosted server
+
+Use a full server release asset or `cargo build --release`; the normal client download excludes `serve`.
+
+```sh
+./frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password "$FRPSH_SERVE_PASSWORD"
 ```
 
-Send **`lan-a3f9c2`** to your friend.
-
-### Mesh: guest joins (`lan`)
-
-On the friend's machine:
-
-```bash
-frp-sh lan join lan-a3f9c2
-```
-
-The guest gets a stable virtual IP derived from its device ID (e.g. `10.66.0.42`).
-After joining:
-
-- `ping 10.66.0.1` / SSH / file sharing reach the host's whole machine
-- routes are added automatically to reach the host's LAN devices (NAS, printers, etc.)
-- install the restricted network helper once with administrator/root authorization; everyday LAN connections run from your ordinary account
-
-```text
-  Joined room : lan-a3f9c2
-  Host address: YOUR-SERVER-IP:xxx
-  Host vnet IP: 10.66.0.1
-  Host LAN     : 192.168.1.0/24
-  Mode         : LAN mesh (virtual NIC)
-  Punching through NAT ...
-
->>> 本地局域网直连 (LAN direct) with 192.168.1.5:51234   ← same-WiFi instant link!
-```
-
-## Step 4: Game / Dev series (pure port forwarding)
-
-If you only need to forward one port, use `game` (games) or `dev` (development):
-
-```bash
-# host: forward local Minecraft (default 25565)
-frp-sh game create --service 127.0.0.1:25565
-
-# guest: connecting to local 25565 reaches the host's game server
-frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565
-```
-
-```bash
-# dev: share a local web service on 8080 with a teammate
-frp-sh dev create --service 127.0.0.1:8080
-frp-sh dev join dev-a3f9c2 --listen 127.0.0.1:8080
-```
-
-`game` / `dev` are pure port forwarding — no virtual NIC, no admin rights needed.
-
-If punching fails, it falls back automatically (preferring the TURN UDP relay when `turn_providers` is configured):
-
-```text
->>> UDP hole punching failed, falling back to relay ...
->>> relay connected, waiting for host ...
-```
-
-The tunnel still works — traffic just goes through the server (see [Architecture](./architecture)).
-
-After a drop (network jitter, expired NAT mappings), both sides reconnect automatically:
-
-```text
->>> 连接已断开，2 秒后自动重连（Ctrl-C 退出）...
-```
-
-Transient failures reconnect automatically with a jittered backoff of up to 8 seconds. Authentication failures require correcting the credentials.
-
-## Minimal Commands
-
-| Role | Minimal command | Notes |
-|------|-----------------|-------|
-| Mesh host | `frp-sh lan create` | virtual-NIC mesh using the installed network helper |
-| Mesh guest | `frp-sh lan join lan-xxxxxx` | only the room code is required |
-| Game host | `frp-sh game create` | pure port forwarding (default 25565) |
-| Server | `frp-sh serve` | listens on 0.0.0.0:8080/8081 |
-
-## Next Steps
-
-- [CLI Reference](./cli) for all options
-- [Advanced Usage](./advanced) for encryption, multi-connection, etc.
-- [Troubleshooting FAQ](./faq) if you hit problems
+Public listeners require a nonempty password. Allow TCP/UDP 8080 and TCP 8081, and use HTTPS for signaling credentials. Optional built-in TURN only connects live allocations on the same instance; it cannot proxy arbitrary UDP targets.

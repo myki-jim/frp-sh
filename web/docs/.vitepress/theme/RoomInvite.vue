@@ -4,7 +4,7 @@ const link = ref(''), room = ref(''), error = ref(''), copied = ref(false), wind
 onMounted(() => {
   windows.value = navigator.platform.startsWith('Win')
   const token = location.hash.slice(1)
-  if (!/^v1\.[0-9a-f]{2,11976}$/i.test(token) || (token.length - 3) % 2) { error.value = 'Invalid or missing invitation'; return }
+  if (!/^v[12]\.[0-9a-f]{2,11976}$/i.test(token) || (token.length - 3) % 2) { error.value = 'Invalid or missing invitation'; return }
   try {
     const bytes = new Uint8Array(token.slice(3).match(/../g).map(x => parseInt(x, 16)))
     const data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
@@ -38,7 +38,7 @@ async function copy() {
     </div>
     <button class="invite-copy" @click="copy">{{ copied ? (chinese ? '已复制' : 'Copied') : (chinese ? '复制安装并加入命令' : 'Copy install & join command') }}</button>
     <details><summary>{{ chinese ? '查看完整命令' : 'View full command' }}</summary><pre tabindex="0">{{ command }}</pre></details>
-    <p class="invite-note">{{ chinese ? '仅安装阶段需要管理员授权。邀请包含访问凭据，请勿公开分享。需要 frp-sh 0.4.4 或更新版本。' : 'Administrator approval is needed only for installation. This invitation contains access credentials; share it privately. Requires frp-sh 0.4.4 or later.' }}</p>
+    <p class="invite-note">{{ chinese ? '仅安装阶段需要管理员授权。邀请包含访问凭据，请勿公开分享。需要 frp-sh 0.5.0 或更新版本。' : 'Administrator approval is needed only for installation. This invitation contains access credentials; share it privately. Requires frp-sh 0.5.0 or later.' }}</p>
   </template>
   <p role="status">{{ error }}</p>
 </div>

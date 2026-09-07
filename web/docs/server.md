@@ -1,11 +1,13 @@
 # 部署信令服务器
+> 0.5.0：公网监听必须有非空密码。systemd 示例需先创建仅 root 可读的 `/etc/frp-sh/server.env`，设置 `FRPSH_SERVE_PASSWORD`。信令请使用 HTTPS。
+
 
 信令服务器是整个系统的中心：注册房间、交换地址、兜底中继。它本身无状态、极轻量（空闲时内存 < 2 MB），一台 1 核 512 MB 的 VPS 即可。
 
 ## 快速启动
 
 ```bash
-./frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081
+./frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password "$FRPSH_SERVE_PASSWORD"
 ```
 
 | 参数 | 默认值 | 说明 |
@@ -26,7 +28,8 @@ Description=frp-sh signaling server
 After=network.target
 
 [Service]
-ExecStart=/opt/frpsh/target/release/frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081
+EnvironmentFile=/etc/frp-sh/server.env
+ExecStart=/opt/frpsh/target/release/frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password ${FRPSH_SERVE_PASSWORD}
 Restart=always
 RestartSec=3
 

@@ -121,6 +121,10 @@ pub struct GuestInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomInfo {
+    #[serde(default)]
+    pub access_token: Option<String>,
+    #[serde(default)]
+    pub services: Vec<crate::services::ServiceInfo>,
     pub room_id: String,
     pub host_addr: SocketAddr,
     pub guest_addr: Option<SocketAddr>,

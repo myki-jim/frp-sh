@@ -5,6 +5,7 @@
 
 extern crate self as frp_sh;
 pub use frpsh_ui_macros::{ui_format, ui_print, ui_println};
+pub mod access;
 pub mod app;
 pub mod cli;
 pub mod commands;
@@ -18,6 +19,7 @@ pub mod invite;
 pub mod logview;
 pub mod p2p;
 pub mod room;
+pub mod services;
 pub mod signaling;
 pub mod stats;
 pub mod terminal;

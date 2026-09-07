@@ -14,7 +14,7 @@ frp-sh ships three usage series:
 | Series | Command | Use case |
 |--------|---------|----------|
 | **Mesh (recommended)** | `frp-sh lan` | Tailscale-like: virtual-NIC whole-machine mesh; reach the peer's machine and their whole LAN |
-| **Game** | `frp-sh game` | multiplayer games like Minecraft, pure port forwarding (default 25565) |
+| **Game** | `frp-sh game` | virtual LAN by default; optional explicit TCP/UDP services |
 | **Dev** | `frp-sh dev` | development, application-level port forwarding |
 
 When NAT is too strict and punching fails, traffic automatically falls back to relay

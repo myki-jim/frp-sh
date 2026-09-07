@@ -70,6 +70,52 @@ impl SignalingClient {
         }
     }
 
+    pub async fn secure_room(&self, room: &str) -> anyhow::Result<String> {
+        let owner = self
+            .owners
+            .lock()
+            .unwrap()
+            .get(room)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("owner credential missing"))?;
+        let value: serde_json::Value = self
+            .http
+            .post(format!("{}/room/{room}/secure", self.base_url))
+            .header("X-Frp-Sh-Room-Token", owner)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let token = value["token"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("room authorization unavailable"))?
+            .to_string();
+        crate::debuglog::protect(&token);
+        Ok(token)
+    }
+    pub async fn set_services(
+        &self,
+        room: &str,
+        services: &[crate::services::ServiceInfo],
+    ) -> anyhow::Result<()> {
+        let owner = self
+            .owners
+            .lock()
+            .unwrap()
+            .get(room)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("owner credential missing"))?;
+        self.http
+            .post(format!("{}/room/{room}/services", self.base_url))
+            .header("X-Frp-Sh-Room-Token", owner)
+            .json(services)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     /// 服务器是否要求密码（客户端配置了密码即随请求携带；服务器未设密码时无害）。
     pub fn has_password(&self) -> bool {
         self.password.is_some()

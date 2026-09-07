@@ -3,11 +3,12 @@
 //! 与自建信令/中继同进程（单文件哲学延续），认证复用 `--password`：
 //! - 设置密码：long-term credential（用户名固定 `frp-sh`，密钥
 //!   `MD5(frp-sh:realm:password)`），客户端用同一密码即可认证；
-//! - 未设置密码：不要求认证（内网/可信场景）。
+//! - 未设置密码：只允许回环监听，用于本机测试。
 //!
 //! 实现子集：Allocate / CreatePermission / Send indication / Data indication /
 //! Refresh / STUN Binding。relay 端口随机分配，permission 限制只有被授权的
-//! 对端地址能向 relay 地址发包（防滥用）。
+//! 对端地址能向 relay 地址发包。仅允许本服务已分配的 relay 之间通信，
+//! 不提供任意 UDP 目标代理；跨 TURN 供应商会退回 TCP 中继。
 
 use crate::p2p::stun;
 use hmac::{Hmac, Mac};
@@ -42,6 +43,7 @@ struct Auth {
 struct Allocation {
     /// relay socket（绑定随机端口，收 peer 数据）
     relay_socket: Arc<UdpSocket>,
+    advertised: SocketAddr,
     /// 授权对端地址（CreatePermission）
     permissions: HashSet<SocketAddr>,
     /// 客户端地址
@@ -50,6 +52,9 @@ struct Allocation {
     expires: Instant,
 }
 const LIFETIME: u32 = 600;
+const MAX_ALLOCATIONS: usize = 256;
+const MAX_ALLOCATIONS_PER_IP: usize = 32;
+const MAX_PERMISSIONS: usize = 64;
 const USERNAME: &str = "frp-sh";
 
 impl TurnServer {
@@ -59,6 +64,11 @@ impl TurnServer {
         password: Option<&str>,
         external_ip: Option<IpAddr>,
     ) -> crate::error::Result<Self> {
+        if password.is_none_or(|p| p.trim().is_empty()) && !addr.ip().is_loopback() {
+            return Err(crate::error::FrpError::Config(
+                "public TURN requires a nonempty password".into(),
+            ));
+        }
         let listen = Arc::new(
             UdpSocket::bind(addr)
                 .await
@@ -149,6 +159,25 @@ impl TurnServer {
     }
 
     async fn handle_allocate(&self, msg: &stun::Message, src: SocketAddr) {
+        {
+            let mut map = self.allocs.lock().await;
+            map.retain(|_, a| a.expires > Instant::now());
+            if !map.contains_key(&src)
+                && (map.len() >= MAX_ALLOCATIONS
+                    || map.keys().filter(|a| a.ip() == src.ip()).count() >= MAX_ALLOCATIONS_PER_IP)
+            {
+                drop(map);
+                self.reject(msg, src, 486).await;
+                return;
+            }
+            // Retransmitted Allocate must reuse the existing socket, not leak a task.
+            if let Some(a) = map.get(&src) {
+                let relay = a.advertised;
+                drop(map);
+                self.allocated(msg, src, relay).await;
+                return;
+            }
+        }
         // 分配 relay socket（随机端口）
         let Ok(relay_socket) = UdpSocket::bind("0.0.0.0:0").await else {
             return;
@@ -165,6 +194,7 @@ impl TurnServer {
         let client_key = src;
         let alloc = Allocation {
             relay_socket: relay_socket.clone(),
+            advertised: relay,
             permissions: HashSet::new(),
             client: src,
             expires: Instant::now() + Duration::from_secs(LIFETIME as u64),
@@ -177,13 +207,39 @@ impl TurnServer {
         tokio::spawn(async move {
             let mut buf = [0u8; 4096];
             loop {
-                let (n, peer) = match relay_socket.recv_from(&mut buf).await {
-                    Ok(x) => x,
-                    Err(_) => break,
+                let expiry = {
+                    let map = allocs.lock().await;
+                    let Some(a) = map.get(&ck) else { break };
+                    if !Arc::ptr_eq(&a.relay_socket, &relay_socket) {
+                        break;
+                    }
+                    a.expires
+                };
+                let (n, peer) = match tokio::time::timeout(
+                    expiry.saturating_duration_since(Instant::now()),
+                    relay_socket.recv_from(&mut buf),
+                )
+                .await
+                {
+                    Ok(Ok(x)) => x,
+                    Err(_) => {
+                        let map = allocs.lock().await;
+                        if map.get(&ck).is_some_and(|a| {
+                            a.expires > Instant::now()
+                                && Arc::ptr_eq(&a.relay_socket, &relay_socket)
+                        }) {
+                            continue;
+                        }
+                        break;
+                    }
+                    Ok(Err(_)) => break,
                 };
                 let map = allocs.lock().await;
                 let Some(a) = map.get(&ck) else { break };
-                if !a.permissions.contains(&peer) {
+                if a.expires <= Instant::now()
+                    || !Arc::ptr_eq(&a.relay_socket, &relay_socket)
+                    || !a.permissions.contains(&peer)
+                {
                     continue; // 未授权
                 }
                 let client = a.client;
@@ -205,7 +261,10 @@ impl TurnServer {
                 let _ = listen.send_to(&req, client).await;
             }
         });
-        // 200 响应
+        self.allocated(msg, src, relay).await;
+    }
+
+    async fn allocated(&self, msg: &stun::Message, src: SocketAddr, relay: SocketAddr) {
         let txid2 = msg.txid;
         let xrel = stun::encode_xor_addr(relay, &txid2);
         let lt = stun::encode_lifetime(LIFETIME);
@@ -220,7 +279,6 @@ impl TurnServer {
             ],
         );
         let _ = self.listen.send_to(&resp, src).await;
-        log::info!("TURN allocation created for {src} -> relay {relay}");
     }
 
     async fn handle_permission(&self, msg: &stun::Message, src: SocketAddr) {
@@ -231,10 +289,25 @@ impl TurnServer {
             return;
         };
         let mut map = self.allocs.lock().await;
+        // Built-in relay is only for pairs allocated on this server. A client
+        // cannot turn it into a UDP proxy to DNS, metadata, LAN or Internet hosts.
+        if !map
+            .iter()
+            .any(|(client, a)| *client != src && a.advertised == peer && a.expires > Instant::now())
+        {
+            drop(map);
+            self.reject(msg, src, 403).await;
+            return;
+        }
         let Some(a) = map.get_mut(&src) else {
             return;
         };
         if a.expires <= Instant::now() {
+            return;
+        }
+        if a.permissions.len() >= MAX_PERMISSIONS && !a.permissions.contains(&peer) {
+            drop(map);
+            self.reject(msg, src, 486).await;
             return;
         }
         a.permissions.insert(peer);
@@ -260,6 +333,12 @@ impl TurnServer {
             return;
         };
         let map = self.allocs.lock().await;
+        if !map
+            .iter()
+            .any(|(client, a)| *client != src && a.advertised == peer && a.expires > Instant::now())
+        {
+            return;
+        }
         let Some(a) = map.get(&src) else {
             return;
         };
@@ -276,6 +355,12 @@ impl TurnServer {
 
     async fn handle_refresh(&self, msg: &stun::Message, src: SocketAddr) {
         let mut map = self.allocs.lock().await;
+        if map.get(&src).is_none_or(|a| a.expires <= Instant::now()) {
+            map.remove(&src);
+            drop(map);
+            self.reject(msg, src, 437).await;
+            return;
+        }
         let Some(a) = map.get_mut(&src) else {
             return;
         };
@@ -290,6 +375,17 @@ impl TurnServer {
             &[(stun::ATTR_LIFETIME, &lt)],
         );
         let _ = self.listen.send_to(&resp, src).await;
+    }
+
+    async fn reject(&self, msg: &stun::Message, src: SocketAddr, code: u16) {
+        let code = [0, 0, (code / 100) as u8, (code % 100) as u8];
+        let response = stun::build(
+            msg.method,
+            stun::CLASS_ERROR,
+            &msg.txid,
+            &[(stun::ATTR_ERROR_CODE, &code)],
+        );
+        let _ = self.listen.send_to(&response, src).await;
     }
 
     async fn handle_binding(&self, msg: &stun::Message, src: SocketAddr) {
@@ -380,6 +476,84 @@ fn relay_socket_ip(ip: IpAddr) -> IpAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn public_turn_requires_authentication() {
+        for password in [None, Some(""), Some("   ")] {
+            assert!(
+                TurnServer::start("0.0.0.0:0".parse().unwrap(), password, None)
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn one_source_cannot_exhaust_allocation_capacity() {
+        let server = TurnServer::start("127.0.0.1:0".parse().unwrap(), None, None)
+            .await
+            .unwrap();
+        let request = stun::build(
+            stun::METHOD_ALLOCATE,
+            stun::CLASS_REQUEST,
+            &stun::new_txid(),
+            &[],
+        );
+        let request = stun::parse(&request).unwrap();
+        for index in 0..MAX_ALLOCATIONS_PER_IP + 2 {
+            server
+                .handle_allocate(
+                    &request,
+                    SocketAddr::from(([127, 0, 0, 1], 10000 + index as u16)),
+                )
+                .await;
+        }
+        assert_eq!(server.allocs.lock().await.len(), MAX_ALLOCATIONS_PER_IP);
+    }
+
+    #[tokio::test]
+    async fn arbitrary_udp_targets_are_rejected_and_allocate_is_idempotent() {
+        let server = TurnServer::start("127.0.0.1:0".parse().unwrap(), None, None)
+            .await
+            .unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let src = client.local_addr().unwrap();
+        let packet = stun::build(
+            stun::METHOD_ALLOCATE,
+            stun::CLASS_REQUEST,
+            &stun::new_txid(),
+            &[],
+        );
+        let request = stun::parse(&packet).unwrap();
+        server.handle_allocate(&request, src).await;
+        let first = server.allocs.lock().await[&src].advertised;
+        server.handle_allocate(&request, src).await;
+        assert_eq!(server.allocs.lock().await[&src].advertised, first);
+        let mut buffer = [0; 4096];
+        client.recv(&mut buffer).await.unwrap();
+        client.recv(&mut buffer).await.unwrap();
+        for target in ["127.0.0.1:53", "169.254.169.254:80", "8.8.8.8:53"] {
+            let id = stun::new_txid();
+            let peer = stun::encode_xor_addr(target.parse().unwrap(), &id);
+            let packet = stun::build(
+                stun::METHOD_CREATE_PERMISSION,
+                stun::CLASS_REQUEST,
+                &id,
+                &[(stun::ATTR_XOR_PEER_ADDRESS, &peer)],
+            );
+            server
+                .handle_permission(&stun::parse(&packet).unwrap(), src)
+                .await;
+            let n = tokio::time::timeout(Duration::from_secs(1), client.recv(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap();
+            let response = stun::parse(&buffer[..n]).unwrap();
+            assert_eq!(response.class, stun::CLASS_ERROR);
+            assert_eq!(response.get(stun::ATTR_ERROR_CODE).unwrap(), &[0, 0, 4, 3]);
+        }
+        assert!(server.allocs.lock().await[&src].permissions.is_empty());
+    }
 
     #[test]
     fn mi_offset_finds_integrity() {

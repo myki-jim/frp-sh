@@ -35,7 +35,7 @@ pub fn redact(text: &str) -> String {
         }
     }
     // Invitations carry access credentials, including when encoded in a fragment.
-    while let Some(start) = s.find("https://frp.sh/join#v1.") {
+    while let Some(start) = s.find("https://frp.sh/join#v") {
         let end = s[start..]
             .find(|c: char| c.is_whitespace() || matches!(c, '\'' | '"'))
             .map_or(s.len(), |n| start + n);

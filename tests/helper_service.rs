@@ -110,6 +110,7 @@ async fn helper_service_child() {
     assert_eq!(unsafe { libc::geteuid() }, 65534);
     frp_sh::helper::status().await.unwrap();
     let config = frp_sh::p2p::tun::TunConfig {
+        allow_lan: false,
         name: "frp0".into(),
         ip: "10.66.0.1".into(),
         netmask: "255.255.255.0".into(),

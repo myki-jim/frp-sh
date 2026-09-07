@@ -1,11 +1,13 @@
 # Deploy the Signaling Server
+> 0.5.0: public listeners require a nonempty password. For the systemd example, create `/etc/frp-sh/server.env` readable only by root with `FRPSH_SERVE_PASSWORD` set. Use HTTPS for signaling.
+
 
 The signaling server is the center of the system: room registration, address exchange, and fallback relay. It is stateless and extremely light (well under 2 MB RAM when idle); a 1-core 512 MB VPS is plenty.
 
 ## Quick start
 
 ```bash
-./frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081
+./frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password "$FRPSH_SERVE_PASSWORD"
 ```
 
 | Option | Default | Description |
@@ -26,7 +28,8 @@ Description=frp-sh signaling server
 After=network.target
 
 [Service]
-ExecStart=/opt/frpsh/target/release/frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081
+EnvironmentFile=/etc/frp-sh/server.env
+ExecStart=/opt/frpsh/target/release/frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password ${FRPSH_SERVE_PASSWORD}
 Restart=always
 RestartSec=3
 

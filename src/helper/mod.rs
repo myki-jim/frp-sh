@@ -13,7 +13,7 @@ use std::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 pub mod platform;
 pub mod service;
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const MAX_PACKET: usize = 65535;
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
@@ -163,6 +163,25 @@ pub async fn status() -> anyhow::Result<()> {
             "Network helper unavailable: check the installed service or rerun the installer",
         )?;
     Ok(())
+}
+fn packet_allowed(p: &[u8], local: Ipv4Addr, lan: &[(u32, u8)]) -> bool {
+    if p.len() < 20
+        || p[0] >> 4 != 4
+        || (p[0] & 15) < 5
+        || (p[0] & 15) as usize * 4 > p.len()
+        || u16::from_be_bytes([p[2], p[3]]) as usize != p.len()
+    {
+        return false;
+    }
+    let source = Ipv4Addr::from(<[u8; 4]>::try_from(&p[12..16]).unwrap());
+    let dest = Ipv4Addr::from(<[u8; 4]>::try_from(&p[16..20]).unwrap());
+    if !source.is_private() || source == local || !dest.is_private() {
+        return false;
+    }
+    dest == local
+        || lan.iter().any(|(net, prefix)| {
+            u32::from(dest) & u32::MAX.checked_shl(32 - *prefix as u32).unwrap_or(0) == *net
+        })
 }
 pub struct Device {
     name: String,
@@ -450,6 +469,15 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             write_json(&mut io, &reply).await?;
             let (mut rd, mut wr) = tokio::io::split(io);
             let (mut tun_rd, mut tun_wr) = tokio::io::split(&mut dev);
+            let local: Ipv4Addr = config.ip.parse()?;
+            let allowed_lan: Vec<_> = if config.allow_lan {
+                crate::utils::lan_subnet_cidrs()
+                    .iter()
+                    .filter_map(|s| crate::utils::parse_cidr(s))
+                    .collect()
+            } else {
+                vec![]
+            };
             let read = async {
                 loop {
                     let n = rd.read_u32().await? as usize;
@@ -457,6 +485,9 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     let mut p = vec![0; n];
                     rd.read_exact(&mut p).await?;
                     anyhow::ensure!(p[0] >> 4 == 4, "Only IPv4 is supported");
+                    if !packet_allowed(&p, local, &allowed_lan) {
+                        continue;
+                    }
                     tun_wr.write_all(&p).await?;
                 }
                 #[allow(unreachable_code)]
@@ -508,8 +539,31 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn incoming_packets_cannot_use_the_machine_as_an_exit_proxy() {
+        let mut p = vec![0; 20];
+        p[0] = 0x45;
+        p[3] = 20;
+        p[12..16].copy_from_slice(&[10, 66, 0, 2]);
+        p[16..20].copy_from_slice(&[10, 66, 0, 1]);
+        let local = "10.66.0.1".parse().unwrap();
+        assert!(packet_allowed(&p, local, &[]));
+        for dest in [
+            [8, 8, 8, 8],
+            [169, 254, 169, 254],
+            [192, 168, 1, 1],
+            [127, 0, 0, 1],
+        ] {
+            p[16..20].copy_from_slice(&dest);
+            assert!(!packet_allowed(&p, local, &[]));
+        }
+        p[16..20].copy_from_slice(&[10, 66, 0, 1]);
+        p[12..16].copy_from_slice(&[10, 66, 0, 1]);
+        assert!(!packet_allowed(&p, local, &[]));
+    }
+    #[test]
     fn helper_rejects_unbounded_privileges() {
         let mut c = TunConfig {
+            allow_lan: false,
             name: "frp0".into(),
             ip: "10.66.0.1".into(),
             netmask: "255.255.255.0".into(),
