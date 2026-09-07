@@ -170,7 +170,7 @@ async fn read_frame(r: &mut (impl tokio::io::AsyncRead + Unpin)) -> anyhow::Resu
     );
     ensure!(
         (kind == OPEN && len == 2 && id != 0)
-            || (kind == DATA && len > 0 && id != 0)
+            || (kind == DATA && id != 0)
             || ((FIN..=PONG).contains(&kind) && len == 0),
         "invalid service frame shape"
     );
@@ -271,7 +271,7 @@ async fn udp_host(
     let mut buf = vec![0; MAX_DATA + 1];
     loop {
         tokio::select! {
-            packet=socket.recv(&mut buf)=>{match packet {Ok(n) if n>0 && n<=MAX_DATA=>send(&out,Frame{kind:DATA,id,data:buf[..n].to_vec()}).await?,Err(e) if matches!(e.kind(),std::io::ErrorKind::ConnectionRefused|std::io::ErrorKind::ConnectionReset)=>{},Err(e)=>return Err(e.into()),_=>{}}},
+            packet=socket.recv(&mut buf)=>{match packet {Ok(n) if n<=MAX_DATA=>send(&out,Frame{kind:DATA,id,data:buf[..n].to_vec()}).await?,Err(e) if matches!(e.kind(),std::io::ErrorKind::ConnectionRefused|std::io::ErrorKind::ConnectionReset)=>{},Err(e)=>return Err(e.into()),_=>{}}},
             frame=input.recv()=>{match frame{Some(f) if f.kind==DATA=>{socket.send(&f.data).await?;},_=>break}},
             _=tokio::time::sleep(Duration::from_secs(30))=>break,
         }
@@ -347,7 +347,7 @@ pub async fn session(
         tasks.spawn(async move{(0,async {match b {
         Binding::Tcp(info,listener)=>loop{let(socket,_)=listener.accept().await?;let id=counter.fetch_add(1,Ordering::Relaxed);ensure!(id!=0,"stream ID exhausted");events.send(Event::Tcp(id,info.id,socket)).await?;},
         Binding::Udp(info,socket)=>{let mut flows:HashMap<SocketAddr,(u32,Instant)>=HashMap::new();let mut buf=vec![0;MAX_DATA+1];let mut sweep=tokio::time::interval(Duration::from_secs(5));loop{tokio::select!{
-            r=socket.recv_from(&mut buf)=>{let(n,peer)=r?;if n==0||n>MAX_DATA{continue} let id=if let Some((id,last))=flows.get_mut(&peer){*last=Instant::now();*id}else{if flows.len()>=64{continue}let id=counter.fetch_add(1,Ordering::Relaxed);ensure!(id!=0,"stream ID exhausted");events.send(Event::Udp(id,info.id,socket.clone(),peer)).await?;flows.insert(peer,(id,Instant::now()));id};events.send(Event::Datagram(id,buf[..n].to_vec())).await?;},
+            r=socket.recv_from(&mut buf)=>{let(n,peer)=r?;if n>MAX_DATA{continue} let id=if let Some((id,last))=flows.get_mut(&peer){*last=Instant::now();*id}else{if flows.len()>=64{continue}let id=counter.fetch_add(1,Ordering::Relaxed);ensure!(id!=0,"stream ID exhausted");events.send(Event::Udp(id,info.id,socket.clone(),peer)).await?;flows.insert(peer,(id,Instant::now()));id};events.send(Event::Datagram(id,buf[..n].to_vec())).await?;},
             _=sweep.tick()=>{let stale:Vec<_>=flows.iter().filter(|(_,(_,last))|last.elapsed()>Duration::from_secs(25)).map(|(p,(id,_))|(*p,*id)).collect();for(p,id)in stale{flows.remove(&p);events.send(Event::Close(id)).await?;}}
         }}}
     }}.await)});
@@ -516,6 +516,12 @@ fn read_control() -> anyhow::Result<Control> {
 }
 pub fn change(add: Vec<Published>, remove: Option<u16>) -> anyhow::Result<()> {
     let mut c = read_control()?;
+    apply_change(&mut c, add, remove)?;
+    save_control(&c)?;
+    crate::ui_println!("Service update queued; active connections will reconnect");
+    Ok(())
+}
+fn apply_change(c: &mut Control, add: Vec<Published>, remove: Option<u16>) -> anyhow::Result<()> {
     if let Some(id) = remove {
         c.targets.retain(|(s, _)| s.id != id);
     }
@@ -526,10 +532,10 @@ pub fn change(add: Vec<Published>, remove: Option<u16>) -> anyhow::Result<()> {
         c.targets.push((s.info, s.target.to_string()));
     }
     validate_catalog(&c.targets.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>())?;
-    save_control(&c)?;
-    crate::ui_println!("Service update queued; active connections will reconnect");
+    c.next_id = next;
     Ok(())
 }
+
 pub async fn revoke() -> anyhow::Result<()> {
     let mut c = read_control()?;
     let api = crate::signaling::SignalingClient::new_with_password(&c.server, Some(&c.password));
@@ -740,5 +746,27 @@ pub async fn join(
             vec![],
         );
         tokio::select! {_=tokio::time::sleep(Duration::from_secs(attempt.min(4)))=>{},_=crate::terminal::ctrl_c()=>return Ok(())}
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    #[test]
+    fn removing_a_service_never_reuses_its_authorized_id() {
+        let target = published(&["3000".into()], &[], None).unwrap();
+        let mut control = Control {
+            next_id: 2,
+            server: String::new(),
+            room: String::new(),
+            password: String::new(),
+            owner: String::new(),
+            targets: vec![(target[0].info.clone(), target[0].target.to_string())],
+        };
+        apply_change(&mut control, target.clone(), None).unwrap();
+        assert_eq!(control.targets[1].0.id, 2);
+        apply_change(&mut control, vec![], Some(2)).unwrap();
+        apply_change(&mut control, target, None).unwrap();
+        assert_eq!(control.targets[1].0.id, 3);
     }
 }

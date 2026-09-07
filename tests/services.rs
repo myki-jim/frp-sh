@@ -90,6 +90,8 @@ async fn eight_members_have_concurrent_tcp_and_isolated_udp_flows() {
                 let mut buf = [0; 64];
                 let n = s.recv(&mut buf).await.unwrap();
                 assert_eq!(&buf[..n], payload);
+                s.send(&[]).await.unwrap();
+                assert_eq!(s.recv(&mut buf).await.unwrap(), 0);
             });
         }
     }
