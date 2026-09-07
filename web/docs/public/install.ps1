@@ -8,6 +8,12 @@ $ErrorActionPreference = 'Stop'
 if ($Lang -eq 'auto') { $Lang = if ((Get-Culture).Name -like 'zh*') {'zh-CN'} else {'en'} }
 # Unicode escapes keep both irm | iex and Windows PowerShell -File encoding-safe.
 function Message([string]$English,[string]$Chinese) { if ($Lang -eq 'zh-CN') { Write-Host ([Text.RegularExpressions.Regex]::Unescape($Chinese)) } else { Write-Host $English } }
+function Get-FrpShPath([string]$CurrentPath,[string]$Destination) {
+    $entries = @($CurrentPath -split ';' | Where-Object {
+        $_.Trim() -and $_.Trim().Trim('"').TrimEnd('\') -ine $Destination.TrimEnd('\')
+    })
+    return (@($Destination) + $entries) -join ';'
+}
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
@@ -20,7 +26,8 @@ if (-not $isAdmin) {
         $child = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -Wait -PassThru
         if ($child.ExitCode -ne 0) { throw 'Installation failed. Run the installer from an administrator terminal to see the detailed error.' }
     } finally { Remove-Item -LiteralPath $bootstrap -ErrorAction SilentlyContinue }
-    $env:Path = (Join-Path $env:ProgramFiles 'frp-sh') + ';' + $env:Path
+    $env:Path = Get-FrpShPath $env:Path (Join-Path $env:ProgramFiles 'frp-sh')
+    & (Join-Path $env:ProgramFiles 'frp-sh/frp-sh.exe') --version
     Message 'Installed. Run frp-sh from your normal terminal; LAN sessions no longer request UAC.' '\u5b89\u88c5\u5b8c\u6210\u3002\u8bf7\u5728\u666e\u901a\u7ec8\u7aef\u8fd0\u884c frp-sh\uff0cLAN \u4f1a\u8bdd\u4e0d\u518d\u8bf7\u6c42 UAC\u3002'
     return
 }
@@ -86,8 +93,13 @@ try {
         throw
     }
     $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
-    if (($machinePath -split ';') -notcontains $destination) { [Environment]::SetEnvironmentVariable('Path',($machinePath.TrimEnd(';') + ';' + $destination),'Machine') }
-    Message 'Installation complete. Reopen a normal terminal and run frp-sh.' '\u5b89\u88c5\u5b8c\u6210\u3002\u91cd\u65b0\u6253\u5f00\u666e\u901a\u7ec8\u7aef\u540e\u8fd0\u884c frp-sh\u3002'
+    $newMachinePath = Get-FrpShPath $machinePath $destination
+    if ($newMachinePath -ne $machinePath) { [Environment]::SetEnvironmentVariable('Path',$newMachinePath,'Machine') }
+    # irm | iex executes here when the caller is already elevated. Its process
+    # PATH otherwise keeps resolving a pre-0.4 LocalAppData installation.
+    $env:Path = Get-FrpShPath $env:Path $destination
+    & (Join-Path $destination 'frp-sh.exe') --version
+    Message 'Installation complete. frp-sh is ready in this terminal.' '\u5b89\u88c5\u5b8c\u6210\u3002\u5f53\u524d\u7ec8\u7aef\u53ef\u76f4\u63a5\u8fd0\u884c frp-sh\u3002'
 } finally {
     $resolved = [IO.Path]::GetFullPath($stage)
     if (-not $resolved.StartsWith(([IO.Path]::GetFullPath($destination) + '\'),[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe staging path' }
