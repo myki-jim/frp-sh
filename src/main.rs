@@ -107,6 +107,11 @@ async fn real_main() -> anyhow::Result<()> {
 
     frp_sh::config::set_cli_name(name);
 
+    let session_ui = matches!(
+        frp_sh::commands::session_role(&command),
+        Some("host" | "guest")
+    );
+    let _status = frp_sh::terminal::monitor(session_ui);
     frp_sh::terminal::banner();
 
     if frp_sh::commands::needs_network_helper(&command) {
@@ -122,7 +127,6 @@ async fn real_main() -> anyhow::Result<()> {
 
     // Update checks are explicit and never delay a connection.
 
-    let _status = frp_sh::terminal::monitor();
     match command {
         Some(Commands::Logs { .. }) => unreachable!(),
         Some(Commands::Update) => frp_sh::update::maybe_check_update(true).await?,

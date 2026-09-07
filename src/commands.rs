@@ -1271,6 +1271,7 @@ pub async fn run_create(
     guest_ips: Vec<String>,
     expose_lan: bool,
 ) -> anyhow::Result<String> {
+    let _screen = crate::terminal::monitor(true);
     let signaling =
         SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
     // 版本冲突控制：与信令服务器的线协议必须一致（不一致拒绝运行）
@@ -1304,6 +1305,7 @@ pub async fn run_create(
         )
         .await?;
     let room_id = resp.room_id.clone();
+    let _roster = crate::stats::watch_room(signaling.clone(), room_id.clone(), expose_lan);
     cfg.room_tokens
         .lock()
         .unwrap()
@@ -1378,7 +1380,7 @@ pub async fn run_create(
     );
     tokio::select! {
         r = session => r?,
-        _ = tokio::signal::ctrl_c() => {
+        _ = crate::terminal::ctrl_c() => {
             crate::ui_println!("\nstopped by user");
             let _ = signaling.delete_room(&room_id).await;
         }
@@ -1425,6 +1427,7 @@ pub async fn host_session(
         my_id: cfg.uuid.clone().unwrap_or_default(),
         device_name: crate::config::device_name(cfg.name.as_deref()),
         encryption: key.is_some(),
+        vnet_ip: tun.as_ref().map(|t| t.ip.clone()).unwrap_or_default(),
         started_at: utils::now_unix() as i64,
         relay_addr: cfg.relay_addr.clone(),
         ..Default::default()
@@ -1765,6 +1768,7 @@ pub async fn run_join(
     requested_ip: Option<String>,
     expose_lan: bool,
 ) -> anyhow::Result<()> {
+    let _screen = crate::terminal::monitor(true);
     let signaling =
         SignalingClient::new_with_password(&cfg.signaling_addr, cfg.password.as_deref());
     // 版本冲突控制：与信令服务器的线协议必须一致（不一致拒绝运行）
@@ -1803,7 +1807,7 @@ pub async fn run_join(
     );
     tokio::select! {
         r = session => r?,
-        _ = tokio::signal::ctrl_c() => {
+        _ = crate::terminal::ctrl_c() => {
             crate::ui_println!("\nstopped by user");
         }
     }
@@ -1837,6 +1841,7 @@ pub async fn guest_session(
         .map_err(|e| FrpError::Config(format!("bad listen addr {listen}: {e}")))?;
     let key_bytes = derive_key(key.as_deref());
     let mut state = RoomState::new(room_id.to_string(), Role::Guest, listen_addr);
+    let _roster = crate::stats::watch_room(signaling.clone(), room_id.to_string(), expose_lan);
     let mut attempt: u64 = 0;
     let mut first = true;
     // 上一轮直连建立后异常断开（如心跳超时）：说明打洞"单通"（我们能收到对端、
@@ -1850,6 +1855,7 @@ pub async fn guest_session(
     // 终端基础信息
     crate::stats::update_info(crate::stats::SessionInfo {
         mode: if tun.is_some() { "lan-guest" } else { "guest" }.into(),
+        vnet_ip: tun.as_ref().map(|t| t.ip.clone()).unwrap_or_default(),
         room: room_id.to_string(),
         signaling: cfg.signaling_addr.clone(),
         my_id: cfg.uuid.clone().unwrap_or_default(),
@@ -2614,6 +2620,7 @@ pub async fn host_mesh_session(
             mesh_port,
             turn_client,
             cfg,
+            expose_lan,
         )
         .await;
         // 测试用完成条件：达到目标访客数后 mesh_host_loop 正常返回 → 整个会话结束
@@ -2650,6 +2657,7 @@ async fn mesh_host_loop(
     mesh_local_port: u16,
     mut turn_client: Option<crate::p2p::turn::TurnClient>,
     cfg: &Config,
+    expose_lan: bool,
 ) -> anyhow::Result<()> {
     let mut pending: HashMap<String, PendingHost> = HashMap::new();
     let mut established: HashMap<String, String> = HashMap::new();
@@ -2890,7 +2898,7 @@ async fn mesh_host_loop(
                                 // 终端链路条目：peer 用设备名，保留 RTT 统计句柄
                                 crate::stats::remove_link(&gr.to_string());
                                 crate::stats::push_link(crate::stats::LinkEntry {
-                                    peer: p.info.name.clone().unwrap_or_else(|| uuid.clone()),
+                                    peer: uuid.clone(),
                                     kind: "turn",
                                     detail: format!(
                                         "{} · vnet {}",
@@ -2988,7 +2996,7 @@ async fn mesh_host_loop(
                                 }
                                 crate::stats::remove_link(&gr.to_string());
                                 crate::stats::push_link(crate::stats::LinkEntry {
-                                    peer: p.info.name.clone().unwrap_or_else(|| uuid.clone()),
+                                    peer: uuid.clone(),
                                     kind: "turn",
                                     detail: format!(
                                         "{} · vnet {}",
@@ -3031,7 +3039,7 @@ async fn mesh_host_loop(
                             plane.unregister(&uuid);
                         }
                         crate::stats::push_link(crate::stats::LinkEntry {
-                            peer: p.info.name.clone().unwrap_or_else(|| uuid.clone()),
+                            peer: uuid.clone(),
                             kind: "relay",
                             detail: format!(
                                 "{} · vnet {}",
@@ -3103,7 +3111,7 @@ async fn mesh_host_loop(
             if ext != current_ext {
                 current_ext = ext;
                 let lan_addrs = utils::lan_socket_addrs(mesh_local_port);
-                let lan_subnets = if tun.is_some() {
+                let lan_subnets = if tun.is_some() && expose_lan {
                     utils::lan_subnet_cidrs()
                 } else {
                     Vec::new()
@@ -3164,7 +3172,7 @@ async fn mesh_establish_link(
     // 这里统一替换为设备名并补充地址明细。
     crate::stats::remove_link(&peer.to_string());
     crate::stats::push_link(crate::stats::LinkEntry {
-        peer: info.name.clone().unwrap_or_else(|| uuid.to_string()),
+        peer: uuid.to_string(),
         kind: "direct",
         detail: format!("{} · vnet {}", peer, info.vnet_ip.as_deref().unwrap_or("-")),
         stats: stream
