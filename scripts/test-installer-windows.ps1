@@ -8,6 +8,20 @@ $tokens = $null
 $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
 if ($errors) { throw ($errors | Out-String) }
+$manifestFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Read-ReleaseManifest'}, $true)
+. ([scriptblock]::Create($manifestFunction.Extent.Text))
+$releaseManifest = Read-ReleaseManifest (Join-Path $root 'web/docs/public/release-manifest.txt')
+if ($releaseManifest.Checksums.Count -ne 21 -or -not $releaseManifest.Checksums.ContainsKey('frp-sh-client-windows-x86_64.exe')) { throw 'Real release assets were rejected' }
+$manifestTest = Join-Path ([IO.Path]::GetTempPath()) ('manifest-test-' + [guid]::NewGuid() + '.txt')
+try {
+    $hash = 'a' * 64
+    foreach ($bad in @("0.5.1`n$hash  ../escape.exe`n", "0.5.1`ninvalid  frp-sh-client.exe`n", "0.5.1`n$hash  frp-sh-client.exe`n$hash  frp-sh-client.exe`n")) {
+        [IO.File]::WriteAllText($manifestTest, $bad)
+        $rejected = $false
+        try { $null = Read-ReleaseManifest $manifestTest } catch { $rejected = $true }
+        if (-not $rejected) { throw 'Unsafe or duplicate manifest entry accepted' }
+    }
+} finally { Remove-Item -LiteralPath $manifestTest -ErrorAction SilentlyContinue }
 $pathFunction = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-FrpShPath'}, $true)
 . ([scriptblock]::Create($pathFunction.Extent.Text))
 $destination = 'C:\Program Files\frp-sh'
