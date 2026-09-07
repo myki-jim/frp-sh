@@ -2,7 +2,7 @@
 
 ## 端到端加密
 
-双方使用相同口令即启用 ChaCha20-Poly1305 加密（见[网络原理](./architecture.md#加密可选)）：
+双方使用相同口令即启用 ChaCha20-Poly1305 加密（见[网络原理](./architecture.md#认证与加密)）：
 
 ```bash
 # 房主
@@ -13,24 +13,12 @@ frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565 --key "我们的暗号"
 ```
 
 - 口令不匹配时会话报 `decryption failed (wrong --key?)` 并退出
-- `--key` 为端到端加密，作用于 **UDP 数据面**的 FRS1 负载：P2P 直连与 TURN 中继
-  路径都会加密（对端可见明文，服务器不可见）；**私有 TCP 中继**不应用 `--key`，
-  但服务器设了 `--password` 时该通道另有密码级流加密
+- 服务房间设置 `--key` 后，在 TCP 中继之上增加端到端加密流，两端口令必须一致。房间凭据提供的传输加密本身不代表对中继运营者保密。
 - 口令通过命令行传入，注意 shell 历史记录；敏感环境可用 `--config` 之外的方式自行包装
 
-## 多连接复用
+## 并发服务
 
-默认一个会话可接受**无限个顺序连接**（断线重连、多次连入均复用同一条隧道）：
-
-```bash
-# 限制为 3 个连接，用尽后会话自动结束
-frp-sh game create --max-conns 3
-frp-sh game join game-xxxx --max-conns 3
-```
-
-适合：游戏客户端断线重连、需要严格限制连接数的共享场景。
-
-> 注意：当前为**顺序复用**（同一时刻一条连接），断线后可立即重连；并发多路复用见[路线图](./roadmap.md)。
+服务房间支持最多 16 个发布服务、32 位访客，每位访客最多 64 条并发流、房间总计 256 条。使用 `frp-sh dev create --tcp 3000 --tcp 8080` 和 `frp-sh dev join 1234`。`--max-conns` 属于旧式转发选项，不是服务房间并发配额。LAN 房间传输虚拟网络流量，不是单条顺序 TCP 连接。
 
 ## 强制中继
 
@@ -39,7 +27,7 @@ frp-sh game create --relay
 frp-sh game join game-xxxx --relay
 ```
 
-- 跳过打洞，直接进中继回退链：**TURN 中继**（配置了 `turn_providers` 时）→ 私有 TCP 中继
+- 跳过 UDP 打洞和 TURN，强制使用 TCP 中继。
 - 适合：已知双方 NAT 无法打洞、需要服务器记录流量、快速验证链路
 
 ## 配置 TURN 供应商

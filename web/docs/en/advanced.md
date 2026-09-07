@@ -2,7 +2,7 @@
 
 ## End-to-end encryption
 
-A matching passphrase on both sides enables ChaCha20-Poly1305 encryption (see [Architecture](./architecture#encryption-optional)):
+A matching passphrase on both sides enables ChaCha20-Poly1305 encryption (see [Architecture](./architecture#authentication-and-encryption)):
 
 ```bash
 # Host
@@ -13,22 +13,12 @@ frp-sh game join game-a3f9c2 --listen 127.0.0.1:25565 --key "our-passphrase"
 ```
 
 - A mismatch makes the session exit with `decryption failed (wrong --key?)`
-- `--key` is end-to-end, applied to the FRS1 payloads on the **UDP data plane**: both the P2P direct and TURN relay paths are encrypted (the peer sees plaintext, the server does not); **private TCP relay** does not apply `--key`, but when the server sets `--password` that channel has its own password-derived stream encryption
+- Service rooms apply an additional end-to-end encrypted stream when `--key` is supplied, including over TCP relay. Both peers must use the same key. Room-token transport encryption alone is not secrecy from the relay operator.
 - The passphrase is passed on the command line — be aware of shell history; wrap it yourself in sensitive environments
 
-## Multi-connection reuse
+## Concurrent services
 
-By default one session accepts **unlimited sequential connections** (reconnect, multiple logins — all reuse the same tunnel):
-
-```bash
-# Cap at 3 connections; the session ends when exhausted
-frp-sh game create --max-conns 3
-frp-sh game join game-xxxx --max-conns 3
-```
-
-Great for: game client reconnects, or sharing with a strict connection cap.
-
-> Note: connections are **sequential** (one at a time; reconnect right after a disconnect). Concurrent multiplexing is on the [roadmap](./roadmap).
+Service rooms support up to 16 published services, 32 guests, 64 concurrent streams per guest and 256 per room. Use `frp-sh dev create --tcp 3000 --tcp 8080` and `frp-sh dev join 1234`. `--max-conns` is a legacy forwarding option, not a service-room concurrency setting. LAN rooms carry virtual-network traffic rather than a single sequential TCP connection.
 
 ## Force relay
 
@@ -37,7 +27,7 @@ frp-sh game create --relay
 frp-sh game join game-xxxx --relay
 ```
 
-- Skips punching and goes straight into the relay fallback chain: **TURN relay** (when `turn_providers` is configured) → private TCP relay
+- Skips UDP punching and TURN and forces TCP relay.
 - For: known non-punchable NATs, server-side traffic logging, or quick link verification
 
 ## Configure TURN providers
@@ -55,7 +45,7 @@ turn_providers = [
 ]
 ```
 
-- On punch failure (including `--relay`), the order tried is: TURN relay → private TCP relay as the fallback
+- Without `--relay`, punch failure can try available TURN providers, then TCP relay. `--relay` forces TCP.
 - It's a global setting — no need to configure per room; the `frp-sh config` wizard doesn't ask about TURN yet, so edit the config by hand
 - Deploying the built-in TURN relay: see [Server deployment](./server#built-in-turn-relay-optional)
 

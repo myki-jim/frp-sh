@@ -63,7 +63,7 @@ frp-sh dev join 1234
 frp-sh join 1234
 ```
 
-These ports are examples, not defaults. Missing creation parameters prompt in an interactive terminal and fail immediately in scripts or JSON mode. A room supports up to 16 host-published services, 32 members, 64 simultaneous streams per member and 256 streams across the host.
+These ports are examples, not defaults. Missing creation parameters prompt in an interactive terminal and fail immediately in scripts or JSON mode. A room supports up to 16 host-published services, 32 guests (33 devices including the host), 64 simultaneous streams per member and 256 streams across the host.
 
 Service rooms use encrypted TCP relay transport. TCP, WebSocket and SSH connections run concurrently. UDP datagrams and source flows remain separate, but TCP relay can add ordered-delivery latency. UDP is marked unverified until traffic arrives. Use a Game/LAN room for direct UDP networking.
 

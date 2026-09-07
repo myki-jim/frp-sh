@@ -103,6 +103,8 @@ pub enum Commands {
     /// Start the signaling server (standalone deployment; HTTP + UDP public probing share the same port)
     #[cfg(feature = "server")]
     Serve {
+        #[command(flatten)]
+        limits: crate::signaling::limits::ServerLimits,
         /// HTTP listen address
         #[arg(short, long, default_value = "0.0.0.0:8080")]
         addr: String,

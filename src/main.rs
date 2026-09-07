@@ -251,6 +251,7 @@ async fn real_main() -> anyhow::Result<()> {
         }
         #[cfg(feature = "server")]
         Some(Commands::Serve {
+            limits,
             addr,
             relay_addr,
             udp_addr,
@@ -265,7 +266,8 @@ async fn real_main() -> anyhow::Result<()> {
                 ),
                 None => None,
             };
-            frp_sh::commands::run_serve(addr, relay_addr, udp_addr, password, turn, ext).await?;
+            frp_sh::commands::run_serve(addr, relay_addr, udp_addr, password, turn, ext, limits)
+                .await?;
         }
         Some(Commands::Config) => {
             frp_sh::commands::run_config(config).await?;

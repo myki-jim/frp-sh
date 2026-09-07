@@ -18,13 +18,13 @@
 
 ### 一直 `UDP hole punching failed, falling back to relay ...`
 
-打洞失败属正常现象（NAT 过于严格），会自动转中继且**不影响使用**。自 v0.3.7 起**打洞失败一次即降级**：后续轮次不再重试打洞和 TURN，直接走 TCP 中继（不再反复浪费十几秒重试）。若希望直连或多试几次：
+打洞可能受 NAT 或防火墙影响。失败后可尝试 TURN 再回退 TCP；`--relay` 明确强制 TCP。中继延迟和吞吐取决于服务器线路与可用带宽，不能保证不影响使用。
 
 - `--punch-retries 3`：失败 3 轮后才降级（默认 1）；`--punch-retries 0` 完全跳过打洞
 - 尝试增大 `--spread`（对称 NAT 场景）
 - 双方都保证 UDP 出站可用；同一 WiFi 下看[局域网直连](#双方在同一-wifi-下怎么做到局域网直连)
 - 若两端在同一局域网/同一 NAT 后，公网打洞属 hairpin 场景，直连可能失败——保持降级走中继即可，或先试局域网直连路径（自动通告 LAN 地址）
-- TURN 中继（配置 `turn_providers`）会在降级前的第一轮尝试；降级后固定走 TCP 中继
+- 达到打洞重试次数不等于禁用 TURN；显式 `--relay` 才强制 TCP。
 
 ### 双方直连成功但数据不通（客户端连不上/连上没响应）
 
@@ -46,7 +46,7 @@ AddrInUse
 
 - `8080` 或 `8081` 被其他进程占用，换端口：
   ```bash
-  frp-sh serve --addr 0.0.0.0:9000 --relay-addr 0.0.0.0:9001
+  frp-sh serve --addr 0.0.0.0:9000 --relay-addr 0.0.0.0:9001 --password "$FRPSH_SERVE_PASSWORD"
   ```
 - 客户端配置相应改为 `http://IP:9000` 与 `IP:9001`
 
@@ -173,7 +173,6 @@ frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password 你的密�
 
 - 房主/访客 `Ctrl-C`（房主退出会删除房间）
 - 房间过期或被删除（双方自动结束）
-- `--max-conns` 用尽后本轮会话结束，随即自动重连等待下一轮
 
 ### 支持 IPv6 吗？
 

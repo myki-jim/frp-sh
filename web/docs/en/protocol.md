@@ -1,220 +1,41 @@
-# Protocol Specification
+# Protocol v3
 
-For developers who want a compatible client/server or a deep understanding. All protocols are simple text/binary formats with no encryption (`--key` encryption lives in the FRS1 layer, see below).
+This is an implementation overview for 0.5.4, not a complete independent wire-format specification. Compatibility work should also follow the version-tagged sources: `src/signaling/mod.rs`, `src/signaling/server.rs`, `src/p2p/relay.rs`, `src/p2p/enc.rs`, `src/p2p/stream.rs`, and `src/services.rs`.
 
-## 1. Signaling REST API
+## HTTP signaling
 
-Base URL: `signaling_addr` (e.g. `http://host:8080`).
+`GET /health` returns `ok`. `GET /version` returns application version, protocol number, authentication status and, from 0.5.4, configured `limits`. These two routes do not require authentication.
 
-### POST `/room/create`
+Other routes use `X-Frp-Sh-Token`: the server password or an applicable room access token. Room access tokens cannot authorize room creation. Owner mutations additionally require `X-Frp-Sh-Room-Token`.
 
-Request:
+| Route | Purpose |
+| --- | --- |
+| `POST /room/create` | Register a room; returns `room_id`, `host_addr`, `owner_token` |
+| `POST /room/{id}/join` | Register/update a visitor; returns assigned IP and display name |
+| `GET /room/{id}` | Room snapshot, including guest list and published services |
+| `POST /room/{id}/refresh` | Owner address/candidate refresh |
+| `POST /room/{id}/secure` | Owner creates/rotates scoped room access credentials |
+| `POST /room/{id}/services` | Owner updates the service catalog |
+| `DELETE /room/{id}` | Owner deletes the room |
 
-```json
-{ "prefix": "game", "ttl": 43200, "addr": "223.117.153.115:44276" }
-```
+Create requests include `prefix`, `ttl` and `addr`; optional adapter, candidate and version fields are defined in the request structs. Default room codes have four digits; prefixes are optional. `visitor_id` is the stable reconnect identifier. Room-scoped tokens and owner tokens are distinct and must not be logged.
 
-| Field | Description |
-|-------|-------------|
-| `prefix` | room prefix |
-| `ttl` | lifetime in seconds |
-| `addr` | the caller's public address (learned via UDP probe) |
+Errors include 400 invalid metadata, 401 authentication failure, 403 owner permission failure, 404 missing/expired room, 409 address conflict, and 429 admission capacity reached. Counts include owners; reconnecting with the same registered identity reuses a slot. HTTP itself is not encrypted; deploy HTTPS.
 
-Response `200`:
+## UDP discovery and transport
 
-```json
-{ "room_id": "game-a3f9c2", "host_addr": "223.117.153.115:44276" }
-```
+Public discovery uses `ECHO <token>` and `ADDR <token> <ip>:<port>`. Punching exchanges `PUNCH <token>` and `ACK <token>`. The reliable UDP stream uses FRS1 framing. See `src/p2p/stream.rs` for sequence, acknowledgement, retransmission and framing rules. Service multiplexing is a separate format in `src/services.rs`; it must not be implemented as the legacy CNEW sequential forwarding protocol.
 
-### GET `/room/{id}`
+## TCP relay
 
-Response `200`:
-
-```json
-{
-  "room_id": "game-a3f9c2",
-  "host_addr": "223.117.153.115:44276",
-  "guest_addr": "223.117.153.115:44282",
-  "created_at": 1724900000,
-  "expires_at": 1724943200
-}
-```
-
-`guest_addr` is `null` before a guest joins. Expired rooms return `404`.
-
-### POST `/room/{id}/join`
-
-Request:
-
-```json
-{ "addr": "223.117.153.115:44282" }
-```
-
-Response `200`:
-
-```json
-{ "room_id": "game-a3f9c2", "host_addr": "223.117.153.115:44276" }
-```
-
-### TURN relay address fields
-
-When TURN is enabled (`turn_providers` configured), the room object additionally carries the relay addresses both sides allocated via TURN:
-
-- `POST /room/create` may carry `turn_relay` (host side; usually not allocated yet at creation time, so `null`)
-- `POST /room/{id}/refresh` and `POST /room/{id}/join` may carry `turn_relay`
-- `GET /room/{id}` responses include `host_turn_relay` and `guest_turn_relay` (`null` when not advertised)
-
-After a punch failure the client **polls the room for up to 5 seconds** waiting for the peer to advertise its relay address, then builds the TURN data plane (see section 7).
-
-### DELETE `/room/{id}`
-
-`204` on success, `404` if missing.
-
-### GET `/health`
-
-Returns `ok`.
-
-## 2. UDP public probe
-
-The client sends to the probe port (same as HTTP, or `signaling_udp`):
+For a secured room, the client first sends `R3 <room_id>\n` so the server selects the room access credential, then establishes the credential-derived encrypted stream. Inside that stream:
 
 ```text
-ECHO <token>
+HELLO2 <room_id> <HOST|GUEST> <visitor_id> <owner_token-or-dash>\r\n
 ```
 
-The server echoes (the source address is the client's NAT-mapped public address):
+Hosts supply the owner token; guests supply `-`. The matching visitor ID identifies a pairing slot. `WAIT` means registered and waiting; it does not mean the peer is already connected. `OK` indicates pairing. Pending pair slots expire after 15 seconds. Invalid authentication/handshakes may close the connection; do not depend on an old fixed `ERROR` vocabulary. Consult the relay client/server sources for encryption framing and shutdown behavior.
 
-```text
-ADDR <token> <ip>:<port>
-```
+## TURN
 
-`token` is generated by the client (8 hex chars) to correlate responses.
-
-## 3. Hole-punching protocol
-
-Datagrams are ASCII text:
-
-```text
-PUNCH <token>   # punch request
-ACK <token>     # punch confirmation (token echoed)
-```
-
-| Scenario | Behavior |
-|----------|----------|
-| receive `PUNCH <t>` | reply `ACK <t>` (with retries), record peer address → direct |
-| receive `ACK <t>` matching local token | direct |
-| receive an FRS1 frame (magic `FRS1`) | peer already in data phase → direct |
-
-Punch targets = peer's advertised address ± spread ports (own port excluded). Window ~3s.
-
-## 4. FRS1 reliable stream protocol
-
-UDP datagrams, 15-byte header + payload:
-
-```text
-offset  size  field
-0       4     magic = "FRS1"
-4       1     flags: 0x01=DATA, 0x02=FIN, 0=pure ACK
-5       4     seq (u32 BE)
-9       4     ack (u32 BE)   — highest contiguous seq received + 1
-13      2     len (u16 BE)   — payload length
-15      len   payload (DATA frames; with --key, ciphertext incl. 16B Poly1305 tag)
-```
-
-### Sender state machine
-
-- `next_seq` starts at 1; window is 32 frames
-- Data frames enter the window and are sent; windowed frames go into the retransmit queue
-- On `ack=N`: remove all frames with `seq < N`; when the FIN frame is acked (`ack > fin_seq`), close completes
-- 150ms timer: retransmit all unacknowledged windowed frames
-- Idle 1s: send a pure ACK (keepalive, keeps NAT mapping alive)
-
-### Receiver state machine
-
-- `next_expected` starts at 1
-- Data frame with `seq == next_expected`: deliver payload, `next_expected += 1`, reply ACK
-- Out-of-order/duplicate frames: drop (go-back-N), still reply ACK to hint the sender
-- FIN received: set `rx_closed`, reply ACK
-- Read buffer full (1MB): drop frames without advancing seq (triggers retransmit = flow control)
-
-### Encryption
-
-With `--key`, DATA payload = `ChaCha20-Poly1305.encrypt(nonce=seq, plaintext)`; the ciphertext includes a 16-byte auth tag; plaintext frames cap at 1184 bytes. ACK/FIN frames stay plaintext.
-
-### Close
-
-- `shutdown()`: send a FIN frame (`seq = next_seq`, into the retransmit queue), wait for `ack > fin_seq`
-- 5s without confirmation: treat the peer as gone, **best-effort close** (no error)
-
-### Error handling
-
-- Windows `WSAECONNRESET(10054)` / `WSAECONNREFUSED(10061)`: ignored (ICMP poisoning)
-- Peer socket closed: subsequent recv errors end the session
-
-## 5. Tunnel framing protocol
-
-A byte stream over the FRS1 stream (or relay TCP), for local TCP bridging and multi-connection reuse:
-
-```text
-Guest → Host: "CNEW"                          # 4 bytes, new connection
-Guest → Host: [u32 len BE][payload]            # data frame, len ≤ 1 MiB
-Guest → Host: [u32 0]                          # end frame
-Host → Guest: [u32 len BE][payload]            # data frame
-Host → Guest: [u32 0]                          # end frame
-```
-
-- While waiting for `CNEW`, the host treats any other 4 bytes as a residual data-frame header and skips it (close-race protection)
-- End frames are acknowledged symmetrically: on local close, send an end frame and wait for the peer's; on receiving one, reply (if not already sent) and end the connection
-
-## 6. Relay protocol
-
-TCP text lines (`\r\n` terminated):
-
-```text
-Client → Server: HELLO <room_id> <HOST|GUEST>
-Server → Client: WAIT\r\n | OK\r\n | ERROR <reason>\r\n
-```
-
-| Response | Meaning |
-|----------|---------|
-| `WAIT` | slotted, waiting for the peer |
-| `OK` | peer already waiting, paired |
-| `ERROR ROOM_EXPIRED` / `ERROR BAD_HELLO` / `ERROR BAD_ROLE` / `ERROR ALREADY_CONNECTED` / `ERROR NO_PEER` | rejected |
-
-After pairing, the server copies both directions; the ends are transparent. Pairing waits up to 10 minutes.
-
-## 7. TURN relay protocol
-
-The TURN relay implements an **RFC 5389 (STUN) + RFC 5766 (TURN) UDP subset** and interoperates with standard TURN servers (coturn, etc.):
-
-| Method | Purpose |
-|--------|---------|
-| `Allocate` | allocate a relay address (the **XOR-RELAYED-ADDRESS (0x0016)** in the response is your relay address) |
-| `CreatePermission` | authorize the peer's relay address so it may send to your relay |
-| `Send` indication | client → server: deliver data to the authorized peer |
-| `Data` indication | server → client: data from the peer |
-| `Refresh` | extend the allocation (default lifetime 600s; the client refreshes at half the period) |
-| `Binding` | STUN public-address probing / connectivity checks |
-
-### Authentication (long-term credential)
-
-- Requests carry `USERNAME`, `REALM`, `NONCE`, `MESSAGE-INTEGRITY` (HMAC-SHA1)
-- Key = `MD5(user:realm:pass)`; the server issues the nonce — retry with the nonce after a 401 (up to 5 times)
-- Built-in TURN server convention: username `frp-sh`, realm `frp.sh`, password = the `serve --password` value
-
-### Data plane
-
-The FRS1 reliable stream runs **directly on top of TURN** (`UdpStream` generalized to `DatagramSocket`; direct and TURN share the same implementation): sending wraps one FRS1 frame in a Send indication, receiving unpacks it from a Data indication. The upper tunnel, encryption, and multi-connection reuse logic are unchanged.
-
-### Fallback order
-
-```text
-punch direct ──failure──▶ TURN relay ──failure──▶ private TCP relay (section 6)
-```
-
-Multiple TURN providers Allocate in parallel and are speed-tested, picking the lowest RTT; `--relay` skips punching and enters the fallback chain directly.
-
-## Compatibility notes
-
-- Punching and relay phases use plain ASCII/binary for easy packet debugging
-- frp-sh's protocols are **not compatible** with frp — they are self-designed
+The implementation supports a UDP subset of STUN/TURN, with authenticated allocation and permission operations. Built-in TURN destinations are restricted to active local relay endpoints. TURN authentication is not payload end-to-end encryption. `--relay` selects TCP and skips TURN.

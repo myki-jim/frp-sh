@@ -18,11 +18,8 @@ The client cannot reach the server's UDP probe port:
 
 ### Stuck at `UDP hole punching failed, falling back to relay ...`
 
-Punch failure is normal (overly strict NAT) and **does not break usage** — it falls
-back to relay automatically. Since v0.3.7 **one failed punch permanently downgrades**:
-later rounds no longer retry punching or TURN and go straight to the TCP relay (no
-more wasting ten-plus seconds retrying the same failing path). If you want a direct
-link or more attempts:
+Punching may fail under restrictive NAT or firewall rules; the client falls
+back to relay automatically. A failed direct probe does not disable TURN; `--relay` explicitly forces TCP. Relay latency and throughput depend on the server route and available bandwidth.
 
 - `--punch-retries 3`: downgrade only after 3 failed rounds (default 1);
   `--punch-retries 0` skips punching entirely
@@ -31,8 +28,7 @@ link or more attempts:
 - If both ends are on the same LAN / behind the same NAT, public-IP punching is a
   hairpin case and the direct link may fail — staying downgraded on the relay is fine,
   or try the LAN-direct path first (LAN addresses are advertised automatically)
-- TURN relay (configure `turn_providers`) is only tried in the first round before the
-  downgrade; after downgrading it always uses the TCP relay
+- Exhausting direct-punch retries does not itself disable TURN; explicit `--relay` forces TCP.
 
 ### Direct link established but no data flows
 
@@ -54,7 +50,7 @@ AddrInUse
 
 - `8080` or `8081` is taken by another process; change ports:
   ```bash
-  frp-sh serve --addr 0.0.0.0:9000 --relay-addr 0.0.0.0:9001
+  frp-sh serve --addr 0.0.0.0:9000 --relay-addr 0.0.0.0:9001 --password "$FRPSH_SERVE_PASSWORD"
   ```
 - Update the client config accordingly (`http://IP:9000`, `IP:9001`)
 
@@ -190,7 +186,6 @@ By default sessions **reconnect automatically** (backoff from 2s, capped at 15s)
 
 - Either side presses `Ctrl-C` (the host deletes the room on exit)
 - The room expires or is deleted (both sides end automatically)
-- `--max-conns` is exhausted —the current round ends, then it reconnects and waits for the next round
 
 ### IPv6 support?
 
