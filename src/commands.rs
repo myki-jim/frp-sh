@@ -972,6 +972,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     };
 
     let cfg = Config {
+        presets: Default::default(),
         language: None,
         room_tokens: Default::default(),
         signaling_addr,

@@ -136,6 +136,7 @@ pub fn monitor(session: bool) -> Monitor {
     let mut page = 0usize;
     let mut invite = false;
     let mut logs = false;
+    let mut leaving = false;
     let mut logview = crate::logview::LogView::default();
     let mut selection = 0usize;
     let mut notice = String::new();
@@ -144,6 +145,17 @@ pub fn monitor(session: bool) -> Monitor {
         for event in events {
             if let Event::Key(key) = event {
                 if key.kind == KeyEventKind::Release {
+                    continue;
+                }
+                if leaving {
+                    match key.code {
+                        KeyCode::Enter => EXIT.notify_one(),
+                        KeyCode::Esc => leaving = false,
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            EXIT.notify_one()
+                        }
+                        _ => {}
+                    }
                     continue;
                 }
                 if logs {
@@ -170,7 +182,7 @@ pub fn monitor(session: bool) -> Monitor {
                         invite = !invite;
                         notice.clear();
                     }
-                    KeyCode::Char('q' | 'Q') | KeyCode::Esc => EXIT.notify_one(),
+                    KeyCode::Char('q' | 'Q') | KeyCode::Esc => leaving = true,
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         EXIT.notify_one()
                     }
@@ -221,6 +233,22 @@ pub fn monitor(session: bool) -> Monitor {
                     _ => {}
                 }
             }
+        }
+        if leaving {
+            return crate::app::shell(
+                w,
+                h,
+                crate::i18n::text("Leave room", "离开房间"),
+                crate::i18n::text("Enter Leave   Esc Stay", "Enter 离开   Esc 留在房间"),
+                &[(
+                    crate::i18n::text(
+                        "Leave this room and close its connections?",
+                        "离开当前房间并关闭连接？",
+                    )
+                    .into(),
+                    3,
+                )],
+            );
         }
         if logs {
             return logview.frame(w, h, tick);

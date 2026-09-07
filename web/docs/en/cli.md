@@ -1,5 +1,23 @@
 # Commands and keyboard controls
 
+## Interactive rooms and personal presets
+
+Run `frp-sh` for the terminal app: create a default LAN room immediately, join, customize a room, manage presets or saved connections. `frp-sh preset` opens room presets (shortcut `7`); `frp-sh profile` opens saved connections (shortcut `2`).
+
+```sh
+frp-sh create
+frp-sh 3856
+frp-sh create game
+frp-sh create dev
+frp-sh create --preset my-room --mtu 1280
+```
+
+The new `create game` and `create dev` entry points use the same LAN foundation. Built-in scenes currently share safe network defaults; they do not discover games, expose the physical LAN or automatically publish development services. Legacy `game create` and `dev create` service commands remain compatible.
+
+Custom creation: Tab changes fields, Enter creates, Ctrl+S saves a preset. Presets: N adds, E edits/renames, C duplicates, Delete removes, Enter uses. Built-ins are read-only and can be copied. Resolution order is defaults, saved preset, explicit arguments. Temporary edits do not overwrite presets. Presets store lifetime, MTU, probe spread, relay selection, prefix and scene, never passphrases, room IDs or invitations.
+
+The join page accepts a room ID or invitation; Tab selects an optional extra payload passphrase. `--key` remains an additional shared encryption passphrase, not a server login password. In a room, I opens invitations, G opens separate logs, Q/Esc requests leaving, Enter confirms and Esc cancels. Changing room pages keeps connections alive.
+
 Use `frp-sh --help`, `frp-sh game --help`, `frp-sh dev --help` and `frp-sh profile --help` for the full options supported by your installed binary.
 
 ## Terminal app and Profiles
@@ -20,7 +38,7 @@ frp-sh lan join 1234
 
 Open your game's LAN world, then connect using the host's virtual IP. frp-sh does not require a game port in this mode, though the game itself may require one. Automatic discovery is not guaranteed for every game.
 
-Physical LAN sharing is off by default. The generic `frp-sh join 1234 --network` explicitly permits whole-device networking; joining services does not grant that permission.
+Physical LAN sharing is off by default. `frp-sh join 1234` joins LAN rooms directly; the old `--network` flag remains compatible. Legacy service rooms still expose only their published services.
 
 ## Game servers and development services
 

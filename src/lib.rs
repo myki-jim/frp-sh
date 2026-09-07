@@ -18,6 +18,7 @@ pub mod i18n;
 pub mod invite;
 pub mod logview;
 pub mod p2p;
+pub mod presets;
 pub mod room;
 pub mod services;
 pub mod signaling;
