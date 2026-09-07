@@ -222,3 +222,57 @@ pub fn info_snapshot() -> SessionInfo {
         .unwrap()
         .clone()
 }
+
+#[derive(Default, Clone)]
+pub struct RoomView {
+    pub room: Option<crate::signaling::RoomInfo>,
+    pub stale: bool,
+    pub expose_lan: bool,
+}
+static ROOM_VIEW: OnceLock<Mutex<RoomView>> = OnceLock::new();
+pub fn room_view() -> RoomView {
+    ROOM_VIEW
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .clone()
+}
+pub fn set_room_view(view: RoomView) {
+    *ROOM_VIEW.get_or_init(Default::default).lock().unwrap() = view;
+}
+pub struct RoomWatch(Option<tokio::task::JoinHandle<()>>);
+impl Drop for RoomWatch {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+pub fn watch_room(
+    client: crate::signaling::SignalingClient,
+    room: String,
+    expose_lan: bool,
+) -> RoomWatch {
+    if !crate::terminal::dashboard_active() {
+        return RoomWatch(None);
+    }
+    *ROOM_VIEW.get_or_init(Default::default).lock().unwrap() = RoomView {
+        expose_lan,
+        ..Default::default()
+    };
+    RoomWatch(Some(tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            tick.tick().await;
+            let result = client.get_room(&room).await;
+            let mut view = ROOM_VIEW.get().unwrap().lock().unwrap();
+            match result {
+                Ok(room) => {
+                    view.room = Some(room);
+                    view.stale = false;
+                }
+                Err(_) => view.stale = true,
+            }
+        }
+    })))
+}

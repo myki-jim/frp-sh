@@ -1,6 +1,6 @@
 [package]
 name = "frp-sh"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 description = "Social P2P tunnel: room-based UDP hole punching with relay fallback"
 license = "MIT"
@@ -38,6 +38,8 @@ sha1 = "0.10"
 md-5 = "0.10"
 async-trait = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
+crossterm = { version = "0.28.1", default-features = false, features = ["events", "windows"] }
+unicode-width = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

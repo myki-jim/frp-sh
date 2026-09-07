@@ -8,6 +8,7 @@ pub use frpsh_ui_macros::{ui_format, ui_print, ui_println};
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod dashboard;
 pub mod debuglog;
 pub mod error;
 pub mod helper;
