@@ -1,11 +1,15 @@
 use super::*;
 use crate::device::key::DeviceKey;
 use anyhow::ensure;
+#[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     origin: String,
 }
 impl Client {
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
     pub fn new(origin: &str) -> anyhow::Result<Self> {
         crate::invite_ticket::Ticket::new(origin, &"00".repeat(32))?;
         Ok(Self {

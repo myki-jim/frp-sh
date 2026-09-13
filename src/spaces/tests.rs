@@ -1,7 +1,9 @@
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
+use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 const ORIGIN: &str = "https://example.test";
 
 #[tokio::test]
@@ -191,6 +193,135 @@ async fn member_sessions_replace_refresh_and_revoke_without_owner_presence() {
         .0,
         StatusCode::BAD_REQUEST
     );
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn relay_routes_only_authorized_members_and_rewrites_the_source_address() {
+    let (url, task, _) = start_with_service(":memory:".into()).await;
+    let client = Client::new();
+    let owner = SigningKey::from_bytes(&[61; 32]);
+    let guest = SigningKey::from_bytes(&[62; 32]);
+    let (_, created) = execute(
+        &client,
+        &url,
+        &owner,
+        Operation::Create {
+            name: "relay".into(),
+            expires_at: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+        },
+        true,
+    )
+    .await;
+    let space = created["id"].as_str().unwrap().to_owned();
+    let (_, invite) = execute(
+        &client,
+        &url,
+        &owner,
+        Operation::Invite {
+            space: space.clone(),
+            ttl: None,
+            uses: 1,
+        },
+        false,
+    )
+    .await;
+    let ticket =
+        crate::invite_ticket::Ticket::parse(invite["invitation"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        execute(
+            &client,
+            &url,
+            &guest,
+            Operation::Redeem {
+                token: ticket.token().into(),
+                request_id: uuid::Uuid::new_v4().to_string()
+            },
+            false
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, owner_admission) = execute(
+        &client,
+        &url,
+        &owner,
+        Operation::OpenSession {
+            space: space.clone(),
+        },
+        false,
+    )
+    .await;
+    let (_, guest_admission) = execute(
+        &client,
+        &url,
+        &guest,
+        Operation::OpenSession {
+            space: space.clone(),
+        },
+        false,
+    )
+    .await;
+    let owner_admission: leases::Admission = serde_json::from_value(owner_admission).unwrap();
+    let guest_admission: leases::Admission = serde_json::from_value(guest_admission).unwrap();
+    let base = url
+        .replacen("http://", "ws://", 1)
+        .trim_end_matches("/spaces/v1")
+        .to_owned();
+    let connect = |token: &str| {
+        let mut request = format!("{base}/spaces/v1/{space}/relay")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        request
+    };
+    let (mut owner_socket, _) =
+        tokio_tungstenite::connect_async(connect(&owner_admission.access_token))
+            .await
+            .unwrap();
+    let (mut guest_socket, _) =
+        tokio_tungstenite::connect_async(connect(&guest_admission.access_token))
+            .await
+            .unwrap();
+    // The guest claims its own source byte, yet relay replaces it with the address assigned to the lease.
+    guest_socket
+        .send(tokio_tungstenite::tungstenite::Message::Binary(
+            vec![1, 9, 8, 7].into(),
+        ))
+        .await
+        .unwrap();
+    let received = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let message = owner_socket.next().await.unwrap().unwrap();
+            if matches!(message, tokio_tungstenite::tungstenite::Message::Binary(_)) {
+                return message;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(received, tokio_tungstenite::tungstenite::Message::Binary(frame) if frame.as_ref()==[2,9,8,7])
+    );
+    // Invalid target and unavailable address are ignored rather than reflected or broadcast.
+    guest_socket
+        .send(tokio_tungstenite::tungstenite::Message::Binary(
+            vec![255, 1].into(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), owner_socket.next())
+            .await
+            .is_err()
+    );
+    drop(guest_socket);
+    drop(owner_socket);
     task.abort();
     let _ = task.await;
 }

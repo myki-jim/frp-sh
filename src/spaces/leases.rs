@@ -20,28 +20,66 @@ struct Entry {
     hash: [u8; 32],
     lease: Lease,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Admission {
-    pub access_token: String,
-    pub session_id: String,
-    pub space: String,
-    pub device: String,
-    pub address: Ipv4Addr,
-    pub expires_at: u64,
-}
+pub use super::types::Admission;
 pub struct Leases {
+    root_key: [u8; 32],
     maximum: usize,
     members: HashMap<Member, Entry>,
     tokens: HashMap<[u8; 32], Member>,
 }
 impl Leases {
     pub fn new(maximum: usize) -> Self {
+        use rand::RngCore;
+        let mut root_key = [0; 32];
+        rand::rngs::OsRng.fill_bytes(&mut root_key);
         Self {
+            root_key,
             maximum,
             members: HashMap::new(),
             tokens: HashMap::new(),
         }
+    }
+    pub fn peers(
+        &self,
+        space: &str,
+        device: &VerifiedDevice,
+        session: &str,
+        now: u64,
+    ) -> anyhow::Result<Vec<super::types::Peer>> {
+        use hmac::{Hmac, Mac};
+        let local = self
+            .members
+            .get(&(space.to_owned(), device.public_key().to_owned()))
+            .context("session unavailable")?;
+        ensure!(
+            local.lease.session_id == session
+                && local.lease.expires_at > now
+                && !local.lease.cancelled.is_cancelled(),
+            "session expired or replaced"
+        );
+        self.members
+            .values()
+            .filter(|entry| {
+                entry.lease.space == space
+                    && entry.lease.session_id != session
+                    && entry.lease.expires_at > now
+                    && !entry.lease.cancelled.is_cancelled()
+            })
+            .map(|entry| {
+                let remote = &entry.lease;
+                let mut ids = [session, remote.session_id.as_str()];
+                ids.sort_unstable();
+                let context = serde_json::to_vec(&("frp-sh/peer-key/v1", space, ids))?;
+                let mut mac = Hmac::<Sha256>::new_from_slice(&self.root_key).expect("HMAC key");
+                mac.update(&context);
+                Ok(super::types::Peer {
+                    device: remote.device.public_key().into(),
+                    session_id: remote.session_id.clone(),
+                    address: remote.address,
+                    key: mac.finalize().into_bytes().into(),
+                })
+            })
+            .collect()
     }
     pub fn issue(
         &mut self,
