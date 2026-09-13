@@ -62,6 +62,15 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Manage device-authenticated durable spaces and temporary invitations
+    Space {
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        #[command(subcommand)]
+        cmd: crate::spaces::cli::Command,
+    },
     /// Run or configure the noninteractive saved-profile supervisor
     Agent {
         #[command(subcommand)]
@@ -112,6 +121,8 @@ pub enum Commands {
     /// Start the signaling server (standalone deployment; HTTP + UDP public probing share the same port)
     #[cfg(feature = "server")]
     Serve {
+        #[command(flatten)]
+        spaces: crate::spaces::server::Options,
         #[command(flatten)]
         limits: crate::signaling::limits::ServerLimits,
         /// HTTP listen address
@@ -479,6 +490,31 @@ pub struct RoomCreateArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AgentCmd {
+    /// Register a job as an automatic Windows system service (installation may request UAC)
+    Install {
+        #[arg(long)]
+        job: PathBuf,
+    },
+    #[command(hide = true)]
+    InstallElevated {
+        #[arg(long)]
+        snapshot: PathBuf,
+        #[arg(long)]
+        digest: String,
+    },
+    /// Native Windows service entry; started by SCM, not an interactive terminal
+    #[command(hide = true)]
+    Service {
+        #[arg(long)]
+        job: PathBuf,
+    },
+    #[command(hide = true)]
+    ServerWorker,
+    /// Save a noninteractive signaling-server job; requires the full binary
+    ConfigureServer {
+        #[arg(long)]
+        job: PathBuf,
+    },
     /// Save a profile reference as a persistent supervisor job (does not install a system service)
     Configure {
         #[arg(long)]

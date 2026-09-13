@@ -1,5 +1,9 @@
 //! Read-only per-account status IPC. Never serializes configuration or invitation objects.
 mod transport;
+#[cfg(windows)]
+pub(crate) use transport::identity;
+#[cfg(windows)]
+mod windows_peer;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -7,6 +11,8 @@ const MAX_FRAME: usize = 65536;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
+    #[serde(default)]
+    pub process_id: u32,
     pub schema_version: u32,
     pub role: String,
     pub state: String,
@@ -42,6 +48,7 @@ fn snapshot(role: &str) -> Status {
         })
         .collect::<Vec<_>>();
     Status {
+        process_id: std::process::id(),
         schema_version: 1,
         role: role.into(),
         state: if role == "serve" {
@@ -69,7 +76,17 @@ pub async fn publish_with_manager(
     role: &'static str,
     manager: Option<crate::runtime::SessionManager>,
 ) -> anyhow::Result<Guard> {
-    let mut listener = transport::Listener::bind(role).await?;
+    publish_as(role, manager, None).await
+}
+pub async fn publish_as(
+    role: &'static str,
+    manager: Option<crate::runtime::SessionManager>,
+    owner: Option<&str>,
+) -> anyhow::Result<Guard> {
+    let mut listener = match owner {
+        Some(owner) => transport::Listener::bind_for(role, Some(owner)).await?,
+        None => transport::Listener::bind(role).await?,
+    };
     Ok(Guard(tokio::spawn(async move {
         let mut jobs = tokio::task::JoinSet::new();
         loop {
@@ -115,7 +132,7 @@ pub async fn query(role: &str) -> anyhow::Result<Status> {
 }
 pub async fn print(json: bool) -> anyhow::Result<i32> {
     let mut values = Vec::new();
-    for role in ["agent", "serve", "host", "guest"] {
+    for role in ["agent", "server_agent", "serve", "host", "guest"] {
         match query(role).await {
             Ok(value) => values.push(serde_json::to_value(value)?),
             Err(error) => {

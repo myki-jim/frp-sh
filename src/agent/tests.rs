@@ -32,6 +32,8 @@ async fn supervisor_recovers_invalid_job_and_stops_without_worker() {
     let status = crate::local_status::query("agent").await.unwrap();
     assert_eq!(status.lifecycle.unwrap().phase, Phase::Error);
     let mut desired = job::Job {
+        server: false,
+        owner_sid: None,
         schema_version: 1,
         enabled: false,
         config: dir.join("missing-config.toml"),
@@ -60,6 +62,8 @@ fn jobs_store_references_only_and_roundtrip_atomically() {
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join("job.toml");
     let mut value = job::Job {
+        server: false,
+        owner_sid: None,
         schema_version: 1,
         enabled: true,
         config: dir.join("config.toml"),

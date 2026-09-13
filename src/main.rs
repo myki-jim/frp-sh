@@ -86,6 +86,15 @@ async fn real_main() -> anyhow::Result<()> {
         }
     };
     let cli = cli::Cli::from_arg_matches(&matches)?;
+    if let Some(Commands::Space {
+        server,
+        identity,
+        cmd,
+    }) = cli.command
+    {
+        frp_sh::terminal::configure(true, cli.json, true);
+        return frp_sh::spaces::cli::run(cmd, server, identity, cli.config).await;
+    }
     if matches!(cli.command, Some(Commands::Status)) {
         let code = frp_sh::local_status::print(cli.json).await?;
         if code != 0 {
@@ -111,6 +120,61 @@ async fn real_main() -> anyhow::Result<()> {
     if let Some(Commands::Agent { cmd }) = &cli.command {
         use frp_sh::agent::job::Job;
         match cmd {
+            cli::AgentCmd::Install { job } => {
+                #[cfg(windows)]
+                return frp_sh::agent::install::install(job);
+                #[cfg(not(windows))]
+                {
+                    let _ = job;
+                    anyhow::bail!("native service installer is not available on this platform yet");
+                }
+            }
+            cli::AgentCmd::InstallElevated { snapshot, digest } => {
+                #[cfg(windows)]
+                return frp_sh::agent::install::elevated_install(snapshot, digest);
+                #[cfg(not(windows))]
+                {
+                    let _ = (snapshot, digest);
+                    anyhow::bail!("Windows installation entry");
+                }
+            }
+            cli::AgentCmd::Service { job } => {
+                #[cfg(windows)]
+                return frp_sh::agent::service::dispatch(job.clone());
+                #[cfg(not(windows))]
+                return frp_sh::agent::run(job).await;
+            }
+            cli::AgentCmd::ConfigureServer { job } => {
+                let config = cli
+                    .config
+                    .clone()
+                    .or_else(Config::default_path)
+                    .ok_or_else(|| anyhow::anyhow!("no config path"))?
+                    .canonicalize()?;
+                let desired = Job {
+                    schema_version: 1,
+                    enabled: true,
+                    config,
+                    profile: String::new(),
+                    server: true,
+                    owner_sid: None,
+                };
+                desired.check_profile()?;
+                desired.save(job)?;
+                frp_sh::ui_println!("Server supervisor job saved");
+            }
+            cli::AgentCmd::ServerWorker => {
+                #[cfg(feature = "server")]
+                {
+                    let path = cli
+                        .config
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("explicit server configuration required"))?;
+                    return frp_sh::agent::server_config::run(path).await;
+                }
+                #[cfg(not(feature = "server"))]
+                anyhow::bail!("server jobs require the full binary");
+            }
             cli::AgentCmd::Configure { profile, job } => {
                 let config = cli
                     .config
@@ -119,6 +183,8 @@ async fn real_main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("no config path"))?
                     .canonicalize()?;
                 let desired = Job {
+                    server: false,
+                    owner_sid: None,
                     schema_version: 1,
                     enabled: true,
                     config,
@@ -270,7 +336,8 @@ async fn real_main() -> anyhow::Result<()> {
 
     match command {
         Some(
-            Commands::Agent { .. }
+            Commands::Space { .. }
+            | Commands::Agent { .. }
             | Commands::Status
             | Commands::Logs { .. }
             | Commands::Connect { .. }
@@ -303,6 +370,7 @@ async fn real_main() -> anyhow::Result<()> {
         }
         #[cfg(feature = "server")]
         Some(Commands::Serve {
+            spaces,
             limits,
             addr,
             relay_addr,
@@ -318,8 +386,10 @@ async fn real_main() -> anyhow::Result<()> {
                 ),
                 None => None,
             };
-            frp_sh::commands::run_serve(addr, relay_addr, udp_addr, password, turn, ext, limits)
-                .await?;
+            frp_sh::commands::run_serve(
+                addr, relay_addr, udp_addr, password, turn, ext, limits, spaces,
+            )
+            .await?;
         }
         Some(Commands::Config) => {
             frp_sh::commands::run_config(config).await?;
