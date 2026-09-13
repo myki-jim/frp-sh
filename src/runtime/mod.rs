@@ -15,6 +15,7 @@ pub enum Phase {
     AuthRequired,
     Joining,
     Connected,
+    Serving,
     Degraded,
     Reconnecting,
     Revoked,

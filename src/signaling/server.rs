@@ -109,6 +109,17 @@ pub async fn run_http_with_limits(
     turn_public: Option<SocketAddr>,
     limits: super::limits::ServerLimits,
 ) -> anyhow::Result<()> {
+    run_http_with_spaces(listener, state, password, turn_public, limits, None).await
+}
+
+pub async fn run_http_with_spaces(
+    listener: TcpListener,
+    state: SharedState,
+    password: Option<String>,
+    turn_public: Option<SocketAddr>,
+    limits: super::limits::ServerLimits,
+    spaces: Option<crate::spaces::server::Service>,
+) -> anyhow::Result<()> {
     limits.validate()?;
     let app_state = AppState {
         limits,
@@ -130,6 +141,12 @@ pub async fn run_http_with_limits(
             app_state,
             auth_middleware,
         ));
+    // Device-proof APIs use their own authorization. Never put invite redemption
+    // behind the legacy server-password middleware.
+    let app = match spaces {
+        Some(service) => app.merge(service.router()),
+        None => app,
+    };
     axum::serve(listener, app).await?;
     Ok(())
 }

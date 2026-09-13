@@ -1,5 +1,8 @@
 //! Noninteractive profile supervisor. OS service installation is a separate boundary.
+pub mod install;
 pub mod job;
+pub mod server_config;
+pub mod service;
 use crate::runtime::{ErrorCode, Phase, SessionManager};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -23,13 +26,15 @@ fn spawn(job: &job::Job) -> anyhow::Result<tokio::process::Child> {
         .arg("--no-color")
         .arg("--config")
         .arg(&job.config)
-        .arg("profile")
-        .arg("run")
-        .arg(&job.profile)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    if job.server {
+        command.arg("agent").arg("server-worker");
+    } else {
+        command.arg("profile").arg("run").arg(&job.profile);
+    }
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     Ok(command.spawn()?)
@@ -52,7 +57,20 @@ pub async fn supervise(
     shutdown: CancellationToken,
     manager: SessionManager,
 ) -> anyhow::Result<()> {
-    let _status = crate::local_status::publish_with_manager("agent", Some(manager.clone())).await?;
+    supervise_with_startup(path, shutdown, manager, false).await
+}
+pub async fn supervise_with_startup(
+    path: &Path,
+    shutdown: CancellationToken,
+    manager: SessionManager,
+    starts_at_boot: bool,
+) -> anyhow::Result<()> {
+    let initial = job::Job::load(path).ok();
+    let server = initial.as_ref().is_some_and(|j| j.server);
+    let owner = initial.and_then(|j| j.owner_sid);
+    let role = if server { "server_agent" } else { "agent" };
+    let _status =
+        crate::local_status::publish_as(role, Some(manager.clone()), owner.as_deref()).await?;
     let mut current: Option<job::Job> = None;
     let mut child = None;
     let mut lease = None;
@@ -61,7 +79,13 @@ pub async fn supervise(
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! { _=shutdown.cancelled()=>break, _=tick.tick()=>{} }
-        let loaded = job::Job::load(path);
+        let loaded = job::Job::load(path).and_then(|job| {
+            anyhow::ensure!(
+                job.server == server && job.owner_sid == owner,
+                "job role cannot change while supervisor is running"
+            );
+            Ok(job)
+        });
         let desired = match loaded {
             Ok(job) => job,
             Err(_) => {
@@ -91,7 +115,24 @@ pub async fn supervise(
         }
         if let Some(process) = &mut child {
             match process.try_wait() {
-                Ok(None) => continue,
+                Ok(None) => {
+                    if server {
+                        let ready = crate::local_status::query("serve").await.is_ok_and(|s| {
+                            Some(s.process_id) == process.id() && s.state == "running"
+                        });
+                        if let Some(active) = &lease {
+                            active.transition(
+                                if ready {
+                                    Phase::Serving
+                                } else {
+                                    Phase::Starting
+                                },
+                                None,
+                            );
+                        }
+                    }
+                    continue;
+                }
                 _ => {
                     stop(&mut child).await;
                     if let Some(active) = &lease {
@@ -107,7 +148,7 @@ pub async fn supervise(
             continue;
         }
         drop(lease.take());
-        let active = manager.begin(false)?;
+        let active = manager.begin(starts_at_boot)?;
         if desired.check_profile().is_err() {
             active.transition(Phase::Error, Some(ErrorCode::SessionFailed));
             lease = Some(active);

@@ -9,18 +9,22 @@ pub type Client = tokio::net::windows::named_pipe::NamedPipeClient;
 pub type Connection = tokio::net::windows::named_pipe::NamedPipeServer;
 
 #[cfg(windows)]
-fn identity() -> io::Result<String> {
+pub(crate) fn identity() -> io::Result<String> {
+    identity_of(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+}
+#[cfg(windows)]
+pub(super) fn identity_of(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<String> {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, LocalFree},
         Security::{
             Authorization::ConvertSidToStringSidW, GetTokenInformation, TokenUser, TOKEN_QUERY,
             TOKEN_USER,
         },
-        System::Threading::{GetCurrentProcess, OpenProcessToken},
+        System::Threading::OpenProcessToken,
     };
     unsafe {
         let mut token = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
             return Err(io::Error::last_os_error());
         }
         let mut len = 0;
@@ -46,18 +50,28 @@ fn identity() -> io::Result<String> {
         Ok(result)
     }
 }
-fn endpoint(role: &str) -> io::Result<String> {
-    if !matches!(role, "host" | "guest" | "serve" | "agent") {
+fn endpoint(role: &str, owner: Option<&str>) -> io::Result<String> {
+    if !matches!(role, "host" | "guest" | "serve" | "agent" | "server_agent") {
         return Err(io::Error::other("invalid status role"));
     }
     #[cfg(test)]
     let role = format!("{role}-test-{}", std::process::id());
     #[cfg(windows)]
     {
-        Ok(format!(r"\\.\pipe\frp-sh-status-{}-{role}", identity()?))
+        let sid = owner.map(str::to_owned).unwrap_or(identity()?);
+        if !sid.starts_with("S-1-")
+            || sid.len() > 184
+            || !sid
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b'S' || b == b'-')
+        {
+            return Err(io::Error::other("invalid status owner"));
+        }
+        Ok(format!(r"\\.\pipe\frp-sh-status-{sid}-{role}"))
     }
     #[cfg(unix)]
     {
+        let _ = owner;
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let uid = unsafe { libc::geteuid() };
         let directory = std::path::PathBuf::from(format!("/tmp/frp-sh-status-{uid}"));
@@ -80,7 +94,7 @@ fn endpoint(role: &str) -> io::Result<String> {
     }
 }
 #[cfg(windows)]
-fn pipe(path: &str, first: bool) -> io::Result<Connection> {
+fn pipe(path: &str, first: bool, owner: Option<&str>) -> io::Result<Connection> {
     use tokio::net::windows::named_pipe::ServerOptions;
     use windows_sys::Win32::{
         Foundation::LocalFree,
@@ -89,7 +103,11 @@ fn pipe(path: &str, first: bool) -> io::Result<Connection> {
             SECURITY_ATTRIBUTES,
         },
     };
-    let descriptor = format!("D:P(A;;GA;;;SY)(A;;GA;;;{})", identity()?);
+    let current = identity()?;
+    let mut descriptor = format!("D:P(A;;GA;;;SY)(A;;GA;;;{current})");
+    if let Some(sid) = owner.filter(|s| *s != current) {
+        descriptor.push_str(&format!("(A;;0x0012019b;;;{sid})"));
+    }
     let wide: Vec<_> = descriptor.encode_utf16().chain(Some(0)).collect();
     unsafe {
         let mut sd = std::ptr::null_mut();
@@ -122,12 +140,17 @@ pub struct Listener {
     #[cfg(windows)]
     socket: Connection,
     path: String,
+    #[cfg(windows)]
+    owner: Option<String>,
 }
 impl Listener {
     pub async fn bind(role: &str) -> io::Result<Self> {
-        let path = endpoint(role)?;
+        Self::bind_for(role, None).await
+    }
+    pub async fn bind_for(role: &str, owner: Option<&str>) -> io::Result<Self> {
+        let path = endpoint(role, owner)?;
         #[cfg(windows)]
-        let socket = pipe(&path, true)?;
+        let socket = pipe(&path, true, owner)?;
         #[cfg(unix)]
         let socket = {
             use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -155,13 +178,18 @@ impl Listener {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             socket
         };
-        Ok(Self { socket, path })
+        Ok(Self {
+            socket,
+            path,
+            #[cfg(windows)]
+            owner: owner.map(str::to_owned),
+        })
     }
     pub async fn accept(&mut self) -> io::Result<Connection> {
         #[cfg(windows)]
         {
             self.socket.connect().await?;
-            let next = pipe(&self.path, false)?;
+            let next = pipe(&self.path, false, self.owner.as_deref())?;
             Ok(std::mem::replace(&mut self.socket, next))
         }
         #[cfg(unix)]
@@ -187,7 +215,7 @@ impl Drop for Listener {
     }
 }
 pub async fn connect(role: &str) -> io::Result<Client> {
-    let path = endpoint(role)?;
+    let path = endpoint(role, None)?;
     #[cfg(unix)]
     {
         let stream = tokio::net::UnixStream::connect(path).await?;
@@ -202,13 +230,44 @@ pub async fn connect(role: &str) -> io::Result<Client> {
     #[cfg(windows)]
     {
         for _ in 0..10 {
-            match tokio::net::windows::named_pipe::ClientOptions::new().open(&path) {
+            match open_client(&path) {
                 Err(e) if e.raw_os_error() == Some(231) => {
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await
                 }
-                result => return result,
+                result => {
+                    let client = result?;
+                    super::windows_peer::verify(&client, role)?;
+                    return Ok(client);
+                }
             }
         }
         Err(io::Error::new(io::ErrorKind::TimedOut, "status pipe busy"))
+    }
+}
+
+#[cfg(windows)]
+fn open_client(path: &str) -> io::Result<Client> {
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        Storage::FileSystem::{
+            CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, SECURITY_IDENTIFICATION,
+            SECURITY_SQOS_PRESENT,
+        },
+    };
+    let path: Vec<_> = path.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let handle = CreateFileW(
+            path.as_ptr(),
+            0x00120183,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED | SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT,
+            std::ptr::null_mut(),
+        );
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        Client::from_raw_handle(handle)
     }
 }

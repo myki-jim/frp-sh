@@ -764,6 +764,7 @@ async fn run_profile_session(p: &crate::config::Profile, base: &Config) -> anyho
 /// `udp_addr`：可选独立 UDP 探测端口（云防火墙无法同端口开 TCP+UDP 时使用）；
 /// `turn`：可选内置 TURN 监听地址（RFC 5766，认证复用 `--password`）。
 #[cfg(feature = "server")]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_serve(
     http_addr: String,
     relay_addr: String,
@@ -772,8 +773,25 @@ pub async fn run_serve(
     turn: Option<String>,
     external_ip: Option<std::net::IpAddr>,
     limits: crate::signaling::limits::ServerLimits,
+    spaces: crate::spaces::server::Options,
 ) -> anyhow::Result<()> {
     limits.validate()?;
+    let space_service = if spaces.spaces_db.is_some() {
+        Some(
+            crate::spaces::server::Service::open(
+                spaces,
+                password.clone().unwrap_or_default(),
+                crate::storage::Quota {
+                    spaces: limits.max_rooms,
+                    members_per_space: limits.max_members,
+                    total_members: limits.max_total_members,
+                },
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let http_listener = TcpListener::bind(&http_addr).await?;
     let http_sock: SocketAddr = http_listener.local_addr()?;
     let udp = UdpSocket::bind(udp_addr.as_deref().unwrap_or(&http_addr)).await?;
@@ -844,15 +862,17 @@ pub async fn run_serve(
         }
         _ => None,
     };
-    let http_task = tokio::spawn(server::run_http_with_limits(
+    let http_task = tokio::spawn(server::run_http_with_spaces(
         http_listener,
         state.clone(),
         password.clone(),
         turn_public,
         limits,
+        space_service,
     ));
     let udp_task = tokio::spawn(server::run_udp_echo(udp));
     let relay_task = tokio::spawn(server::run_relay(relay_listener, state, password));
+    let _ready_status = crate::local_status::publish("serve").await.ok();
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => { crate::ui_println!("\nshutting down ..."); }
@@ -978,6 +998,7 @@ pub async fn run_config(save_path: Option<PathBuf>) -> anyhow::Result<()> {
     };
 
     let cfg = Config {
+        server: None,
         presets: Default::default(),
         language: None,
         room_tokens: Default::default(),

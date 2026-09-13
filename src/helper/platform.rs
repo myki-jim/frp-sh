@@ -19,10 +19,42 @@ const ENDPOINT: &str = "/var/run/frp-sh/network.sock";
 pub struct Policy {
     #[cfg(windows)]
     pub allowed_sid: String,
+    #[cfg(windows)]
+    #[serde(default)]
+    pub service_sid: Option<String>,
     #[cfg(unix)]
     pub allowed_uid: u32,
+    #[cfg(unix)]
+    #[serde(default)]
+    pub service_uid: Option<u32>,
+    #[cfg(unix)]
+    #[serde(default)]
+    pub service_gid: Option<u32>,
 }
 impl Policy {
+    #[cfg(windows)]
+    fn client_aces(&self, rights: &str) -> io::Result<String> {
+        let valid = |sid: &str| {
+            sid.starts_with("S-1-")
+                && sid.len() <= 184
+                && sid
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || b == b'S' || b == b'-')
+        };
+        if !valid(&self.allowed_sid) {
+            return Err(io::Error::other("Invalid allowed SID"));
+        }
+        let mut aces = format!("(A;;{rights};;;{})", self.allowed_sid);
+        if let Some(sid) = &self.service_sid {
+            if !valid(sid) || !sid.starts_with("S-1-5-80-") {
+                return Err(io::Error::other(
+                    "Expected a restricted virtual service SID",
+                ));
+            }
+            aces.push_str(&format!("(A;;{rights};;;{sid})"));
+        }
+        Ok(aces)
+    }
     pub fn load() -> anyhow::Result<Self> {
         #[cfg(windows)]
         let path = std::env::current_exe()?
@@ -160,16 +192,8 @@ fn pipe(policy: &Policy, first: bool) -> io::Result<Accepted> {
             SECURITY_ATTRIBUTES,
         },
     };
-    if !policy.allowed_sid.starts_with("S-1-")
-        || !policy
-            .allowed_sid
-            .bytes()
-            .all(|b| b.is_ascii_digit() || b == b'S' || b == b'-')
-    {
-        return Err(io::Error::other("Invalid allowed SID"));
-    }
     // Individual rights exclude FILE_CREATE_PIPE_INSTANCE; reject network clients.
-    let descriptor = format!("D:P(A;;GA;;;SY)(A;;0x0012019b;;;{})", policy.allowed_sid);
+    let descriptor = format!("D:P(A;;GA;;;SY){}", policy.client_aces("0x0012019b")?);
     let wide: Vec<_> = descriptor.encode_utf16().chain(Some(0)).collect();
     unsafe {
         let mut sd = std::ptr::null_mut();
@@ -224,10 +248,26 @@ where
             std::fs::remove_file(ENDPOINT)?;
         }
         let socket = tokio::net::UnixListener::bind(ENDPOINT)?;
-        std::fs::set_permissions(ENDPOINT, std::fs::Permissions::from_mode(0o600))?;
+        anyhow::ensure!(
+            matches!((policy.service_uid, policy.service_gid), (None, None))
+                || matches!((policy.service_uid,policy.service_gid),(Some(uid),Some(gid)) if uid>0 && gid>0),
+            "service UID and private group must be configured together"
+        );
+        let mode = if policy.service_uid.is_some() {
+            0o660
+        } else {
+            0o600
+        };
+        std::fs::set_permissions(ENDPOINT, std::fs::Permissions::from_mode(mode))?;
         let path = std::ffi::CString::new(ENDPOINT)?;
         anyhow::ensure!(
-            unsafe { libc::chown(path.as_ptr(), policy.allowed_uid, u32::MAX) } == 0,
+            unsafe {
+                libc::chown(
+                    path.as_ptr(),
+                    policy.allowed_uid,
+                    policy.service_gid.unwrap_or(u32::MAX),
+                )
+            } == 0,
             "Cannot grant IPC access to the installed user"
         );
         socket
@@ -246,7 +286,8 @@ where
                 }
                 #[cfg(unix)]{
                     let (s,_)=listener.accept().await?;
-                    if s.peer_cred()?.uid()!=policy.allowed_uid{return Err(io::Error::new(io::ErrorKind::PermissionDenied,"Unauthorized helper caller"));}
+                    let uid=s.peer_cred()?.uid();
+                    if uid!=policy.allowed_uid && Some(uid)!=policy.service_uid{return Err(io::Error::new(io::ErrorKind::PermissionDenied,"Unauthorized helper caller"));}
                     Ok::<_,io::Error>(s)
                 }
             }=>{
@@ -276,17 +317,9 @@ fn grant_identity_query(policy: &Policy) -> io::Result<()> {
         },
         System::Threading::GetCurrentProcess,
     };
-    if !policy.allowed_sid.starts_with("S-1-")
-        || !policy
-            .allowed_sid
-            .bytes()
-            .all(|b| b.is_ascii_digit() || b == b'S' || b == b'-')
-    {
-        return Err(io::Error::other("Invalid allowed SID"));
-    }
     let descriptor = format!(
-        "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x1000;;;{})",
-        policy.allowed_sid
+        "D:P(A;;GA;;;SY)(A;;GA;;;BA){}",
+        policy.client_aces("0x1000")?
     );
     let wide: Vec<_> = descriptor.encode_utf16().chain(Some(0)).collect();
     unsafe {

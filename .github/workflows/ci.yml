@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, codex/0.4.0-overhaul]
+    branches: [main, codex/0.4.0-overhaul, codex/background-spaces]
   pull_request:
 
 jobs:
@@ -51,6 +51,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./scripts/test-installer-windows.ps1
+
+      - name: Windows native agent services and owner controls
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-agent-windows.ps1
 
       - name: macOS ordinary-user helper
         if: runner.os == 'macOS'

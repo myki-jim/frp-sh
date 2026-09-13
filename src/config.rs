@@ -15,6 +15,8 @@ fn default_relay() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<crate::agent::server_config::Settings>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub presets: std::collections::BTreeMap<String, crate::presets::RoomPreset>,
     #[serde(default)]
@@ -158,6 +160,7 @@ pub fn hostname() -> String {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            server: None,
             presets: Default::default(),
             language: None,
             room_tokens: Default::default(),
@@ -240,7 +243,12 @@ impl Config {
             Self::default()
         };
         // 设备身份：UUID 存于独立文件（不随配置文件增删而丢失）
-        cfg.uuid = Some(Self::ensure_identity());
+        if let Some(id) = &cfg.uuid {
+            uuid::Uuid::parse_str(id)
+                .map_err(|_| anyhow::anyhow!("invalid configured device UUID"))?;
+        } else {
+            cfg.uuid = Some(Self::ensure_identity());
+        }
         if let Some(pw) = &cfg.password {
             crate::debuglog::protect(pw);
         }
@@ -474,6 +482,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("frpsh-test-{}", std::process::id()));
         let path = dir.join("config.toml");
         let cfg = Config {
+            server: None,
             presets: Default::default(),
             language: None,
             room_tokens: Default::default(),

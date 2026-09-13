@@ -27,6 +27,7 @@ pub mod room;
 pub mod runtime;
 pub mod services;
 pub mod signaling;
+pub mod spaces;
 pub mod stats;
 #[cfg(feature = "server")]
 pub mod storage;

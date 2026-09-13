@@ -9,16 +9,30 @@ pub struct Job {
     pub enabled: bool,
     pub config: PathBuf,
     pub profile: String,
+    #[serde(default)]
+    pub server: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_sid: Option<String>,
 }
 impl Job {
     pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(sid) = &self.owner_sid {
+            ensure!(
+                sid.starts_with("S-1-")
+                    && sid.len() <= 184
+                    && sid
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || b == b'S' || b == b'-'),
+                "invalid management SID"
+            );
+        }
         ensure!(self.schema_version == 1, "unsupported agent job version");
         ensure!(
             self.config.is_absolute(),
             "agent config path must be absolute"
         );
         ensure!(
-            !self.profile.trim().is_empty()
+            (self.server || !self.profile.trim().is_empty())
                 && self.profile.len() <= 128
                 && !self.profile.chars().any(char::is_control),
             "invalid profile name"
@@ -37,6 +51,16 @@ impl Job {
     }
     pub fn check_profile(&self) -> anyhow::Result<()> {
         let cfg = crate::config::Config::load(Some(&self.config))?;
+        if self.server {
+            #[cfg(not(feature = "server"))]
+            anyhow::bail!("server jobs require the full binary");
+            #[cfg(feature = "server")]
+            {
+                let s = cfg.server.unwrap_or_default();
+                s.validate(cfg.password.as_deref())?;
+                return Ok(());
+            }
+        }
         let profile = cfg
             .profiles
             .get(&self.profile)
