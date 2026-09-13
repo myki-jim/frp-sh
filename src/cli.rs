@@ -490,7 +490,7 @@ pub struct RoomCreateArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AgentCmd {
-    /// Register a job as an automatic Windows system service (installation may request UAC)
+    /// Register an automatic OS service (installation may request administrator approval)
     Install {
         #[arg(long)]
         job: PathBuf,

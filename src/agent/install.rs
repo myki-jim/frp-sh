@@ -249,5 +249,7 @@ mod windows {
         )
     }
 }
+#[cfg(unix)]
+pub use super::install_unix::{elevated_install, install};
 #[cfg(windows)]
 pub use windows::{elevated_install, install};

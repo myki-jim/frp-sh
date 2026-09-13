@@ -14,6 +14,7 @@ const TOTAL_LIMIT: u64 = 64 * 1024 * 1024;
 const QUEUE_CAP: usize = 1024;
 static SECRETS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static LOGGER: OnceLock<Backend> = OnceLock::new();
+static DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 static WRITE_ERRORS: AtomicU64 = AtomicU64::new(0);
 
@@ -122,9 +123,23 @@ struct Backend {
     filters: Vec<(String, log::LevelFilter)>,
 }
 pub fn directory() -> PathBuf {
+    if let Some(path) = DIRECTORY.get() {
+        return path.clone();
+    }
+    if let Some(path) = std::env::var_os("FRPSH_LOG_DIR").map(PathBuf::from) {
+        if path.is_absolute() {
+            return path;
+        }
+    }
     crate::config::Config::default_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("logs")
+}
+/// Set before initialization so native services do not depend on a login profile.
+pub fn use_directory(path: PathBuf) {
+    if path.is_absolute() {
+        let _ = DIRECTORY.set(path);
+    }
 }
 pub fn file_path() -> Option<PathBuf> {
     LOGGER.get().map(|l| l.path.clone())

@@ -1,5 +1,7 @@
 //! Noninteractive profile supervisor. OS service installation is a separate boundary.
 pub mod install;
+#[cfg(unix)]
+mod install_unix;
 pub mod job;
 pub mod server_config;
 pub mod service;
@@ -21,6 +23,7 @@ pub fn watch_parent() {
 fn spawn(job: &job::Job) -> anyhow::Result<tokio::process::Child> {
     let mut command = tokio::process::Command::new(std::env::current_exe()?);
     command
+        .env("FRPSH_LOG_DIR", crate::debuglog::directory())
         .arg("--agent-worker")
         .arg("--plain")
         .arg("--no-color")
@@ -176,6 +179,9 @@ pub async fn supervise_with_startup(
     Ok(())
 }
 pub async fn run(path: &Path) -> anyhow::Result<()> {
+    run_with_startup(path, false).await
+}
+pub async fn run_with_startup(path: &Path, starts_at_boot: bool) -> anyhow::Result<()> {
     job::Job::load(path)?;
     let shutdown = CancellationToken::new();
     let signal = shutdown.clone();
@@ -191,7 +197,8 @@ pub async fn run(path: &Path) -> anyhow::Result<()> {
         signal.cancel();
         Ok::<(), std::io::Error>(())
     });
-    let result = supervise(path, shutdown, SessionManager::default()).await;
+    let result =
+        supervise_with_startup(path, shutdown, SessionManager::default(), starts_at_boot).await;
     watcher.abort();
     result
 }
