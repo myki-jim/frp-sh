@@ -1,67 +1,65 @@
 # 后台空间改造实施记录
 
-状态：完整改造进行中。0.5.5 已发布 status 和实验性 agent 命令；以下新增空间接口、系统服务和权限改造尚未发布。
+状态：开发分支 `codex/background-spaces`，尚未发布。线上版本仍为 0.5.5。
 
-## 0.5.5 之后的实施进度
+本文描述当前代码，替代此前各阶段累计记录。目标设计见 [改造计划](2026-09-13-background-spaces.md)。不能把“接口已实现”解释成“完整组网功能已交付”。
 
-- 新增真实 `/spaces/v1/challenge`、`/spaces/v1/execute` HTTP 路由，使用有界专用 SQLite 工作线程。创建要求服务器管理授权；其他操作要求绑定完整请求内容的设备签名，邀请兑换不需要服务器密码。
-- 默认永久空间登记、可配置默认 900 秒/最大期限邀请、限次兑换、创建及兑换幂等、成员列表、移除/离开、撤销邀请及删除空间已接入 `space` CLI。服务端通过 `--spaces-db` 和 `--spaces-origin` 显式启用。
-- 设备签名私钥使用 Windows 当前账户 DPAPI 或 Unix 0600 文件；客户端拒绝 HTTP 邀请来源和重定向，响应大小有上限。尚未完成跨服务账户的设备身份迁移。
-- HTTP 端到端测试覆盖创建授权、签名内容篡改、重放、默认期限、邀请限次、服务端重启、成员撤销和删除；本地测试通过。
-- 新增 server 配置任务、独立 server_agent 状态及 Windows 原生 SCM 入口；`agent install` 的 Windows 安装流程使用虚拟服务账户、受保护目录、限定权限和失败回滚。服务配置不进入进程参数。原生 SCM/普通账户安装验收将在 CI 执行，尚不可标为全平台完成。
-- 本地状态支持 Windows 安装账户跨服务账户读取，校验同账户进程或 SCM 服务 PID。helper 新增显式服务 SID/UID 授权，默认不扩大旧安装的权限。
+## 已实现
 
-**仍未完成：** 永久空间的网络数据面、短期访问凭据与撤销租约、owner 离线解耦、一键安装加入、Linux/macOS 原生安装及管理、TUI 附着后台、全平台重启验收。新 `space` 命令目前管理登记与邀请，不应被描述为已经实现虚拟网络连接。
+| 功能 | 当前范围 |
+| --- | --- |
+| 永久空间登记 | SQLite 保存空间、设备成员、邀请摘要；默认无到期时间；重启后保留；当前与旧 LAN 房间独立 |
+| 设备认证 | Ed25519 私钥本机持久化，Windows 使用账户 DPAPI；请求签名绑定服务器、完整操作摘要、一次性挑战和期限 |
+| 动态邀请 | v3 链接只含 HTTPS 服务器地址和随机令牌；默认 900 秒、默认单次；服务器可配置期限；事务兑换、幂等重试、撤销 |
+| 空间 API | `/spaces/v1/challenge`、`/spaces/v1/execute`；专用有界数据库线程；创建需管理授权；其他操作按设备成员权限执行 |
+| 空间 CLI | `space create/list/members/invite/redeem/revoke-invites/remove-member/leave/delete`；目前只管理登记和授权 |
+| 后台监督 | client Profile 和 server 两种任务；独立子进程；配置重载、失败重试、退出清理；不打开终端 UI |
+| 原生服务安装 | `agent install --job PATH`；Windows SCM 虚拟服务账户；Linux systemd 系统服务；macOS LaunchDaemon，Unix 使用原安装者非 root UID |
+| 普通用户管理 | `frp-sh start/stop` 默认管理已安装 client；`--server` 管理 server；不需要提权；暂停不会卸载监督服务 |
+| 状态 | `status --json` 按当前账户查询；跨 Windows 服务账户验证 SCM 进程身份；server 必须确认实际子进程监听状态才报告 serving |
+| 日志 | 与终端界面分离；原生服务写入任务目录下 logs，子进程继承；有界队列、轮转和敏感字段脱敏 |
 
-## 新增：无终端连接监督进程
+## 使用开发版验证后台服务
 
-`frp-sh agent configure --profile NAME --job PATH` 保存已有 Profile 的绝对配置路径和名称；`agent run --job PATH` 不打开终端 UI，独立启动连接子进程。`agent stop/start --job PATH` 原子更新目标状态，运行中的监督进程每秒检查并执行。密码不进入任务描述文件或子进程命令行，仍由现有 Profile 配置保存。
+已有连接 Profile：
 
-监督进程限制一个连接子进程，退出后按 2–30 秒退避重试；配置失效时停止子进程并报告错误。停止和重载先等待旧进程结束，再启动新进程。子进程通过父进程持有的匿名管道判断生命周期，父进程崩溃关闭管道后退出，避免遗留后台连接。Windows 隐藏子进程窗口，诊断仍使用现有独立日志文件。
+```sh
+frp-sh --config /absolute/config.toml agent configure --profile friends --job /absolute/job.toml
+frp-sh agent install --job /absolute/job.toml
+frp-sh status --json
+frp-sh stop
+frp-sh start
+```
 
-`status --json` 返回监督进程的会话阶段；普通文本输出也显示阶段。错误、等待连接分别返回非零退出码，不能以监督进程存活代替网络连通。当前尚未把数据面事件回传给监督进程，因此启动子进程只报告 joining，不能宣称 connected。
+服务端：配置文件的 `[server]` 表保存监听、限额和空间 API 设置。使用完整二进制：
 
-已验证任务文件原子替换、配置损坏后恢复、启停重载、会话租约释放；Windows 本地构建的真实进程验证了 JSON 状态、错误退出码、持久化停止和父管道关闭后退出。该入口尚不安装系统服务，也不表示已实现未登录自启；受限服务账户、跨账户管理和开机恢复仍待实现。
+```sh
+frp-sh --config /absolute/server.toml agent configure-server --job /absolute/server-job.toml
+frp-sh agent install --job /absolute/server-job.toml
+frp-sh stop --server
+frp-sh start --server
+```
 
-本轮检查：`cargo test --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo check --no-default-features` 通过。依赖公网 TURN 的既有测试保持 ignored，不代表已经完成真实网络或多平台验收。
+安装要求先有可信安装位置的二进制；client 还要求已经安装网络 helper。安装阶段才使用管理员权限；Unix 服务不依赖用户登录会话，Windows 服务不使用 LocalSystem 运行 client/server。以上多步开发入口尚未收敛为最终一行安装加入体验。
 
-## 新增：本机 status 入口
+## 验证状态
 
-已接入 `frp-sh status` / `frp-sh status --json`。新构建的前台 host/guest/serve 进程发布当前账户内的只读状态；Unix socket 按 UID 隔离，Windows Named Pipe 按 SID 设置 ACL 并拒绝网络客户端。无长期凭据和物理拓扑输出，帧大小、连接数量和等待时间有上限。
+- 空间 HTTP API、签名重放/动作篡改拒绝、管理权限、邀请期限/次数、数据库重启等回归已通过 Windows/Linux/macOS CI。
+- macOS 原生服务已通过真实 LaunchDaemon 启动、普通 UID、普通用户启停、服务重启及日志目录测试。
+- Windows 原生服务测试发现 PowerShell 5.1 的 `sc.exe` 参数引号问题，已修复并重新运行 CI；尚不能宣称最终服务测试通过。
+- Linux 原生测试发现 systemd 工作目录配置格式错误，已修复并增加 `systemd-analyze verify`；等待重新验证。
+- 新增默认暂停任务的自启状态回归通过。真实断电重启、未登录启动和多设备公网组网验收尚未完成。
 
-这是进程状态，不是后台系统服务安装功能，也不是跨服务账户管理接口。客户端连接状态暂明确标记 running_connection_unverified，不能仅靠进程或中继 WAIT 宣称网络连通。旧版运行进程没有 IPC，不会被伪装识别为健康。
+## 必须继续完成
 
-本地已完成 Windows 临时回环服务端的跨进程 JSON 状态实测、连续查询、重复端点拒绝、完整回归、Clippy 和 client-only 构建。Linux/macOS 的真机及跨账户授权仍待验证。
+1. 永久空间接入实际虚拟网卡与 peer-pair 数据传输，owner 离线不终止其他设备；旧 `create` 目前仍使用原房间逻辑。
+2. 短期成员访问凭据、刷新、在线租约、对端认证、成员撤销后的连接关闭。
+3. 本地空间加入状态持久化、Windows 前台与服务账户之间的设备身份衔接。
+4. 一行安装配置加入、邀请页、默认动态邀请、旧 Profile 的明确迁移路径。
+5. TUI 附着后台任务、连接事件和延迟回传；当前 client 不能仅凭子进程存活报告 connected。
+6. 安装器升级时协调正在运行的 client/server 服务，以及安全卸载和故障回滚验收。
+7. 完整三平台、多人互通、服务重启和权限回归；通过后同步用户文档、版本和发布资源。
 
-## 已实现的基础模块
+## 发布边界
 
-- `src/runtime/`：会话租约、取消、代际隔离、单活跃会话和不含凭据的状态模型。关闭任务必须释放租约后才能重新运行。
-- `src/device.rs`：Ed25519 严格验证、服务端随机挑战、操作摘要绑定、60 秒挑战期限、一次性消费与挑战数量上限。
-- `src/storage/`：SQLite 永久空间、owner 成员登记、邀请摘要存储、限次/到期兑换、事务配额检查、幂等回执和成员移除。写操作要求通过签名挑战构造的 VerifiedDevice。
-- `src/invite_ticket.rs`：v3 邀请封装，只允许 HTTPS endpoint 与随机短期 token，拒绝长期密码及额外字段。
-
-身份、空间数据库和邀请模块尚未挂到 HTTP 路由/CLI，不改变旧房间 TTL 或当前邀请生成行为。VerifiedDevice 仍需由 API 层绑定实际请求动作；会话生命周期已通过 agent 的只读本机 IPC 暴露。
-
-## 验证
-
-完整既有回归加首批新测试通过；新增邀请封装测试单独通过。覆盖单会话排他、取消后禁止更新、失败后资源释放、签名动作绑定及重放、邀请码到期边界、幂等重试、满额不耗次数、撤销后不复活、数据库重启、跨连接并发单次兑换、邀请字段与 HTTPS 约束。
-
-Clippy 与不包含 server 的客户端构建完成检查。没有对线上服务器做任何修改。
-
-## 尚待完成（不得视为已交付）
-
-1. 安全存储设备私钥、持久化安装/服务身份，收敛配置迁移。
-2. 受保护本机 IPC、真正的 server/client 系统服务、status/start/stop 入口及开机恢复。
-3. 将会话模型接入当前前台/TUI 和网络执行；统一资源清理。
-4. v4 空间/身份/邀请兑换 HTTP API、异步数据库工作线程、服务端邀请策略。
-5. 短期成员访问凭据、刷新、对端授权及撤销租约。
-6. owner 离线解耦与 peer-pair 数据面；永久生命周期接入旧退出/到期清理。
-7. 一行安装加入、网页邀请页、中英文文档和旧 Profile 升级流程。
-8. Windows/Linux/macOS 真正重启、未登录自启、多账户 ACL 与限额故障测试；再版本升级及发布。
-
-## 当前注意事项
-
-- SQLite 路径由调用层提供受保护目录；还未实现系统服务目录权限配置。
-- 目前邀请核心策略上限为内部常量；默认 15 分钟的可配置服务端策略尚未接入。
-- 永久空间数据库与旧内存 Room 仍分离；不能宣称现有 create 已永久。
-- 不应将仍含 password/key 的旧邀请默认为新 v3 动态邀请。
+0.5.5 的 status 和实验性 agent run 已发布；本页新增能力只在开发分支。新空间登记不等于已建立 LAN，现有邀请不能提前宣称已去除长期密码，当前进程在线也不等于网络可用。没有因此更新线上服务器或发布新版本。

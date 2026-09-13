@@ -233,7 +233,7 @@ fn unit(snapshot: &Snapshot, owner: &Account, data: &Path) -> anyhow::Result<(Pa
         } else {
             "After=network-online.target frp-sh-network.service\nRequires=frp-sh-network.service\n"
         };
-        Ok((PathBuf::from(format!("/etc/systemd/system/frp-sh-{role}.service")),format!("[Unit]\nDescription=frp-sh {role}\nWants=network-online.target\n{dependencies}\n[Service]\nType=simple\nUser={}\nGroup={}\nEnvironment={}\nEnvironment={}\nExecStart={} --plain agent service --job {}\nWorkingDirectory={}\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=15\nKillMode=control-group\nNoNewPrivileges=yes\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n",snapshot.uid,owner.gid,systemd_quote(&format!("HOME={}",owner.home)),systemd_quote(&format!("FRPSH_LOG_DIR={}/logs",data.display())),systemd_quote(EXECUTABLE),systemd_quote(&job.to_string_lossy()),systemd_quote(&data.to_string_lossy()))))
+        Ok((PathBuf::from(format!("/etc/systemd/system/frp-sh-{role}.service")),format!("[Unit]\nDescription=frp-sh {role}\nWants=network-online.target\n{dependencies}\n[Service]\nType=simple\nUser={}\nGroup={}\nEnvironment={}\nEnvironment={}\nExecStart={} --plain agent service --job {}\nWorkingDirectory={}\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=15\nKillMode=control-group\nNoNewPrivileges=yes\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n",snapshot.uid,owner.gid,systemd_quote(&format!("HOME={}",owner.home)),systemd_quote(&format!("FRPSH_LOG_DIR={}/logs",data.display())),systemd_quote(EXECUTABLE),systemd_quote(&job.to_string_lossy()),data.display())))
     }
     #[cfg(target_os = "macos")]
     {
@@ -259,8 +259,15 @@ fn manager(server: bool, start: bool, path: &Path) -> anyhow::Result<()> {
             "systemd reload failed"
         );
         let status = if start {
+            ensure!(
+                Command::new("/bin/systemctl")
+                    .args(["enable", &format!("frp-sh-{role}.service")])
+                    .status()?
+                    .success(),
+                "systemd enable failed"
+            );
             Command::new("/bin/systemctl")
-                .args(["enable", "--now", &format!("frp-sh-{role}.service")])
+                .args(["start", &format!("frp-sh-{role}.service")])
                 .status()?
         } else {
             Command::new("/bin/systemctl")
@@ -469,6 +476,8 @@ mod tests {
         assert!(value.contains("agent"));
         assert!(!value.contains("test-password"));
         assert!(!value.contains("User=0"));
+        #[cfg(target_os = "linux")]
+        assert!(value.contains("\nWorkingDirectory=/var/lib/frp-sh/1001/client\n"));
         assert_eq!(xml("<&\""), "&lt;&amp;&quot;");
     }
 }

@@ -67,11 +67,13 @@ with tempfile.TemporaryDirectory(prefix="frpsh-native-service-") as temporary:
         run("sudo", "chmod", "755", str(installed), str(binary))
         run("sudo", str(binary), "--plain", "agent", "install-elevated", "--snapshot", str(snapshot),
             "--digest", hashlib.sha256(blob).hexdigest())
+        if system == "Linux":
+            run("sudo", "/usr/bin/systemd-analyze", "verify", str(unit))
         status = wait_phase(binary, "serving")
         actual_uid = run("ps", "-o", "uid=", "-p", str(status["process_id"]), capture_output=True).stdout.strip()
         assert int(actual_uid) == uid, "Supervisor must never run as root"
         for action, phase in (("stop", "stopped"), ("start", "serving")):
-            run(str(binary), "--plain", "agent", action, "--job", str(data / "job.toml"))
+            run(str(binary), "--plain", action, "--server")
             wait_phase(binary, phase)
         # SCM/launchd restart, while the ordinary user has no interactive app running.
         if system == "Linux":
