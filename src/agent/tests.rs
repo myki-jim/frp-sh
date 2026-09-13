@@ -82,3 +82,42 @@ fn jobs_store_references_only_and_roundtrip_atomically() {
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(dir).unwrap();
 }
+
+#[tokio::test]
+async fn disabled_native_job_preserves_service_startup_status() {
+    let dir = std::env::temp_dir().join(format!("frpsh-native-job-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("job.toml");
+    let desired = job::Job {
+        schema_version: 1,
+        enabled: false,
+        server: true,
+        owner_sid: None,
+        config: dir.join("unused.toml"),
+        profile: String::new(),
+    };
+    desired.save(&path).unwrap();
+    let manager = SessionManager::default();
+    let shutdown = CancellationToken::new();
+    let worker = tokio::spawn({
+        let path = path.clone();
+        let manager = manager.clone();
+        let shutdown = shutdown.clone();
+        async move { supervise_with_startup(&path, shutdown, manager, true).await }
+    });
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if manager.snapshot().starts_at_boot {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(manager.snapshot().phase, Phase::Stopped);
+    shutdown.cancel();
+    worker.await.unwrap().unwrap();
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(dir).unwrap();
+}

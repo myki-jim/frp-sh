@@ -55,9 +55,19 @@ pub async fn run(
     let cfg = Config::load_auto(config.as_deref())?;
     let key_path = match identity {
         Some(path) => path,
-        None => Config::default_dir()
-            .ok_or_else(|| anyhow::anyhow!("no private configuration directory"))?
-            .join("device.key"),
+        None => {
+            let directory = Config::default_dir()
+                .ok_or_else(|| anyhow::anyhow!("no private configuration directory"))?;
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(&directory)?;
+            directory.join("device.key")
+        }
     };
     let key = DeviceKey::load_or_create(&key_path)?;
     let mut origin = server.unwrap_or_else(|| cfg.signaling_addr.clone());

@@ -76,7 +76,9 @@ pub async fn supervise_with_startup(
         crate::local_status::publish_as(role, Some(manager.clone()), owner.as_deref()).await?;
     let mut current: Option<job::Job> = None;
     let mut child = None;
-    let mut lease = None;
+    let initial_lease = manager.begin(starts_at_boot)?;
+    initial_lease.transition(Phase::Stopped, None);
+    let mut lease = Some(initial_lease);
     let mut failures = 0u32;
     let mut retry_at = tokio::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -96,7 +98,7 @@ pub async fn supervise_with_startup(
                 if let Some(active) = lease.take() {
                     drop(active);
                 }
-                let active = manager.begin(false)?;
+                let active = manager.begin(starts_at_boot)?;
                 active.transition(Phase::Error, Some(ErrorCode::SessionFailed));
                 lease = Some(active);
                 current = None;

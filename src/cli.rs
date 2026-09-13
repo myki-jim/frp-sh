@@ -78,6 +78,18 @@ pub enum Commands {
     },
     /// Query running processes for the current account (read-only local IPC)
     Status,
+    /// Resume the installed background connection without administrator approval
+    Start {
+        /// Control the installed signaling server instead of the client
+        #[arg(long)]
+        server: bool,
+    },
+    /// Pause the installed background connection; keep the supervisor available
+    Stop {
+        /// Control the installed signaling server instead of the client
+        #[arg(long)]
+        server: bool,
+    },
     /// Create a LAN room; game/dev are optional parameter presets
     Create(RoomCreateArgs),
     /// Manage room parameter presets (separate from saved connections)
