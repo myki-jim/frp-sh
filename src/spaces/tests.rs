@@ -3,7 +3,204 @@ use ed25519_dalek::{Signer, SigningKey};
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 const ORIGIN: &str = "https://example.test";
+
+#[tokio::test]
+async fn member_sessions_replace_refresh_and_revoke_without_owner_presence() {
+    let (url, task, service) = start_with_service(":memory:".into()).await;
+    let client = Client::new();
+    let owner = SigningKey::from_bytes(&[51; 32]);
+    let guest = SigningKey::from_bytes(&[52; 32]);
+    let (_, created) = execute(
+        &client,
+        &url,
+        &owner,
+        Operation::Create {
+            name: "leases".into(),
+            expires_at: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+        },
+        true,
+    )
+    .await;
+    let space = created["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        execute(
+            &client,
+            &url,
+            &guest,
+            Operation::OpenSession {
+                space: space.clone()
+            },
+            false
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (_, invitation) = execute(
+        &client,
+        &url,
+        &owner,
+        Operation::Invite {
+            space: space.clone(),
+            ttl: None,
+            uses: 1,
+        },
+        false,
+    )
+    .await;
+    let ticket =
+        crate::invite_ticket::Ticket::parse(invitation["invitation"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        execute(
+            &client,
+            &url,
+            &guest,
+            Operation::Redeem {
+                token: ticket.token().into(),
+                request_id: uuid::Uuid::new_v4().to_string()
+            },
+            false
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, admitted) = execute(
+        &client,
+        &url,
+        &guest,
+        Operation::OpenSession {
+            space: space.clone(),
+        },
+        false,
+    )
+    .await;
+    let admission: leases::Admission = serde_json::from_value(admitted).unwrap();
+    assert_eq!(admission.address.to_string(), "10.66.0.2");
+    assert_eq!(admission.access_token.len(), 64);
+    let old = service
+        .authenticate_session(space.clone(), admission.access_token.clone())
+        .await
+        .unwrap();
+    assert!(service
+        .authenticate_session(
+            uuid::Uuid::new_v4().to_string(),
+            admission.access_token.clone()
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        execute(
+            &client,
+            &url,
+            &owner,
+            Operation::RefreshSession {
+                space: space.clone(),
+                session: admission.session_id.clone()
+            },
+            false
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        execute(
+            &client,
+            &url,
+            &guest,
+            Operation::RefreshSession {
+                space: space.clone(),
+                session: admission.session_id.clone()
+            },
+            false
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, replacement) = execute(
+        &client,
+        &url,
+        &guest,
+        Operation::OpenSession {
+            space: space.clone(),
+        },
+        false,
+    )
+    .await;
+    let replacement: leases::Admission = serde_json::from_value(replacement).unwrap();
+    assert!(old.cancelled.is_cancelled());
+    assert!(service
+        .authenticate_session(space.clone(), admission.access_token)
+        .await
+        .is_err());
+    let active = service
+        .authenticate_session(space.clone(), replacement.access_token.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        execute(
+            &client,
+            &url,
+            &guest,
+            Operation::CloseSession {
+                space: space.clone(),
+                session: admission.session_id
+            },
+            false
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert!(!active.cancelled.is_cancelled());
+    assert_eq!(
+        execute(
+            &client,
+            &url,
+            &owner,
+            Operation::RemoveMember {
+                space: space.clone(),
+                device: hex::encode(guest.verifying_key().to_bytes())
+            },
+            false
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(active.cancelled.is_cancelled());
+    assert!(service
+        .authenticate_session(space.clone(), replacement.access_token)
+        .await
+        .is_err());
+    assert_eq!(
+        execute(
+            &client,
+            &url,
+            &guest,
+            Operation::RefreshSession {
+                space,
+                session: replacement.session_id
+            },
+            false
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    task.abort();
+    let _ = task.await;
+}
 async fn start(path: std::path::PathBuf) -> (String, tokio::task::JoinHandle<()>) {
+    let (url, task, _) = start_with_service(path).await;
+    (url, task)
+}
+async fn start_with_service(
+    path: std::path::PathBuf,
+) -> (String, tokio::task::JoinHandle<()>, server::Service) {
     let service = server::Service::open(
         server::Options {
             spaces_db: Some(path),
@@ -18,10 +215,11 @@ async fn start(path: std::path::PathBuf) -> (String, tokio::task::JoinHandle<()>
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let router = service.clone().router();
     let task = tokio::spawn(async move {
-        axum::serve(listener, service.router()).await.unwrap();
+        axum::serve(listener, router).await.unwrap();
     });
-    (format!("http://{addr}/spaces/v1"), task)
+    (format!("http://{addr}/spaces/v1"), task, service)
 }
 async fn signed(
     client: &Client,

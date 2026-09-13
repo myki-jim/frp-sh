@@ -1,5 +1,20 @@
 use super::*;
 impl Store {
+    /// Only an active, authenticated member can obtain its stable virtual address.
+    pub fn virtual_address(
+        &self,
+        space: &str,
+        device: &crate::device::VerifiedDevice,
+        now: u64,
+    ) -> anyhow::Result<std::net::Ipv4Addr> {
+        self.membership(space, device, now)?;
+        let address: u8 = self.db.query_row(
+            "SELECT address FROM members WHERE space=? AND device=?",
+            params![space, device.public_key()],
+            |r| r.get(0),
+        )?;
+        Ok(std::net::Ipv4Addr::new(10, 66, 0, address))
+    }
     pub fn list(
         &self,
         device: &crate::device::VerifiedDevice,

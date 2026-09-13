@@ -55,14 +55,25 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.pragma_update(None, "foreign_keys", "ON")?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(version <= 2, "database schema is newer than this binary");
+        ensure!(version <= 3, "database schema is newer than this binary");
         db.execute_batch("BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS spaces(id TEXT PRIMARY KEY, name TEXT NOT NULL, owner TEXT NOT NULL, expires_at INTEGER);
             CREATE TABLE IF NOT EXISTS members(space TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE, device TEXT NOT NULL, PRIMARY KEY(space,device));
             CREATE TABLE IF NOT EXISTS invites(hash TEXT PRIMARY KEY, space TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL, remaining INTEGER NOT NULL CHECK(remaining>=0), revoked INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS redemptions(hash TEXT NOT NULL REFERENCES invites(hash) ON DELETE CASCADE, device TEXT NOT NULL, request_id TEXT NOT NULL, PRIMARY KEY(hash,device,request_id));
             CREATE TABLE IF NOT EXISTS creation_requests(owner TEXT NOT NULL, request_id TEXT NOT NULL, space TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE, PRIMARY KEY(owner,request_id));
-            PRAGMA user_version=2; COMMIT;")?;
+            COMMIT;")?;
+        if version < 3 {
+            db.execute_batch("BEGIN IMMEDIATE;
+                ALTER TABLE members ADD COLUMN address INTEGER CHECK(address BETWEEN 1 AND 254);
+                WITH numbered AS (
+                    SELECT m.space,m.device,ROW_NUMBER() OVER (
+                        PARTITION BY m.space ORDER BY CASE WHEN m.device=s.owner THEN 0 ELSE 1 END,m.device
+                    ) AS address FROM members m JOIN spaces s ON s.id=m.space
+                ) UPDATE members SET address=(SELECT n.address FROM numbered n WHERE n.space=members.space AND n.device=members.device);
+                CREATE UNIQUE INDEX member_address ON members(space,address);
+                PRAGMA user_version=3; COMMIT;")?;
+        }
         db.pragma_update(None, "journal_mode", "WAL")?;
         Ok(Self { db })
     }
@@ -144,7 +155,10 @@ impl Store {
                 space.expires_at.map(|t| t as i64)
             ],
         )?;
-        tx.execute("INSERT INTO members VALUES(?,?)", params![space.id, owner])?;
+        tx.execute(
+            "INSERT INTO members(space,device,address) VALUES(?,?,1)",
+            params![space.id, owner],
+        )?;
         tx.execute(
             "INSERT INTO creation_requests VALUES(?,?,?)",
             params![owner, request_id, space.id],
@@ -255,7 +269,14 @@ impl Store {
                 count < quota.members_per_space && total < quota.total_members,
                 "capacity reached"
             );
-            tx.execute("INSERT INTO members VALUES(?,?)", params![space, device])?;
+            let address: u32 = tx.query_row(
+                "WITH RECURSIVE candidates(n) AS (VALUES(2) UNION ALL SELECT n+1 FROM candidates WHERE n<254)
+                 SELECT n FROM candidates WHERE NOT EXISTS(SELECT 1 FROM members WHERE space=? AND address=n) ORDER BY n LIMIT 1",
+                [&space], |r| r.get(0))?;
+            tx.execute(
+                "INSERT INTO members(space,device,address) VALUES(?,?,?)",
+                params![space, device, address],
+            )?;
             tx.execute(
                 "UPDATE invites SET remaining=remaining-1 WHERE hash=?",
                 [&hash],

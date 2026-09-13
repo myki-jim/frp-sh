@@ -32,6 +32,7 @@ pub struct Options {
 pub struct Service(Arc<Inner>);
 struct Inner {
     db: Worker,
+    leases: Arc<std::sync::Mutex<super::leases::Leases>>,
     challenges: Mutex<Challenges>,
     quota: Quota,
     origin: String,
@@ -73,6 +74,9 @@ impl Service {
         .await?;
         Ok(Self(Arc::new(Inner {
             db,
+            leases: Arc::new(std::sync::Mutex::new(super::leases::Leases::new(
+                quota.total_members as usize,
+            ))),
             challenges: Mutex::new(Challenges::default()),
             quota,
             origin,
@@ -88,6 +92,29 @@ impl Service {
             .route("/spaces/v1/execute", post(execute))
             .layer(DefaultBodyLimit::max(8192))
             .with_state(self)
+    }
+    /// Data channels must revalidate through this boundary, not trust request device IDs.
+    pub async fn authenticate_session(
+        &self,
+        space: String,
+        token: String,
+    ) -> anyhow::Result<super::leases::Lease> {
+        let leases = self.0.leases.clone();
+        self.0
+            .db
+            .call(move |db| {
+                let now = crate::utils::now_unix();
+                let mut leases = leases
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("session state unavailable"))?;
+                let lease = leases.lookup(&token, &space, now)?;
+                if db.virtual_address(&space, &lease.device, now).ok() != Some(lease.address) {
+                    leases.revoke_member(&space, lease.device.public_key());
+                    anyhow::bail!("space membership no longer valid");
+                }
+                Ok(lease)
+            })
+            .await
     }
 }
 async fn challenge(
@@ -151,8 +178,24 @@ async fn execute(
     let ttl = s.0.ttl;
     let max_ttl = s.0.max_ttl;
     let origin = s.0.origin.clone();
+    let leases = s.0.leases.clone();
     let result=s.0.db.call(move |db| {
         Ok(match req.operation {
+            Operation::OpenSession{space}=> {
+                let address=db.virtual_address(&space,&device,now)?;
+                let mut leases=leases.lock().map_err(|_| anyhow::anyhow!("session state unavailable"))?;
+                serde_json::to_value(leases.issue(space,Arc::new(device),address,now)?)?
+            },
+            Operation::RefreshSession{space,session}=> {
+                db.membership(&space,&device,now)?;
+                let expires_at=leases.lock().map_err(|_| anyhow::anyhow!("session state unavailable"))?.refresh(&space,&device,&session,now)?;
+                serde_json::json!({"expires_at":expires_at})
+            },
+            Operation::CloseSession{space,session}=> {
+                db.membership(&space,&device,now)?;
+                leases.lock().map_err(|_| anyhow::anyhow!("session state unavailable"))?.close(&space,&device,&session)?;
+                serde_json::json!({"ok":true})
+            },
             Operation::Create{name,expires_at,request_id}=>serde_json::to_value(db.create_idempotent(&device,&name,expires_at,now,quota,&request_id)?)?,
             Operation::List=>serde_json::to_value(db.list(&device,now)?)?,
             Operation::Members{space}=>serde_json::to_value(db.members(&space,&device,now)?)?,
@@ -165,9 +208,9 @@ async fn execute(
             },
             Operation::Redeem{token,request_id}=>serde_json::to_value(db.redeem(&token,&device,&request_id,now,quota)?)?,
             Operation::RevokeInvites{space}=>{db.revoke_invites(&space,&device,now)?;serde_json::json!({"ok":true})},
-            Operation::RemoveMember{space,device:removed}=>{db.membership(&space,&device,now)?;db.remove_member(&space,&device,&removed)?;serde_json::json!({"ok":true})},
-            Operation::Leave{space}=>{db.leave(&space,&device,now)?;serde_json::json!({"ok":true})},
-            Operation::Delete{space}=>{db.delete(&space,&device,now)?;serde_json::json!({"ok":true})},
+            Operation::RemoveMember{space,device:removed}=>{db.membership(&space,&device,now)?;db.remove_member(&space,&device,&removed)?;leases.lock().map_err(|_| anyhow::anyhow!("session state unavailable"))?.revoke_member(&space,&removed);serde_json::json!({"ok":true})},
+            Operation::Leave{space}=>{db.leave(&space,&device,now)?;leases.lock().map_err(|_| anyhow::anyhow!("session state unavailable"))?.revoke_member(&space,device.public_key());serde_json::json!({"ok":true})},
+            Operation::Delete{space}=>{db.delete(&space,&device,now)?;leases.lock().map_err(|_| anyhow::anyhow!("session state unavailable"))?.revoke_space(&space);serde_json::json!({"ok":true})},
         })
     }).await;
     result
