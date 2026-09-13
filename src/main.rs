@@ -114,6 +114,14 @@ async fn real_main() -> anyhow::Result<()> {
         return Ok(());
     }
     let filter = if cli.verbose { "debug" } else { "info" };
+    if let Some(Commands::Agent {
+        cmd: cli::AgentCmd::Service { job },
+    }) = &cli.command
+    {
+        if let Some(parent) = job.parent() {
+            frp_sh::debuglog::use_directory(parent.join("logs"));
+        }
+    }
     // Diagnostic records go to bounded, rotating JSONL files.
     frp_sh::debuglog::init(filter);
 
@@ -121,28 +129,16 @@ async fn real_main() -> anyhow::Result<()> {
         use frp_sh::agent::job::Job;
         match cmd {
             cli::AgentCmd::Install { job } => {
-                #[cfg(windows)]
                 return frp_sh::agent::install::install(job);
-                #[cfg(not(windows))]
-                {
-                    let _ = job;
-                    anyhow::bail!("native service installer is not available on this platform yet");
-                }
             }
             cli::AgentCmd::InstallElevated { snapshot, digest } => {
-                #[cfg(windows)]
                 return frp_sh::agent::install::elevated_install(snapshot, digest);
-                #[cfg(not(windows))]
-                {
-                    let _ = (snapshot, digest);
-                    anyhow::bail!("Windows installation entry");
-                }
             }
             cli::AgentCmd::Service { job } => {
                 #[cfg(windows)]
                 return frp_sh::agent::service::dispatch(job.clone());
                 #[cfg(not(windows))]
-                return frp_sh::agent::run(job).await;
+                return frp_sh::agent::run_with_startup(job, true).await;
             }
             cli::AgentCmd::ConfigureServer { job } => {
                 let config = cli

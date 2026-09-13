@@ -29,8 +29,12 @@ mod windows {
             },
             dwWin32ExitCode: code,
             dwServiceSpecificExitCode: 0,
-            dwCheckPoint: if state == SERVICE_STOP_PENDING { 1 } else { 0 },
-            dwWaitHint: if state == SERVICE_STOP_PENDING {
+            dwCheckPoint: if matches!(state, SERVICE_START_PENDING | SERVICE_STOP_PENDING) {
+                1
+            } else {
+                0
+            },
+            dwWaitHint: if matches!(state, SERVICE_START_PENDING | SERVICE_STOP_PENDING) {
                 10000
             } else {
                 0
