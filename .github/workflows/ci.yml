@@ -61,6 +61,10 @@ jobs:
         if: runner.os == 'macOS'
         run: sh scripts/test-helper-macos.sh
 
+      - name: Unix native agent service and ordinary-user controls
+        if: runner.os != 'Windows'
+        run: python3 scripts/test-agent-unix.py
+
       - name: Linux isolated ordinary-user helper
         if: runner.os == 'Linux'
         run: |
