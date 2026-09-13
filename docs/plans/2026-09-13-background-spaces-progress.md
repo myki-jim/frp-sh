@@ -12,7 +12,7 @@
 | 设备认证 | Ed25519 私钥本机持久化，Windows 使用账户 DPAPI；请求签名绑定服务器、完整操作摘要、一次性挑战和期限 |
 | 动态邀请 | v3 链接只含 HTTPS 服务器地址和随机令牌；默认 900 秒、默认单次；服务器可配置期限；事务兑换、幂等重试、撤销 |
 | 空间 API | `/spaces/v1/challenge`、`/spaces/v1/execute`；专用有界数据库线程；创建需管理授权；其他操作按设备成员权限执行 |
-| 空间 CLI | `space create/list/members/invite/redeem/connect/revoke-invites/remove-member/leave/delete`；`space connect ID` 将本机虚拟网卡接入永久空间 |
+| 空间 CLI | `space create/list/members/invite/redeem/connect/join/revoke-invites/remove-member/leave/delete`；`space join --stdin` 将兑换邀请码和接入合并，`space connect ID` 可重连已登记设备 |
 | 数据面 | 成员获得 10 分钟短期会话令牌；TLS WebSocket 中继仅按空间和虚拟地址转发已加密帧；每对设备从服务端派生独立会话密钥，房主离线后其余成员仍可互通 |
 | 后台监督 | client Profile 和 server 两种任务；独立子进程；配置重载、失败重试、退出清理；不打开终端 UI |
 | 原生服务安装 | `agent install --job PATH`；Windows SCM 虚拟服务账户；Linux systemd 系统服务；macOS LaunchDaemon，Unix 使用原安装者非 root UID |
@@ -53,7 +53,7 @@ frp-sh start --server
 
 ## 必须继续完成
 
-1. 将 `space connect` 接入后台 profile/服务任务，并持久化本地空间选择；当前为安全的前台入口。
+1. 将 `space connect` 接入后台 profile/服务任务，并持久化本地空间选择；Windows 需要先实现交互账户到受限服务账户的受 ACL 保护密钥交接，不能复制 DPAPI 密文或降级为明文；当前为安全的前台入口。
 2. 一行安装配置加入、邀请页、默认动态邀请、旧 Profile 的明确迁移路径。
 3. TUI 附着后台任务、连接事件和延迟回传；当前 client 不能仅凭子进程存活报告 connected。
 4. 安装器升级时协调正在运行的 client/server 服务，以及安全卸载和故障回滚验收。
