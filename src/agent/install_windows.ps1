@@ -60,7 +60,7 @@ function Safe-File([string]$Path) {
 }
 function Sc-Checked([string[]]$Arguments) {
     & (Join-Path ([Environment]::GetFolderPath('System')) 'sc.exe') @Arguments | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Service registration operation failed' }
+    if ($LASTEXITCODE -ne 0) { throw ('Service registration operation failed; code=' + $LASTEXITCODE) }
 }
 Ensure-Directory $root
 Require-TrustedDirectory $root
@@ -92,6 +92,7 @@ $written = @()
 $wasRunning = $existing -and $existing.State -eq 'Running'
 $created = $false
 $cleanupSafe = $false
+$operation = 'register'
 try {
     if ($existing) { Stop-Service $serviceName -ErrorAction Stop }
     else {
@@ -100,7 +101,9 @@ try {
         Sc-Checked $arguments
         $created = $true
     }
+    $operation = 'resolve-service-identity'
     $serviceSid = ([Security.Principal.NTAccount]::new($serviceAccount)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $operation = 'protect-files'
     Protect-Directory $directory $serviceSid $true
     foreach ($name in @('config','job')) {
         $acl = [Security.AccessControl.FileSecurity]::new()
@@ -112,6 +115,7 @@ try {
         }
         Set-Acl -LiteralPath (Join-Path $stage ($name + '.new')) -AclObject $acl
     }
+    $operation = 'replace-files'
     foreach ($item in @(@('config',$configPath),@('job',$jobPath),@('owner',$ownerFile))) {
         $name = $item[0]; $path = $item[1]
         if (Test-Path -LiteralPath $path) {
@@ -122,18 +126,24 @@ try {
         [IO.File]::Move((Join-Path $stage ($name + '.new')),$path)
         $written += $path
     }
+    $operation = 'configure-helper'
     if (-not $installSpec.server) {
         $policy = [regex]::Replace($previousHelper,'(?m)^service_sid\s*=.*\r?\n?','')
         [IO.File]::WriteAllText($helperPath,($policy.TrimEnd() + "`nservice_sid = `"" + $serviceSid + "`"`n"),[Text.UTF8Encoding]::new($false))
         Restart-Service FrpShNetwork
     }
+    $operation = 'configure-recovery'
     Sc-Checked @('failure',$serviceName,'reset=','86400','actions=','restart/3000/restart/10000/restart/30000')
+    $operation = 'configure-privileges'
     Sc-Checked @('privs',$serviceName,'SeChangeNotifyPrivilege')
+    $operation = 'start-service'
     Start-Service $serviceName
     (Get-Service $serviceName).WaitForStatus('Running',[TimeSpan]::FromSeconds(15))
     Write-Output ('Installed ' + $serviceName + '; job: ' + $jobPath)
     $cleanupSafe = $true
 } catch {
+    # Never print exception messages or source text: either may include credentials.
+    Write-Output ('Service installation diagnostic: phase=' + $operation + '; type=' + $_.Exception.GetType().FullName + '; hresult=' + $_.Exception.HResult + '; line=' + $_.InvocationInfo.ScriptLineNumber + '; native=' + $LASTEXITCODE)
     Stop-Service $serviceName -ErrorAction SilentlyContinue
     if ($created) { & (Join-Path ([Environment]::GetFolderPath('System')) 'sc.exe') delete $serviceName | Out-Null }
     foreach ($path in $written) { Remove-Item -LiteralPath $path -ErrorAction SilentlyContinue }
