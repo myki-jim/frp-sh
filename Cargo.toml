@@ -1,6 +1,6 @@
 [package]
 name = "frp-sh"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2021"
 description = "Social P2P tunnel: room-based UDP hole punching with relay fallback"
 license = "MIT"
@@ -8,11 +8,11 @@ default-run = "frp-sh"
 
 [features]
 default = ["server"]
-server = ["dep:axum"]
+server = ["dep:axum", "dep:rusqlite"]
 
 [dependencies]
 frpsh-ui-macros = { path = "crates/ui-macros" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
 clap = { version = "4", features = ["derive", "string"] }
 axum = { version = "0.8", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -40,6 +40,8 @@ async-trait = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 crossterm = { version = "0.28.1", default-features = false, features = ["events", "windows", "bracketed-paste"] }
 unicode-width = "0.2"
+rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
+ed25519-dalek = "3.0.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

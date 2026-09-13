@@ -9,6 +9,9 @@ use frp_sh::config::Config;
 /// 分支的异步状态机）压在主线程栈上（Windows 默认仅 1MB），分支增多后
 /// 会直接栈溢出（启动即崩溃）。改用大栈 worker 线程承载主逻辑即可规避。
 fn main() {
+    if std::env::args_os().any(|arg| arg == "--agent-worker") {
+        frp_sh::agent::watch_parent();
+    }
     let result = run_main();
     if let Err(e) = result {
         log::error!(target: "runtime", "{e:#}");
@@ -83,6 +86,13 @@ async fn real_main() -> anyhow::Result<()> {
         }
     };
     let cli = cli::Cli::from_arg_matches(&matches)?;
+    if matches!(cli.command, Some(Commands::Status)) {
+        let code = frp_sh::local_status::print(cli.json).await?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     if let Some(Commands::Logs { cmd }) = &cli.command {
         match cmd {
             cli::LogCmd::Path => frp_sh::ui_println!("{}", frp_sh::debuglog::directory().display()),
@@ -98,6 +108,39 @@ async fn real_main() -> anyhow::Result<()> {
     // Diagnostic records go to bounded, rotating JSONL files.
     frp_sh::debuglog::init(filter);
 
+    if let Some(Commands::Agent { cmd }) = &cli.command {
+        use frp_sh::agent::job::Job;
+        match cmd {
+            cli::AgentCmd::Configure { profile, job } => {
+                let config = cli
+                    .config
+                    .clone()
+                    .or_else(Config::default_path)
+                    .ok_or_else(|| anyhow::anyhow!("no config path"))?
+                    .canonicalize()?;
+                let desired = Job {
+                    schema_version: 1,
+                    enabled: true,
+                    config,
+                    profile: profile.clone(),
+                };
+                desired.check_profile()?;
+                desired.save(job)?;
+                frp_sh::ui_println!("Agent job saved; run it with frp-sh agent run --job <path>");
+            }
+            cli::AgentCmd::Run { job } => {
+                frp_sh::terminal::configure(true, false, true);
+                return frp_sh::agent::run(job).await;
+            }
+            cli::AgentCmd::Start { job } | cli::AgentCmd::Stop { job } => {
+                let mut desired = Job::load(job)?;
+                desired.enabled = matches!(cmd, cli::AgentCmd::Start { .. });
+                desired.save(job)?;
+                frp_sh::ui_println!("Agent desired state saved");
+            }
+        }
+        return Ok(());
+    }
     let cli::Cli {
         mut command,
         config,
@@ -216,11 +259,20 @@ async fn real_main() -> anyhow::Result<()> {
         frp_sh::commands::acquire_role_lock(role)?;
     }
 
+    let _local_status = if let Some(role) = frp_sh::commands::session_role(&command) {
+        // Status IPC is optional for legacy multi-instance test sessions.
+        frp_sh::local_status::publish(role).await.ok()
+    } else {
+        None
+    };
+
     // Update checks are explicit and never delay a connection.
 
     match command {
         Some(
-            Commands::Logs { .. }
+            Commands::Agent { .. }
+            | Commands::Status
+            | Commands::Logs { .. }
             | Commands::Connect { .. }
             | Commands::Create(_)
             | Commands::Shortcut(_),
