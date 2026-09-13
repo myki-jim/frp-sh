@@ -61,12 +61,11 @@ try {
     } while ([DateTime]::UtcNow -lt $until)
     if ($server.lifecycle.phase -ne 'serving' -or $client.lifecycle.phase -ne 'stopped') { throw 'Cross-account service status did not become ready' }
     if (-not $server.lifecycle.starts_at_boot) { throw 'Automatic startup state missing' }
-    $job = Join-Path $data 'server/job.toml'
-    Run-Owner ('--plain agent stop --job "' + $job + '"') 'stop' | Out-Null
+    Run-Owner '--plain stop --server' 'stop' | Out-Null
     Start-Sleep -Seconds 2
     $status = (Run-Owner '--json status' 'stopped') | ConvertFrom-Json
     if (($status.processes | Where-Object role -eq 'server_agent').lifecycle.phase -ne 'stopped') { throw 'Ordinary owner could not stop the server job' }
-    Run-Owner ('--plain agent start --job "' + $job + '"') 'start' | Out-Null
+    Run-Owner '--plain start --server' 'start' | Out-Null
     Start-Sleep -Seconds 2
     foreach ($name in @('FrpShClient','FrpShServer')) {
         $service = Get-CimInstance Win32_Service -Filter ("Name='" + $name + "'")
