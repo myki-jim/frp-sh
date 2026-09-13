@@ -4,6 +4,8 @@ use clap::Subcommand;
 use std::path::PathBuf;
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Attach this device's virtual network to an authorized permanent space
+    Connect { space: String },
     /// Create a durable space registration (network attachment is a separate operation)
     Create {
         name: String,
@@ -71,7 +73,12 @@ pub async fn run(
     };
     let key = DeviceKey::load_or_create(&key_path)?;
     let mut origin = server.unwrap_or_else(|| cfg.signaling_addr.clone());
+    if let Command::Connect { space } = command {
+        crate::debuglog::init("info");
+        return super::network::run(Client::new(&origin)?, key, space).await;
+    }
     let operation = match command {
+        Command::Connect { .. } => unreachable!(),
         Command::Create {
             name,
             expires_in,

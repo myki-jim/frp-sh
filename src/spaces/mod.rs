@@ -5,14 +5,23 @@ pub mod cli;
 pub mod client;
 #[cfg(feature = "server")]
 pub mod leases;
+pub mod mesh;
+pub mod network;
+#[cfg(feature = "server")]
+pub mod relay;
 #[cfg(feature = "server")]
 pub mod server;
 #[cfg(all(test, feature = "server"))]
 mod tests;
+pub mod types;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    PeerSessions {
+        space: String,
+        session: String,
+    },
     OpenSession {
         space: String,
     },

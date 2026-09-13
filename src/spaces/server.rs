@@ -31,6 +31,7 @@ pub struct Options {
 #[derive(Clone)]
 pub struct Service(Arc<Inner>);
 struct Inner {
+    relay: super::relay::Hub,
     db: Worker,
     leases: Arc<std::sync::Mutex<super::leases::Leases>>,
     challenges: Mutex<Challenges>,
@@ -41,7 +42,7 @@ struct Inner {
     max_ttl: u64,
     slots: Semaphore,
 }
-pub struct ApiError(StatusCode, &'static str);
+pub struct ApiError(pub(super) StatusCode, pub(super) &'static str);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, Json(serde_json::json!({"error":self.1}))).into_response()
@@ -73,6 +74,7 @@ impl Service {
         )
         .await?;
         Ok(Self(Arc::new(Inner {
+            relay: super::relay::Hub::default(),
             db,
             leases: Arc::new(std::sync::Mutex::new(super::leases::Leases::new(
                 quota.total_members as usize,
@@ -90,8 +92,15 @@ impl Service {
         Router::new()
             .route("/spaces/v1/challenge", post(challenge))
             .route("/spaces/v1/execute", post(execute))
+            .route(
+                "/spaces/v1/{space}/relay",
+                axum::routing::get(super::relay::upgrade),
+            )
             .layer(DefaultBodyLimit::max(8192))
             .with_state(self)
+    }
+    pub(super) fn relay_hub(&self) -> super::relay::Hub {
+        self.0.relay.clone()
     }
     /// Data channels must revalidate through this boundary, not trust request device IDs.
     pub async fn authenticate_session(
@@ -181,6 +190,10 @@ async fn execute(
     let leases = s.0.leases.clone();
     let result=s.0.db.call(move |db| {
         Ok(match req.operation {
+            Operation::PeerSessions{space,session}=> {
+                db.membership(&space,&device,now)?;
+                serde_json::to_value(leases.lock().map_err(|_| anyhow::anyhow!("session state unavailable"))?.peers(&space,&device,&session,now)?)?
+            },
             Operation::OpenSession{space}=> {
                 let address=db.virtual_address(&space,&device,now)?;
                 let mut leases=leases.lock().map_err(|_| anyhow::anyhow!("session state unavailable"))?;
