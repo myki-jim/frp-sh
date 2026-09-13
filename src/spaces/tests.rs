@@ -315,11 +315,20 @@ async fn relay_routes_only_authorized_members_and_rewrites_the_source_address() 
         ))
         .await
         .unwrap();
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(100), owner_socket.next())
-            .await
-            .is_err()
-    );
+    // Server pings can arrive at any time; only a binary relay frame is a violation.
+    let unexpected = tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        loop {
+            match owner_socket.next().await {
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(frame))) => {
+                    return Some(frame)
+                }
+                Some(Ok(_)) => continue,
+                _ => return None,
+            }
+        }
+    })
+    .await;
+    assert!(matches!(unexpected, Err(_) | Ok(None)));
     drop(guest_socket);
     drop(owner_socket);
     task.abort();
