@@ -24,12 +24,11 @@ The server persists durable spaces in SQLite. The owner leaving does not remove 
 ```sh
 frp-sh space create friends
 frp-sh space invite SPACE_ID
-# Joining device: read the invitation from stdin instead of shell history
-frp-sh space redeem --stdin
-frp-sh space connect SPACE_ID
+# Joining device: redeem and attach in one step, without placing the invitation in shell history
+frp-sh space join --stdin
 ```
 
-Each member receives a stable `10.66.0.x` virtual address and a ten-minute access lease. The relay forwards encrypted frames only between authenticated members of the same space. Removing a member, replacing a session, expiry, or closing a session invalidates the prior relay immediately. `space connect` is currently a foreground command; background space recovery and one-command install-and-join are still in development. Legacy `create` / `join` rooms and invitations remain a separate compatibility path.
+Each member receives a stable `10.66.0.x` virtual address and a ten-minute access lease. The relay forwards encrypted frames only between authenticated members of the same space. Removing a member, replacing a session, expiry, or closing a session invalidates the prior relay immediately. `space join` combines redemption and attachment; use `space redeem` to register without attaching, and `space connect SPACE_ID` to reconnect a registered device. `space connect` is currently a foreground command; background space recovery and one-command install-and-join are still in development. Legacy `create` / `join` rooms and invitations remain a separate compatibility path.
 
 
 ## Interactive rooms and personal presets
