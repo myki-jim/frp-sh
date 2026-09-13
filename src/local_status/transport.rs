@@ -166,14 +166,17 @@ impl Listener {
         }
         #[cfg(unix)]
         {
-            let (stream, _) = self.socket.accept().await?;
-            if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "unauthorized status caller",
-                ));
+            loop {
+                let (stream, _) = self.socket.accept().await?;
+                // A bind probe can disconnect before accept. On macOS getpeereid
+                // then returns ENOTCONN; discard that client, not the listener.
+                if stream
+                    .peer_cred()
+                    .is_ok_and(|cred| cred.uid() == unsafe { libc::geteuid() })
+                {
+                    return Ok(stream);
+                }
             }
-            Ok(stream)
         }
     }
 }
