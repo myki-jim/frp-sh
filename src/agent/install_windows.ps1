@@ -59,8 +59,26 @@ function Safe-File([string]$Path) {
     }
 }
 function Sc-Checked([string[]]$Arguments) {
-    & (Join-Path ([Environment]::GetFolderPath('System')) 'sc.exe') @Arguments | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw ('Service registration operation failed; code=' + $LASTEXITCODE) }
+    # PS 5.1's native invocation strips embedded quotes in binPath. Construct the
+    # Windows CRT argument string explicitly; no command shell interprets it.
+    $encoded = foreach ($value in $Arguments) {
+        '"' + [regex]::Replace([regex]::Replace($value,'(\\*)"','$1$1\"'),'(\\+)$','$1$1') + '"'
+    }
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = Join-Path ([Environment]::GetFolderPath('System')) 'sc.exe'
+    $start.Arguments = $encoded -join ' '
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $process = [Diagnostics.Process]::Start($start)
+    $null = $process.StandardOutput.ReadToEnd()
+    $process.WaitForExit()
+    $code = $process.ExitCode
+    $process.Dispose()
+    if ($code -ne 0) {
+        Write-Output ('Service registration diagnostic: code=' + $code)
+        throw 'Service registration operation failed'
+    }
 }
 Ensure-Directory $root
 Require-TrustedDirectory $root

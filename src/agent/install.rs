@@ -208,7 +208,7 @@ mod windows {
         ensure!(process.wait()?.success(), "service installation failed");
         Ok(())
     }
-    fn common_data() -> anyhow::Result<PathBuf> {
+    pub(super) fn common_data() -> anyhow::Result<PathBuf> {
         use windows_sys::Win32::{
             System::Com::CoTaskMemFree,
             UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath},
@@ -253,3 +253,27 @@ mod windows {
 pub use super::install_unix::{elevated_install, install};
 #[cfg(windows)]
 pub use windows::{elevated_install, install};
+
+/// Resolve only the fixed installed job belonging to the caller's account.
+pub fn installed_job(server: bool) -> anyhow::Result<std::path::PathBuf> {
+    let role = if server { "server" } else { "client" };
+    #[cfg(windows)]
+    let path = windows::common_data()?
+        .join("frp-sh")
+        .join(role)
+        .join("job.toml");
+    #[cfg(unix)]
+    let path = std::path::PathBuf::from(format!("/var/lib/frp-sh/{}/{role}/job.toml", unsafe {
+        libc::geteuid()
+    }));
+    let job = super::job::Job::load(&path).map_err(|_| {
+        anyhow::anyhow!("no accessible installed {role} service job; install it first")
+    })?;
+    anyhow::ensure!(job.server == server, "installed service role mismatch");
+    #[cfg(windows)]
+    anyhow::ensure!(
+        job.owner_sid.as_deref() == Some(crate::local_status::identity()?.as_str()),
+        "service belongs to another account"
+    );
+    Ok(path)
+}

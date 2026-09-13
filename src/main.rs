@@ -86,6 +86,21 @@ async fn real_main() -> anyhow::Result<()> {
         }
     };
     let cli = cli::Cli::from_arg_matches(&matches)?;
+    if let Some(Commands::Start { server } | Commands::Stop { server }) = &cli.command {
+        let path = frp_sh::agent::install::installed_job(*server)?;
+        let mut job = frp_sh::agent::job::Job::load(&path)?;
+        job.enabled = matches!(cli.command, Some(Commands::Start { .. }));
+        job.save(&path)?;
+        frp_sh::ui_println!(
+            "{}",
+            if job.enabled {
+                "Background session enabled"
+            } else {
+                "Background session paused"
+            }
+        );
+        return Ok(());
+    }
     if let Some(Commands::Space {
         server,
         identity,
@@ -335,6 +350,8 @@ async fn real_main() -> anyhow::Result<()> {
             Commands::Space { .. }
             | Commands::Agent { .. }
             | Commands::Status
+            | Commands::Start { .. }
+            | Commands::Stop { .. }
             | Commands::Logs { .. }
             | Commands::Connect { .. }
             | Commands::Create(_)
