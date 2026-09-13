@@ -25,6 +25,8 @@ fn cli_styles() -> clap::builder::Styles {
     styles = cli_styles()
 )]
 pub struct Cli {
+    #[arg(long, hide = true)]
+    pub agent_worker: bool,
     /// Display language (auto follows the system locale)
     #[arg(long, global = true, value_parser = ["auto", "zh-CN", "en"])]
     pub lang: Option<String>,
@@ -60,6 +62,13 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Run or configure the noninteractive saved-profile supervisor
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
+    /// Query running processes for the current account (read-only local IPC)
+    Status,
     /// Create a LAN room; game/dev are optional parameter presets
     Create(RoomCreateArgs),
     /// Manage room parameter presets (separate from saved connections)
@@ -466,4 +475,30 @@ pub struct RoomCreateArgs {
     /// Additional payload passphrase (not saved in presets)
     #[arg(long)]
     pub key: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentCmd {
+    /// Save a profile reference as a persistent supervisor job (does not install a system service)
+    Configure {
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        job: PathBuf,
+    },
+    /// Run a job without terminal UI; suitable for an external OS supervisor
+    Run {
+        #[arg(long)]
+        job: PathBuf,
+    },
+    /// Disable the persisted job; a running supervisor observes the change
+    Stop {
+        #[arg(long)]
+        job: PathBuf,
+    },
+    /// Enable the persisted job; requires a running supervisor
+    Start {
+        #[arg(long)]
+        job: PathBuf,
+    },
 }

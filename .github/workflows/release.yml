@@ -31,12 +31,10 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: frp-sh-windows-x86_64.exe
-          # Intel macOS: 用 zigbuild 在 Linux runner 上交叉编译
-          # （macos-13 公共 runner 排队严重，纯 Rust 项目无需 SDK 即可链接）
-          - os: ubuntu-latest
+          # Bundled SQLite needs the Apple SDK; build Intel output on macOS.
+          - os: macos-14
             target: x86_64-apple-darwin
             asset: frp-sh-macos-x86_64
-            zigbuild: true
           - os: macos-14
             target: aarch64-apple-darwin
             asset: frp-sh-macos-arm64

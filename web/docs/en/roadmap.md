@@ -1,6 +1,6 @@
 # Roadmap
 
-## Available in 0.5.4
+## Available in 0.5.5
 
 - Keyboard-operated terminal app, profiles, personal room presets and invitations.
 - LAN by default; game/dev parameter presets and explicit TCP/UDP service publishing.

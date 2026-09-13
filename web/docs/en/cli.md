@@ -1,5 +1,25 @@
 # Commands and keyboard controls
 
+## Headless supervision and status (0.5.5)
+
+Save a connection using `frp-sh profile` first. Here `friends` is an existing profile; the job directory must exist. Use another terminal for control and status commands.
+
+```sh
+frp-sh agent configure --profile friends --job ./agent.toml
+frp-sh agent run --job ./agent.toml
+frp-sh status
+frp-sh status --json
+frp-sh agent stop --job ./agent.toml
+frp-sh agent start --job ./agent.toml
+```
+
+`run` is a long-running supervisor without terminal UI. It occupies its launching process; it does not install an OS service or enable startup at boot. `start/stop` persist desired state and require an already running supervisor. Closing the supervisor terminates its connection worker. Failed workers retry with a 2–30 second backoff. Use `frp-sh logs` for separate diagnostics. Job files contain only a config path and profile name; credentials remain in the original configuration.
+
+`status` queries new-version processes belonging to the current account, not other service accounts. Exit codes: 0 means a process is running (possibly without an active session), 1 unavailable/session error, 2 connection unverified, 3 no visible process, 4 permission denied. JSON `lifecycle.phase` reports supervisor state. Neither `joining` nor a live process proves connectivity; data-plane connected events are not yet reported to the supervisor.
+
+This release does not include one-command OS service installation, unattended boot startup, permanent spaces or 15-minute invitation tickets. Existing room expiry, invitation format, signaling v3 and helper v2 remain unchanged.
+
+
 ## Interactive rooms and personal presets
 
 Run `frp-sh` for the terminal app: create a default LAN room immediately, join, customize a room, manage presets or saved connections. `frp-sh preset` opens room presets (shortcut `7`); `frp-sh profile` opens saved connections (shortcut `2`).

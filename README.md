@@ -1,5 +1,25 @@
 # frp-sh
 
+## 后台监督与状态（0.5.5）
+
+先在 `frp-sh profile` 保存连接。下面的 `friends` 是已有 Profile 名称，任务文件所在目录必须存在；在另一终端执行启停和查询。
+
+```sh
+frp-sh agent configure --profile friends --job ./agent.toml
+frp-sh agent run --job ./agent.toml
+frp-sh status
+frp-sh status --json
+frp-sh agent stop --job ./agent.toml
+frp-sh agent start --job ./agent.toml
+```
+
+`run` 是无终端界面的长驻监督进程，仍占用启动它的进程；不安装系统服务，也不会自动开机运行。`start/stop` 修改任务目标状态，必须有运行中的监督进程才能执行。关闭监督进程会终止连接子进程；意外退出的连接按 2–30 秒退避重试。日志仍通过 `frp-sh logs` 查看。任务文件只保存配置路径和 Profile 名称，凭据仍在原配置内。
+
+`status` 只查询当前账户启动的新版本进程，不跨服务账户。退出码：0 表示进程运行（可能没有活动会话），1 为不可用或会话错误，2 为连接尚未验证，3 为没有可见进程，4 为权限不足。JSON 的 `lifecycle.phase` 表示监督阶段；`joining` 和进程存活都不保证网络连通，当前尚未回传数据面的 connected 状态。
+
+本版不包含系统服务一键安装、未登录自启、永久空间或 15 分钟动态邀请；旧房间有效期、邀请格式、协议 v3 和 helper v2 保持不变。
+
+
 ## 交互式房间与个人预设
 
 运行 `frp-sh` 进入终端应用：首页可直接创建默认 LAN 房间、加入房间、自定义创建、管理房间预设和已保存连接。也可以运行 `frp-sh preset` 打开预设页（快捷键 `7`），`frp-sh profile` 打开已保存连接（快捷键 `2`）。
