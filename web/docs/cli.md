@@ -1,6 +1,6 @@
 # 命令与键盘操作
 
-## 后台监督与状态（0.5.5）
+## 后台监督、永久空间与状态（开发分支）
 
 先在 `frp-sh profile` 保存连接。下面的 `friends` 是已有 Profile 名称，任务文件所在目录必须存在；在另一终端执行启停和查询。
 
@@ -13,11 +13,23 @@ frp-sh agent stop --job ./agent.toml
 frp-sh agent start --job ./agent.toml
 ```
 
-`run` 是无终端界面的长驻监督进程，仍占用启动它的进程；不安装系统服务，也不会自动开机运行。`start/stop` 修改任务目标状态，必须有运行中的监督进程才能执行。关闭监督进程会终止连接子进程；意外退出的连接按 2–30 秒退避重试。日志仍通过 `frp-sh logs` 查看。任务文件只保存配置路径和 Profile 名称，凭据仍在原配置内。
+`run` 是无终端界面的长驻监督进程。`agent install --job PATH` 会安装系统服务：Windows 使用受限虚拟服务账户，Linux 使用 systemd，macOS 使用 LaunchDaemon。安装阶段才请求管理员权限；之后用 `frp-sh start`、`frp-sh stop`、`frp-sh status` 管理 client，服务器使用 `--server`。日志仍通过 `frp-sh logs` 查看。
 
-`status` 只查询当前账户启动的新版本进程，不跨服务账户。退出码：0 表示进程运行（可能没有活动会话），1 为不可用或会话错误，2 为连接尚未验证，3 为没有可见进程，4 为权限不足。JSON 的 `lifecycle.phase` 表示监督阶段；`joining` 和进程存活都不保证网络连通，当前尚未回传数据面的 connected 状态。
+`status` 查询当前账户有权管理的进程；Windows 会验证服务进程身份后显示跨账户服务状态。退出码：0 表示运行，1 为不可用或会话错误，2 为连接尚未验证，3 为没有可见进程，4 为权限不足。
 
-本版不包含系统服务一键安装、未登录自启、永久空间或 15 分钟动态邀请；旧房间有效期、邀请格式、协议 v3 和 helper v2 保持不变。
+### 永久空间
+
+永久空间由服务端 SQLite 保存，房主退出不会删除其他成员的会话。邀请码不含服务器密码，而是默认 15 分钟、单次使用的随机令牌。空间连接只接受 HTTPS/WSS。
+
+```sh
+frp-sh space create friends
+frp-sh space invite SPACE_ID
+# 加入者：从标准输入读取邀请码，避免写入 shell 历史
+frp-sh space redeem --stdin
+frp-sh space connect SPACE_ID
+```
+
+每个成员有固定的 `10.66.0.x` 虚拟 IP 和 10 分钟会话令牌。中继仅在同一空间的已认证成员之间转发加密帧；移除成员、替换会话、到期或关闭会话会立即使旧中继失效。`space connect` 当前是前台入口，后台空间恢复和一行安装加入仍在开发中。旧 `create` / `join` 和旧邀请保持兼容逻辑，不能视为永久空间。
 
 
 ## 交互式房间与个人预设
