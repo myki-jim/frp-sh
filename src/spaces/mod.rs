@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 pub mod cli;
 pub mod client;
 #[cfg(feature = "server")]
+pub mod leases;
+#[cfg(feature = "server")]
 pub mod server;
 #[cfg(all(test, feature = "server"))]
 mod tests;
@@ -11,6 +13,17 @@ mod tests;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    OpenSession {
+        space: String,
+    },
+    RefreshSession {
+        space: String,
+        session: String,
+    },
+    CloseSession {
+        space: String,
+        session: String,
+    },
     Create {
         name: String,
         expires_at: Option<u64>,
