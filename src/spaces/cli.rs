@@ -6,6 +6,15 @@ use std::path::PathBuf;
 pub enum Command {
     /// Attach this device's virtual network to an authorized permanent space
     Connect { space: String },
+    /// Redeem a temporary invitation then attach the virtual network
+    Join {
+        #[arg(conflicts_with = "stdin")]
+        invitation: Option<String>,
+        #[arg(long, required_unless_present = "invitation")]
+        stdin: bool,
+        #[arg(long)]
+        request_id: Option<String>,
+    },
     /// Create a durable space registration (network attachment is a separate operation)
     Create {
         name: String,
@@ -73,12 +82,42 @@ pub async fn run(
     };
     let key = DeviceKey::load_or_create(&key_path)?;
     let mut origin = server.unwrap_or_else(|| cfg.signaling_addr.clone());
-    if let Command::Connect { space } = command {
-        crate::debuglog::init("info");
-        return super::network::run(Client::new(&origin)?, key, space).await;
+    match command {
+        Command::Connect { space } => {
+            crate::debuglog::init("info");
+            return super::network::run(Client::new(&origin)?, key, space).await;
+        }
+        Command::Join {
+            invitation,
+            stdin,
+            request_id,
+        } => {
+            let link = read_invitation(invitation, stdin)?;
+            let ticket = Ticket::parse(link.trim())?;
+            origin = ticket.server().into();
+            let result = Client::new(&origin)?
+                .execute(
+                    &key,
+                    Operation::Redeem {
+                        token: ticket.token().into(),
+                        request_id: request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    },
+                    None,
+                )
+                .await?;
+            let space = result
+                .get("space_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("invalid invitation response"))?
+                .to_owned();
+            crate::debuglog::init("info");
+            return super::network::run(Client::new(&origin)?, key, space).await;
+        }
+        _ => {}
     }
     let operation = match command {
         Command::Connect { .. } => unreachable!(),
+        Command::Join { .. } => unreachable!(),
         Command::Create {
             name,
             expires_in,
@@ -110,15 +149,7 @@ pub async fn run(
             stdin,
             request_id,
         } => {
-            let link = if stdin {
-                use std::io::Read;
-                let mut bytes = Vec::new();
-                std::io::stdin().take(6001).read_to_end(&mut bytes)?;
-                anyhow::ensure!(bytes.len() <= 6000, "invitation too large");
-                String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("invalid invitation"))?
-            } else {
-                invitation.ok_or_else(|| anyhow::anyhow!("invitation required"))?
-            };
+            let link = read_invitation(invitation, stdin)?;
             let ticket = Ticket::parse(link.trim())?;
             origin = ticket.server().into();
             Operation::Redeem {
@@ -140,4 +171,14 @@ pub async fn run(
         .await?;
     crate::ui_println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+fn read_invitation(invitation: Option<String>, stdin: bool) -> anyhow::Result<String> {
+    if !stdin {
+        return invitation.ok_or_else(|| anyhow::anyhow!("invitation required"));
+    }
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::io::stdin().take(6001).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 6000, "invitation too large");
+    String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("invalid invitation"))
 }

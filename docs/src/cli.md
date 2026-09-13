@@ -26,12 +26,11 @@ frp-sh agent start --job ./agent.toml
 frp-sh space create friends
 frp-sh space invite SPACE_ID
 
-# 加入者：令牌可通过标准输入避免写入 shell 历史
-frp-sh space redeem --stdin
-frp-sh space connect SPACE_ID
+# 加入者：兑换邀请并立即接入；令牌通过标准输入避免写入 shell 历史
+frp-sh space join --stdin
 ```
 
-每个成员获得固定的 `10.66.0.x` 虚拟地址和 10 分钟会话令牌。中继仅在同一空间已认证成员之间转发加密帧；移除成员、替换会话、到期或关闭会话会立即使旧中继失效。`space connect` 是前台入口，后台空间恢复和一行安装加入仍在开发中。
+每个成员获得固定的 `10.66.0.x` 虚拟地址和 10 分钟会话令牌。中继仅在同一空间已认证成员之间转发加密帧；移除成员、替换会话、到期或关闭会话会立即使旧中继失效。`space join` 将兑换和接入合并为一步；需要只登记成员资格时仍可使用 `space redeem`，已登记设备可用 `space connect SPACE_ID` 重连。`space connect` 是前台入口，后台空间恢复和一行安装加入仍在开发中。
 
 旧 `create` / `join` 和旧邀请维持兼容逻辑；不要把它们当作永久空间。
 
