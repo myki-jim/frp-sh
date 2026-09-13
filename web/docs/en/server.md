@@ -10,6 +10,23 @@ The server keeps room registrations in memory, exchanges peer addresses, and pro
 ./frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password "$FRPSH_SERVE_PASSWORD"
 ```
 
+## Durable spaces and member relay
+
+To enable durable spaces, configure a server password, a private SQLite path, and the public HTTPS origin seen by users. `--spaces-origin` must be that public origin. A reverse proxy must pass WebSocket Upgrade so members can connect to `wss://…/spaces/v1/<SPACE_ID>/relay`.
+
+```bash
+./frp-sh serve \
+  --addr 127.0.0.1:8080 \
+  --relay-addr 0.0.0.0:8081 \
+  --password "$FRPSH_SERVE_PASSWORD" \
+  --spaces-db /var/lib/frp-sh/spaces.sqlite \
+  --spaces-origin https://frp.sh \
+  --invite-ttl 900 \
+  --invite-max-ttl 86400
+```
+
+The SQLite file and its parent directory should only be accessible to the service account. Invitation tokens are stored only as digests. The default lifetime is 900 seconds; the server can set a default and maximum from one second through 24 hours.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--addr` | `0.0.0.0:8080` | HTTP REST listen address (UDP probe shares the port) |
@@ -91,7 +108,7 @@ When punching fails, traffic goes over the server's private TCP relay by default
 | TURN username | `frp-sh` (fixed) |
 | TURN password | same as `--password` |
 | Realm | `frp.sh` |
-| Client config | `turn_providers = ["turn://frp-sh:YOUR_PASSWORD@SERVER_IP:3478"]` |
+| Client config | Set a private TURN address in `turn_providers` |
 
 > **Why `--external-ip` is needed**: the TURN server advertises relay addresses taken from the listen address's IP; behind NAT / Docker (e.g. listening on `0.0.0.0` picks up a private address like `172.17.0.x`), you must specify the public IP explicitly so clients can reach the relay ports.
 

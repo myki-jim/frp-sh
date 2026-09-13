@@ -1,6 +1,6 @@
 # 命令参考
 
-## 后台监督与状态（0.5.5）
+## 后台监督、永久空间与状态（开发分支）
 
 先在 `frp-sh profile` 保存连接。下面的 `friends` 是已有 Profile 名称，任务文件所在目录必须存在；在另一终端执行启停和查询。
 
@@ -13,11 +13,27 @@ frp-sh agent stop --job ./agent.toml
 frp-sh agent start --job ./agent.toml
 ```
 
-`run` 是无终端界面的长驻监督进程，仍占用启动它的进程；不安装系统服务，也不会自动开机运行。`start/stop` 修改任务目标状态，必须有运行中的监督进程才能执行。关闭监督进程会终止连接子进程；意外退出的连接按 2–30 秒退避重试。日志仍通过 `frp-sh logs` 查看。任务文件只保存配置路径和 Profile 名称，凭据仍在原配置内。
+`run` 是无终端界面的长驻监督进程。`agent install --job PATH` 将它安装为系统服务：Windows 使用受限虚拟服务账户，Linux 使用 systemd，macOS 使用 LaunchDaemon。安装阶段才会请求管理员权限；安装后可用 `frp-sh start`、`frp-sh stop` 和 `frp-sh status` 由原账户控制 client，服务器使用对应命令的 `--server`。关闭监督进程会终止连接子进程；意外退出的连接按 2–30 秒退避重试。日志仍通过 `frp-sh logs` 查看。
 
-`status` 只查询当前账户启动的新版本进程，不跨服务账户。退出码：0 表示进程运行（可能没有活动会话），1 为不可用或会话错误，2 为连接尚未验证，3 为没有可见进程，4 为权限不足。JSON 的 `lifecycle.phase` 表示监督阶段；`joining` 和进程存活都不保证网络连通，当前尚未回传数据面的 connected 状态。
+`status` 查询当前账户有权管理的进程；Windows 会验证服务进程身份后显示跨账户服务状态。退出码：0 表示运行，1 为不可用或会话错误，2 为连接尚未验证，3 为没有可见进程，4 为权限不足。JSON 的 `lifecycle.phase` 表示监督阶段；`joining` 和进程存活都不保证网络连通。
 
-本版不包含系统服务一键安装、未登录自启、永久空间或 15 分钟动态邀请；旧房间有效期、邀请格式、协议 v3 和 helper v2 保持不变。
+### 永久空间
+
+永久空间由服务端 SQLite 持久化，房主退出不会删除其他成员会话。空间邀请码不含服务器密码，而是默认 15 分钟、单次使用的随机令牌。空间连接只接受 HTTPS/WSS 服务器地址。
+
+```sh
+# 创建者：服务端配置中已有 password，空间默认永久
+frp-sh space create friends
+frp-sh space invite SPACE_ID
+
+# 加入者：令牌可通过标准输入避免写入 shell 历史
+frp-sh space redeem --stdin
+frp-sh space connect SPACE_ID
+```
+
+每个成员获得固定的 `10.66.0.x` 虚拟地址和 10 分钟会话令牌。中继仅在同一空间已认证成员之间转发加密帧；移除成员、替换会话、到期或关闭会话会立即使旧中继失效。`space connect` 是前台入口，后台空间恢复和一行安装加入仍在开发中。
+
+旧 `create` / `join` 和旧邀请维持兼容逻辑；不要把它们当作永久空间。
 
 
 frp-sh 提供三个使用系列，按场景选择：
@@ -209,7 +225,7 @@ frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081 --password 你的密�
 - **默认值**：关闭（不提供 TURN；客户端打洞失败时回退到私有 TCP 中继）
 - 指定监听地址即可启用，如 `--turn 0.0.0.0:3478`
 - 认证复用 `--password`：TURN 用户名固定为 `frp-sh`，密码与服务器密码一致
-- 客户端侧只需在配置 `turn_providers` 里写 `turn://frp-sh:<密码>@<服务器IP>:3478`，
+- 客户端侧在配置 `turn_providers` 中填写服务端生成的 TURN 地址（不要把密码写入文档或 shell 历史），
   打洞失败时会自动改走 TURN（无需 `--relay`）
 - 启用后防火墙需额外放行 TURN 端口（`3478/udp`）以及分配给客户端的 relay 端口段
 - 也可不启用内置 TURN，而是把 frp.sh 官方服务器或自建 coturn 作为供应商配进客户端

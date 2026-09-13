@@ -1,6 +1,6 @@
 # Commands and keyboard controls
 
-## Headless supervision and status (0.5.5)
+## Background supervision, durable spaces, and status (development branch)
 
 Save a connection using `frp-sh profile` first. Here `friends` is an existing profile; the job directory must exist. Use another terminal for control and status commands.
 
@@ -13,11 +13,23 @@ frp-sh agent stop --job ./agent.toml
 frp-sh agent start --job ./agent.toml
 ```
 
-`run` is a long-running supervisor without terminal UI. It occupies its launching process; it does not install an OS service or enable startup at boot. `start/stop` persist desired state and require an already running supervisor. Closing the supervisor terminates its connection worker. Failed workers retry with a 2–30 second backoff. Use `frp-sh logs` for separate diagnostics. Job files contain only a config path and profile name; credentials remain in the original configuration.
+`run` is a long-running supervisor without terminal UI. `agent install --job PATH` installs an OS service: a restricted virtual account on Windows, systemd on Linux, and a LaunchDaemon on macOS. Administrator rights are only requested during installation. Afterwards, use `frp-sh start`, `frp-sh stop`, and `frp-sh status` for the client; add `--server` for the server. Use `frp-sh logs` for separate diagnostics.
 
-`status` queries new-version processes belonging to the current account, not other service accounts. Exit codes: 0 means a process is running (possibly without an active session), 1 unavailable/session error, 2 connection unverified, 3 no visible process, 4 permission denied. JSON `lifecycle.phase` reports supervisor state. Neither `joining` nor a live process proves connectivity; data-plane connected events are not yet reported to the supervisor.
+`status` queries processes the current account is allowed to manage. On Windows it validates the service process identity before showing cross-account service status. Exit codes: 0 means running, 1 unavailable/session error, 2 connection unverified, 3 no visible process, and 4 permission denied.
 
-This release does not include one-command OS service installation, unattended boot startup, permanent spaces or 15-minute invitation tickets. Existing room expiry, invitation format, signaling v3 and helper v2 remain unchanged.
+### Durable spaces
+
+The server persists durable spaces in SQLite. The owner leaving does not remove other members' sessions. Invitations contain no server password: they carry a random single-use token valid for 15 minutes by default. Space connections require HTTPS/WSS.
+
+```sh
+frp-sh space create friends
+frp-sh space invite SPACE_ID
+# Joining device: read the invitation from stdin instead of shell history
+frp-sh space redeem --stdin
+frp-sh space connect SPACE_ID
+```
+
+Each member receives a stable `10.66.0.x` virtual address and a ten-minute access lease. The relay forwards encrypted frames only between authenticated members of the same space. Removing a member, replacing a session, expiry, or closing a session invalidates the prior relay immediately. `space connect` is currently a foreground command; background space recovery and one-command install-and-join are still in development. Legacy `create` / `join` rooms and invitations remain a separate compatibility path.
 
 
 ## Interactive rooms and personal presets

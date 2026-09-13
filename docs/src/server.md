@@ -8,6 +8,23 @@
 ./frp-sh serve --addr 0.0.0.0:8080 --relay-addr 0.0.0.0:8081
 ```
 
+## 永久空间与成员中继
+
+为服务器设置密码、私有 SQLite 路径和公开 HTTPS 来源后，会启用永久空间 API。`--spaces-origin` 必须是用户实际访问的 HTTPS 地址；反向代理必须透传 WebSocket Upgrade，才能让成员连接 `wss://…/spaces/v1/<SPACE_ID>/relay`。
+
+```bash
+./frp-sh serve \
+  --addr 127.0.0.1:8080 \
+  --relay-addr 0.0.0.0:8081 \
+  --password 'change-this-on-the-server' \
+  --spaces-db /var/lib/frp-sh/spaces.sqlite \
+  --spaces-origin https://frp.sh \
+  --invite-ttl 900 \
+  --invite-max-ttl 86400
+```
+
+SQLite 文件和父目录应仅允许服务账户访问。默认邀请有效 900 秒；服务端可在 1 秒到 24 小时之间收紧默认和最大值。默认容量为 1024 个空间、每空间 33 名成员、总计 33792 名登记成员，可通过现有容量参数限制。动态邀请令牌只以摘要形式保存，不会写入数据库。
+
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--addr` | `0.0.0.0:8080` | HTTP REST 监听地址（UDP 公网探测复用同一端口） |
@@ -89,7 +106,7 @@ iptables -I INPUT -p tcp --dport 8081 -j ACCEPT
 | TURN 用户名 | `frp-sh`（固定） |
 | TURN 密码 | 与 `--password` 一致 |
 | Realm | `frp.sh` |
-| 客户端配置 | `turn_providers = ["turn://frp-sh:你的密码@服务器IP:3478"]` |
+| 客户端配置 | 在 `turn_providers` 中填写私有 TURN 地址 |
 
 > **为什么需要 `--external-ip`**：TURN 服务器通告的 relay 地址取自监听地址的 IP；
 > 在 NAT / Docker 后面（如监听 `0.0.0.0` 时自动取到 `172.17.0.x` 这类内网地址），
