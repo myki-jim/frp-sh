@@ -774,6 +774,7 @@ pub async fn run_serve(
     external_ip: Option<std::net::IpAddr>,
     limits: crate::signaling::limits::ServerLimits,
     spaces: crate::spaces::server::Options,
+    domains: crate::domains::server::Options,
 ) -> anyhow::Result<()> {
     limits.validate()?;
     let space_service = if spaces.spaces_db.is_some() {
@@ -791,6 +792,16 @@ pub async fn run_serve(
         )
     } else {
         None
+    };
+    let domain_service = if domains.domains_db.is_some() {
+        Some(crate::domains::server::Service::open(&domains).await?)
+    } else {
+        None
+    };
+    let ingress_listener = match (domain_service.as_ref(), domains.ingress_addr.as_deref()) {
+        (Some(_), Some(address)) => Some(TcpListener::bind(address).await?),
+        (Some(_), None) => anyhow::bail!("--ingress-addr is required"),
+        (None, _) => None,
     };
     let http_listener = TcpListener::bind(&http_addr).await?;
     let http_sock: SocketAddr = http_listener.local_addr()?;
@@ -812,6 +823,9 @@ pub async fn run_serve(
         ("UDP echo", udp.local_addr()?.to_string()),
         ("TCP relay", relay_sock.to_string()),
     ];
+    if let Some(listener) = ingress_listener.as_ref() {
+        server_rows.push(("HTTP ingress", listener.local_addr()?.to_string()));
+    }
     let turn_task = match &turn {
         Some(t) => {
             let srv = crate::p2p::turn_server::TurnServer::start(
@@ -862,14 +876,18 @@ pub async fn run_serve(
         }
         _ => None,
     };
-    let http_task = tokio::spawn(server::run_http_with_spaces(
+    let http_task = tokio::spawn(server::run_http_with_services(
         http_listener,
         state.clone(),
         password.clone(),
         turn_public,
         limits,
         space_service,
+        domain_service.clone(),
     ));
+    let ingress_task = ingress_listener
+        .zip(domain_service)
+        .map(|(listener, service)| tokio::spawn(service.run_ingress(listener)));
     let udp_task = tokio::spawn(server::run_udp_echo(udp));
     let relay_task = tokio::spawn(server::run_relay(relay_listener, state, password));
     let _ready_status = crate::local_status::publish("serve").await.ok();
@@ -879,6 +897,12 @@ pub async fn run_serve(
         r = http_task => { r??; }
         r = udp_task => { r??; }
         r = relay_task => { r??; }
+        r = async {
+            match ingress_task {
+                Some(task) => task.await?,
+                None => std::future::pending().await,
+            }
+        } => { r?; }
         r = async {
             match turn_task {
                 Some(t) => {

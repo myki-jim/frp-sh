@@ -14,6 +14,11 @@ pub struct Settings {
     pub spaces_origin: Option<String>,
     pub invite_ttl: u64,
     pub invite_max_ttl: u64,
+    pub domains_db: Option<std::path::PathBuf>,
+    pub domains_origin: Option<String>,
+    pub ingress_addr: Option<String>,
+    pub ingress_cname: Option<String>,
+    pub ingress_https_port: u16,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -30,6 +35,11 @@ impl Default for Settings {
             spaces_origin: None,
             invite_ttl: 900,
             invite_max_ttl: 86400,
+            domains_db: None,
+            domains_origin: None,
+            ingress_addr: None,
+            ingress_cname: None,
+            ingress_https_port: 443,
         }
     }
 }
@@ -76,6 +86,28 @@ impl Settings {
                 "space creation requires a server password"
             );
         }
+        if let Some(path) = &self.domains_db {
+            anyhow::ensure!(path.is_absolute(), "domain database path must be absolute");
+            self.ingress_addr
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("ingress address required"))?
+                .parse::<std::net::SocketAddr>()?;
+            let origin = self
+                .domains_origin
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("domains origin required"))?;
+            let parsed = reqwest::Url::parse(origin)?;
+            anyhow::ensure!(
+                matches!(parsed.scheme(), "http" | "https"),
+                "invalid domains origin"
+            );
+            crate::domains::normalize_domain(
+                self.ingress_cname
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("ingress CNAME required"))?,
+            )?;
+            anyhow::ensure!(self.ingress_https_port > 0, "invalid ingress HTTPS port");
+        }
         Ok(())
     }
 }
@@ -105,6 +137,13 @@ pub async fn run(path: &std::path::Path) -> anyhow::Result<()> {
             spaces_origin: settings.spaces_origin,
             invite_ttl: settings.invite_ttl,
             invite_max_ttl: settings.invite_max_ttl,
+        },
+        crate::domains::server::Options {
+            domains_db: settings.domains_db,
+            domains_origin: settings.domains_origin,
+            ingress_addr: settings.ingress_addr,
+            ingress_cname: settings.ingress_cname,
+            ingress_https_port: settings.ingress_https_port,
         },
     )
     .await

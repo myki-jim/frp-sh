@@ -86,6 +86,15 @@ async fn real_main() -> anyhow::Result<()> {
         }
     };
     let cli = cli::Cli::from_arg_matches(&matches)?;
+    if let Some(Commands::Domain {
+        server,
+        identity,
+        cmd,
+    }) = cli.command
+    {
+        frp_sh::terminal::configure(true, cli.json, true);
+        return frp_sh::domains::cli::run(cmd, server, identity, cli.config).await;
+    }
     if let Some(Commands::Start { server } | Commands::Stop { server }) = &cli.command {
         let path = frp_sh::agent::install::installed_job(*server)?;
         let mut job = frp_sh::agent::job::Job::load(&path)?;
@@ -348,6 +357,7 @@ async fn real_main() -> anyhow::Result<()> {
     match command {
         Some(
             Commands::Space { .. }
+            | Commands::Domain { .. }
             | Commands::Agent { .. }
             | Commands::Status
             | Commands::Start { .. }
@@ -384,6 +394,7 @@ async fn real_main() -> anyhow::Result<()> {
         #[cfg(feature = "server")]
         Some(Commands::Serve {
             spaces,
+            domains,
             limits,
             addr,
             relay_addr,
@@ -400,7 +411,7 @@ async fn real_main() -> anyhow::Result<()> {
                 None => None,
             };
             frp_sh::commands::run_serve(
-                addr, relay_addr, udp_addr, password, turn, ext, limits, spaces,
+                addr, relay_addr, udp_addr, password, turn, ext, limits, spaces, domains,
             )
             .await?;
         }

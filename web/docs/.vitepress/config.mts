@@ -22,6 +22,7 @@ const zhSidebar = [
     text: "使用",
     items: [
       { text: "命令参考", link: "/cli" },
+      { text: "绑定自己的域名", link: "/domain" },
       { text: "配置文件", link: "/config" },
       { text: "高级用法", link: "/advanced" },
       { text: "故障排查 FAQ", link: "/faq" },
@@ -60,6 +61,7 @@ const enSidebar = [
     text: "Usage",
     items: [
       { text: "CLI Reference", link: "/en/cli" },
+      { text: "Bring your own domain", link: "/en/domain" },
       { text: "Configuration", link: "/en/config" },
       { text: "Advanced Usage", link: "/en/advanced" },
       { text: "Troubleshooting FAQ", link: "/en/faq" },

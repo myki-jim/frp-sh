@@ -25,6 +25,22 @@
 
 SQLite 文件和父目录应仅允许服务账户访问。默认邀请有效 900 秒；服务端可在 1 秒到 24 小时之间收紧默认和最大值。默认容量为 1024 个空间、每空间 33 名成员、总计 33792 名登记成员，可通过现有容量参数限制。动态邀请令牌只以摘要形式保存，不会写入数据库。
 
+## 自定义域名入口
+
+```bash
+./frp-sh serve \
+  --addr 127.0.0.1:8080 \
+  --relay-addr 0.0.0.0:8081 \
+  --password 'change-this-on-the-server' \
+  --domains-db /var/lib/frp-sh/domains.sqlite \
+  --domains-origin https://control.test.frp.sh:18443 \
+  --ingress-addr 127.0.0.1:8082 \
+  --ingress-cname edge.test.frp.sh \
+  --ingress-https-port 18443
+```
+
+Caddy 将控制域名的 `/domains/v1/*` 转发到 8080，将其他已绑定域名转发到 8082。按需 TLS 必须使用 `http://127.0.0.1:8080/domains/v1/allow` 作为 `ask`；平台证书与未知用户域名使用独立 TLS 策略。公网 443 用于 ACME TLS-ALPN，用户流量走 18443；80 可以关闭。完整示例见 `ops/caddy/Caddyfile.example`。
+
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--addr` | `0.0.0.0:8080` | HTTP REST 监听地址（UDP 公网探测复用同一端口） |

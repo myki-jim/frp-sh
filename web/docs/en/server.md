@@ -27,6 +27,36 @@ To enable durable spaces, configure a server password, a private SQLite path, an
 
 The SQLite file and its parent directory should only be accessible to the service account. Invitation tokens are stored only as digests. The default lifetime is 900 seconds; the server can set a default and maximum from one second through 24 hours.
 
+## Custom-domain ingress
+
+The domain control plane and HTTP ingress use a separate SQLite database and loopback listener:
+
+```bash
+./frp-sh serve \
+  --addr 127.0.0.1:8080 \
+  --relay-addr 0.0.0.0:8081 \
+  --password "$FRPSH_SERVE_PASSWORD" \
+  --domains-db /var/lib/frp-sh/domains.sqlite \
+  --domains-origin https://control.test.frp.sh:18443 \
+  --ingress-addr 127.0.0.1:8082 \
+  --ingress-cname edge.test.frp.sh \
+  --ingress-https-port 18443
+```
+
+| Option | Purpose |
+| --- | --- |
+| `--domains-db` | Domain ownership and verification database; enables the domain API |
+| `--domains-origin` | Public HTTPS control origin bound into device signatures |
+| `--ingress-addr` | HTTP ingress used only by the TLS gateway; keep it on loopback |
+| `--ingress-cname` | Stable DNS target returned by `bind` |
+| `--ingress-https-port` | Public HTTPS port returned by `bind` |
+
+Caddy must proxy `/domains/v1/*` to port `8080` only for the control hostname, and user-domain traffic to `8082`. Configure On-Demand TLS with `ask http://127.0.0.1:8080/domains/v1/allow`; without the ask gate, arbitrary SNI values can consume certificate issuance limits. Keep the platform wildcard certificate and unknown user domains in separate TLS policies. A complete configuration is available at `ops/caddy/Caddyfile.example` in the repository.
+
+Application traffic uses `18443`, while Caddy must also listen on public TCP `443` for ACME TLS-ALPN validation. First-time certificate issuance fails if a cloud security group blocks 443. Port `80` is optional and may be disabled.
+
+Restrict the SQLite directory to the service account. TXT tokens are stored only as SHA-256 digests, and the Caddy ask endpoint accepts verified bindings only. The ingress has fixed request, response, timeout, and global concurrency bounds; community operators should still add bandwidth budgets, request-rate limits, and traffic monitoring at the gateway or cloud edge.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--addr` | `0.0.0.0:8080` | HTTP REST listen address (UDP probe shares the port) |

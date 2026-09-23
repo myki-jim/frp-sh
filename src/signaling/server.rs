@@ -120,6 +120,18 @@ pub async fn run_http_with_spaces(
     limits: super::limits::ServerLimits,
     spaces: Option<crate::spaces::server::Service>,
 ) -> anyhow::Result<()> {
+    run_http_with_services(listener, state, password, turn_public, limits, spaces, None).await
+}
+
+pub async fn run_http_with_services(
+    listener: TcpListener,
+    state: SharedState,
+    password: Option<String>,
+    turn_public: Option<SocketAddr>,
+    limits: super::limits::ServerLimits,
+    spaces: Option<crate::spaces::server::Service>,
+    domains: Option<crate::domains::server::Service>,
+) -> anyhow::Result<()> {
     limits.validate()?;
     let app_state = AppState {
         limits,
@@ -145,6 +157,10 @@ pub async fn run_http_with_spaces(
     // behind the legacy server-password middleware.
     let app = match spaces {
         Some(service) => app.merge(service.router()),
+        None => app,
+    };
+    let app = match domains {
+        Some(service) => app.merge(service.control_router()),
         None => app,
     };
     axum::serve(listener, app).await?;

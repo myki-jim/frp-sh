@@ -1,4 +1,4 @@
-# Installation and maintenance (0.5.5)
+# Installation and maintenance (0.6.0)
 
 Installers prefer the website downloads and automatically fall back to GitHub. A version manifest pins SHA-256 hashes for both the client and helper to prevent mixed releases. Windows upgrades reuse an existing signature-verified Wintun driver. The website uses a global CDN, not a mainland-China CDN; performance depends on the local network.
 

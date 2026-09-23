@@ -62,6 +62,15 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Bind and publish device-owned HTTP domains
+    Domain {
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        #[command(subcommand)]
+        cmd: crate::domains::cli::Command,
+    },
     /// Manage device-authenticated durable spaces and temporary invitations
     Space {
         #[arg(long)]
@@ -135,6 +144,8 @@ pub enum Commands {
     Serve {
         #[command(flatten)]
         spaces: crate::spaces::server::Options,
+        #[command(flatten)]
+        domains: crate::domains::server::Options,
         #[command(flatten)]
         limits: crate::signaling::limits::ServerLimits,
         /// HTTP listen address

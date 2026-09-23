@@ -1,6 +1,18 @@
 # Commands and keyboard controls
 
-## Background supervision, durable spaces, and status (development branch)
+## Custom-domain publishing
+
+```sh
+frp-sh domain --server https://control.test.frp.sh:18443 bind app.example.com
+frp-sh domain --server https://control.test.frp.sh:18443 verify app.example.com
+frp-sh domain --server https://control.test.frp.sh:18443 status app.example.com
+frp-sh domain --server https://control.test.frp.sh:18443 publish app.example.com --target 127.0.0.1:3000
+frp-sh domain --server https://control.test.frp.sh:18443 unbind app.example.com
+```
+
+`bind` prints the TXT, CNAME, and HTTPS port to configure. `verify` checks ownership through public DNS. `publish` stays in the foreground and accepts only a local HTTP loopback target. See [Bring your own domain](./domain) for the full workflow.
+
+## Background supervision, durable spaces, and status
 
 Save a connection using `frp-sh profile` first. Here `friends` is an existing profile; the job directory must exist. Use another terminal for control and status commands.
 

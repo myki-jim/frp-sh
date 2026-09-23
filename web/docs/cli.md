@@ -1,6 +1,18 @@
 # 命令与键盘操作
 
-## 后台监督、永久空间与状态（开发分支）
+## 自定义域名发布
+
+```sh
+frp-sh domain --server https://control.test.frp.sh:18443 bind app.example.com
+frp-sh domain --server https://control.test.frp.sh:18443 verify app.example.com
+frp-sh domain --server https://control.test.frp.sh:18443 status app.example.com
+frp-sh domain --server https://control.test.frp.sh:18443 publish app.example.com --target 127.0.0.1:3000
+frp-sh domain --server https://control.test.frp.sh:18443 unbind app.example.com
+```
+
+`bind` 输出需要添加的 TXT、CNAME 和 HTTPS 端口；`verify` 通过公共 DNS 验证控制权；`publish` 保持前台运行，只接受本机 HTTP loopback 目标。完整流程见[绑定自己的域名](./domain)。
+
+## 后台监督、永久空间与状态
 
 先在 `frp-sh profile` 保存连接。下面的 `friends` 是已有 Profile 名称，任务文件所在目录必须存在；在另一终端执行启停和查询。
 

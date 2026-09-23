@@ -5,6 +5,7 @@
 - [安装与构建](./install.md)
 - [部署信令服务器](./server.md)
 - [命令参考](./cli.md)
+- [绑定自己的域名](./domain.md)
 - [配置文件](./config.md)
 - [网络原理](./architecture.md)
 - [高级用法](./advanced.md)

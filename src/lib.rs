@@ -14,6 +14,7 @@ pub mod config;
 pub mod dashboard;
 pub mod debuglog;
 pub mod device;
+pub mod domains;
 pub mod error;
 pub mod helper;
 pub mod i18n;

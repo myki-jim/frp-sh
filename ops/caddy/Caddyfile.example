@@ -1,0 +1,34 @@
+{
+	auto_https disable_redirects
+	on_demand_tls {
+		ask http://127.0.0.1:8080/domains/v1/allow
+	}
+}
+
+# A pre-issued platform wildcard certificate serves the control hostname.
+https://test.frp.sh:443, https://*.test.frp.sh:443, https://test.frp.sh:18443, https://*.test.frp.sh:18443 {
+	tls /etc/caddy/certs/test-frp-sh.crt /etc/caddy/certs/test-frp-sh.key
+
+	@domain_control {
+		host control.test.frp.sh
+		path /domains/v1/*
+	}
+	handle @domain_control {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8082
+	}
+}
+
+# Unknown SNI names get a certificate only after the ask endpoint confirms
+# that the device completed DNS ownership verification.
+https://:443, https://:18443 {
+	tls {
+		on_demand
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	reverse_proxy 127.0.0.1:8082
+}

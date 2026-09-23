@@ -27,6 +27,36 @@
 
 SQLite 文件及其父目录应只允许服务账户访问。动态邀请码只以摘要写入数据库；默认有效期 900 秒，服务端可在 1 秒至 24 小时之间设定默认和上限。
 
+## 自定义域名入口
+
+域名控制面和 HTTP ingress 使用独立 SQLite 与 loopback 监听：
+
+```bash
+./frp-sh serve \
+  --addr 127.0.0.1:8080 \
+  --relay-addr 0.0.0.0:8081 \
+  --password "$FRPSH_SERVE_PASSWORD" \
+  --domains-db /var/lib/frp-sh/domains.sqlite \
+  --domains-origin https://control.test.frp.sh:18443 \
+  --ingress-addr 127.0.0.1:8082 \
+  --ingress-cname edge.test.frp.sh \
+  --ingress-https-port 18443
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `--domains-db` | 域名所有权与验证状态数据库；设置后启用域名 API |
+| `--domains-origin` | 客户端签名绑定的公开 HTTPS 控制面来源，必须与实际访问地址一致 |
+| `--ingress-addr` | 只供 TLS 网关访问的 HTTP ingress，建议监听 loopback |
+| `--ingress-cname` | `bind` 返回给用户的稳定 DNS 目标 |
+| `--ingress-https-port` | `bind` 返回给用户的公开 HTTPS 端口 |
+
+Caddy 必须把 `/domains/v1/*` 仅在控制域名上转发到 `8080`，把用户域名流量转发到 `8082`。按需 TLS 必须配置 `ask http://127.0.0.1:8080/domains/v1/allow`；否则任意 SNI 都会消耗证书签发配额。平台通配符证书与未知用户域名要使用独立 TLS 策略，完整可复制配置见仓库 `ops/caddy/Caddyfile.example`。
+
+业务访问使用 `18443`，但 Caddy 还必须监听公网 TCP `443`，供 ACME TLS-ALPN 验证。若云安全组未开放 443，首次用户域名访问无法签发证书。HTTP `80` 不是签发依赖，可以关闭；中国大陆未备案入口可能在到达服务器前被运营商拦截。
+
+SQLite 目录只允许服务账户访问。TXT 验证令牌只保存 SHA-256 摘要；Caddy 的 `ask` 只对已验证绑定返回成功。入口有固定请求/响应大小、等待时间和总并发上限，但公益部署仍应在网关或云侧增加带宽预算、连接速率限制和流量监控。
+
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--addr` | `0.0.0.0:8080` | HTTP REST 监听地址（UDP 公网探测复用同一端口） |
